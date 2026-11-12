@@ -3531,6 +3531,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tensorseed-serve"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "futures-util",
+ "librqbit-upnp",
+ "network-interface",
+ "percent-encoding",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "tensorseed-torrent"
 version = "0.1.0"
 dependencies = [

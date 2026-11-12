@@ -6,6 +6,7 @@ members = [
     "crates/tensorseed-catalog",
     "crates/tensorseed-torrent",
     "crates/tensorseed-fetch",
+    "crates/tensorseed-serve",
     "crates/tensorseed-cli",
 ]
 
@@ -24,8 +25,16 @@ tensorseed-hf = { path = "crates/tensorseed-hf", version = "0.1.0" }
 tensorseed-catalog = { path = "crates/tensorseed-catalog", version = "0.1.0" }
 tensorseed-torrent = { path = "crates/tensorseed-torrent", version = "0.1.0" }
 tensorseed-fetch = { path = "crates/tensorseed-fetch", version = "0.1.0" }
+tensorseed-serve = { path = "crates/tensorseed-serve", version = "0.1.0" }
 
 anyhow = "1"
+# HTTP serving for `tensorseed serve` (already in the tree through librqbit).
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+librqbit-upnp = "9.1.0"
+network-interface = "2"
+percent-encoding = "2"
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
 bytes = "1"
 getrandom = "0.4"

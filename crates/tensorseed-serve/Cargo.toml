@@ -1,0 +1,33 @@
+[package]
+name = "tensorseed-serve"
+description = "Tensorseed serve daemon building blocks: BEP 19 HTTP file serving with ranges, the health endpoint, rate limiting, and NAT port mapping (NAT-PMP and UPnP IGD)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum = { workspace = true }
+bytes.workspace = true
+futures-util = { workspace = true }
+librqbit-upnp = { workspace = true }
+network-interface = { workspace = true }
+percent-encoding = { workspace = true }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true }
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
