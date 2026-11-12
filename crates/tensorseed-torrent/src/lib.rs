@@ -7,7 +7,7 @@
 //!
 //! **M0 must verify `librqbit` before this crate takes a dependency on it:**
 //! BEP 52 v2 download and seeding, v2 and hybrid torrent creation, and BEP 19
-//! webseeds (`url-list`) against an R2 bucket with HTTP range requests. As of
+//! webseeds (`url-list`) against any HTTP mirror with range requests. As of
 //! 2026-11-12 the librqbit v2 tracking issue is still open and BEP 19 support
 //! is unconfirmed. If any check fails, fall back to libtorrent-rasterbar 2.x
 //! (FFI or sidecar) or our own BEP 52 builder plus a v2 capable seeder.

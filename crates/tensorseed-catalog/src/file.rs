@@ -21,7 +21,7 @@
 //!
 //! Status: signature verification, hash chain checks, HTTPS sync with
 //! mirror fallback, persisted trust anchor, publishing to a directory or an
-//! S3 bucket (R2), snapshots, and head re-signing are implemented and tested
+//! one or more S3 compatible buckets, snapshots, and head re-signing are implemented and tested
 //! against local HTTP servers. The catalog snapshot torrent is pending the
 //! M0 BitTorrent spike.
 

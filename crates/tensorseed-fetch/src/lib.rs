@@ -56,7 +56,7 @@ pub type Result<T, E = FetchError> = std::result::Result<T, E>;
 /// Where a source comes from (for reports and token scoping).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
-    /// BEP 19 webseed (R2 or another HTTP mirror).
+    /// BEP 19 webseed (any HTTP mirror: local web server or object storage).
     Webseed,
     /// Hugging Face resolve URL (fallback).
     HuggingFace,

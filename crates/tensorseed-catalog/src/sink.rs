@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026 Tuned Chaos
 
-//! Where the publisher writes signed catalog files: a local directory (any
-//! static host, or tests) or an S3 compatible bucket (Cloudflare R2 behind
-//! `catalog.tensorseed.dev`, or Backblaze B2).
+//! Where the publisher writes objects (signed catalog files, and later the
+//! webseed copy of model files): a local directory, which is the default and
+//! needs no account anywhere, or one or more S3 compatible buckets. Nothing
+//! here assumes a particular provider: any service that speaks the S3 API
+//! with a custom endpoint works (Cloudflare R2, Backblaze B2, Vultr Object
+//! Storage, Wasabi, MinIO, AWS S3, ...). [`MultiSink`] pushes every object
+//! to several targets so a publisher can mirror across providers.
 //!
 //! S3 crate choice: `object_store` (Apache Arrow project, MIT/Apache-2.0).
-//! It is actively maintained, speaks the S3 API including multipart
-//! uploads (needed later for model files on the webseed), uses the same
-//! `reqwest` 0.13 as the rest of Tensorseed so it adds no second HTTP stack,
-//! and passes `deny.toml`. `aws-sdk-s3` was rejected as much heavier (the
-//! full AWS SDK runtime) and `rust-s3` because it pulls in an older `reqwest`
-//! (0.12) next to ours. Credentials come only from environment variables.
+//! It is actively maintained, supports custom endpoints, path style and
+//! virtual hosted style addressing, and multipart uploads (needed for model
+//! files), uses the same `reqwest` 0.13 as the rest of Tensorseed so it adds
+//! no second HTTP stack, and passes `deny.toml`. `aws-sdk-s3` was rejected as
+//! much heavier (the full AWS SDK runtime) and `rust-s3` because it pulls in
+//! an older `reqwest` (0.12) next to ours. Credentials come only from
+//! environment variables.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -114,22 +119,26 @@ impl ObjectSink for DirSink {
     }
 }
 
-/// S3 connection settings. Secrets are passed in by the caller from env.
+/// Generic S3 compatible target. Build one with [`S3Config::from_env`].
 #[derive(Clone)]
 pub struct S3Config {
-    /// Endpoint, for example `https://<account>.r2.cloudflarestorage.com`.
+    /// Endpoint URL such as `https://s3.us-west-004.backblazeb2.com`. Empty
+    /// means AWS S3 itself (the regional endpoint for `region`).
     pub endpoint: String,
-    /// Bucket.
+    /// Bucket name.
     pub bucket: String,
-    /// Region (`auto` for R2).
+    /// Signing region (`auto` for R2, the provider's region elsewhere).
     pub region: String,
     /// Access key id.
     pub access_key_id: String,
     /// Secret access key.
     pub secret_access_key: String,
-    /// Key prefix inside the bucket (may be empty).
+    /// Key prefix inside the bucket (no leading or trailing `/`).
     pub prefix: String,
-    /// Allow plain HTTP endpoints (tests only).
+    /// Path style addressing (`endpoint/bucket/key`), which every provider
+    /// here accepts; false selects virtual hosted style (`bucket.endpoint/key`).
+    pub path_style: bool,
+    /// Allow plain `http://` endpoints (local MinIO, tests).
     pub allow_http: bool,
 }
 
@@ -140,30 +149,34 @@ impl fmt::Debug for S3Config {
             .field("bucket", &self.bucket)
             .field("region", &self.region)
             .field("prefix", &self.prefix)
+            .field("path_style", &self.path_style)
             .finish_non_exhaustive()
     }
 }
 
-/// Names of the environment variables holding R2 credentials.
-#[derive(Debug, Clone)]
-pub struct R2Env {
-    /// Account id variable (used to build the endpoint when none is given).
-    pub account_id: String,
-    /// Access key id variable.
-    pub access_key: String,
-    /// Secret access key variable.
-    pub secret_key: String,
+/// Non secret settings for [`S3Config::from_env`].
+#[derive(Debug, Clone, Default)]
+pub struct S3Settings {
+    /// Endpoint URL (empty for AWS S3).
+    pub endpoint: String,
+    /// Region.
+    pub region: String,
+    /// Bucket.
+    pub bucket: String,
+    /// Key prefix.
+    pub prefix: String,
+    /// Path style addressing.
+    pub path_style: bool,
+    /// Env var holding the access key id.
+    pub access_key_env: String,
+    /// Env var holding the secret access key.
+    pub secret_key_env: String,
 }
 
 impl S3Config {
-    /// Build a Cloudflare R2 config from environment variables. `endpoint`
-    /// overrides the default `https://<account_id>.r2.cloudflarestorage.com`.
-    pub fn r2_from_env(
-        env: &R2Env,
-        bucket: &str,
-        prefix: &str,
-        endpoint: Option<&str>,
-    ) -> Result<Self> {
+    /// Build from settings, reading the two credentials from the named
+    /// environment variables.
+    pub fn from_env(s: &S3Settings) -> Result<Self> {
         let var = |name: &str| {
             std::env::var(name)
                 .ok()
@@ -172,23 +185,34 @@ impl S3Config {
                     CatalogError::Config(format!("environment variable {name} is not set"))
                 })
         };
-        let endpoint = match endpoint.filter(|e| !e.is_empty()) {
-            Some(e) => e.to_string(),
-            None => format!("https://{}.r2.cloudflarestorage.com", var(&env.account_id)?),
-        };
+        if s.bucket.is_empty() {
+            return Err(CatalogError::Config("S3 target has no bucket".into()));
+        }
+        if s.region.is_empty() {
+            return Err(CatalogError::Config("S3 target has no region".into()));
+        }
+        let endpoint = s.endpoint.trim_end_matches('/').to_string();
+        if !endpoint.is_empty()
+            && !endpoint.starts_with("https://")
+            && !endpoint.starts_with("http://")
+        {
+            return Err(CatalogError::Config(format!(
+                "S3 endpoint must be an http(s) URL: {endpoint}"
+            )));
+        }
         Ok(Self {
+            allow_http: endpoint.starts_with("http://"),
             endpoint,
-            bucket: bucket.into(),
-            region: "auto".into(),
-            access_key_id: var(&env.access_key)?,
-            secret_access_key: var(&env.secret_key)?,
-            prefix: prefix.trim_matches('/').into(),
-            allow_http: false,
+            bucket: s.bucket.clone(),
+            region: s.region.clone(),
+            access_key_id: var(&s.access_key_env)?,
+            secret_access_key: var(&s.secret_key_env)?,
+            prefix: s.prefix.trim_matches('/').into(),
+            path_style: s.path_style,
         })
     }
 }
 
-/// S3 compatible sink (R2, B2, MinIO).
 #[derive(Debug, Clone)]
 pub struct S3Sink {
     store: Arc<AmazonS3>,
@@ -199,19 +223,31 @@ pub struct S3Sink {
 impl S3Sink {
     /// Connect (no network traffic until the first put).
     pub fn new(cfg: S3Config) -> Result<Self> {
-        let store = AmazonS3Builder::new()
-            .with_endpoint(&cfg.endpoint)
+        let mut b = AmazonS3Builder::new();
+        if !cfg.endpoint.is_empty() {
+            b = b.with_endpoint(&cfg.endpoint);
+        }
+        let store = b
             .with_bucket_name(&cfg.bucket)
             .with_region(&cfg.region)
             .with_access_key_id(&cfg.access_key_id)
             .with_secret_access_key(&cfg.secret_access_key)
-            .with_virtual_hosted_style_request(false)
+            .with_virtual_hosted_style_request(!cfg.path_style)
             .with_allow_http(cfg.allow_http)
             .build()
             .map_err(|e| CatalogError::Config(format!("S3 config: {e}")))?;
         Ok(Self {
             store: Arc::new(store),
-            describe: format!("s3 {}/{}/{}", cfg.endpoint, cfg.bucket, cfg.prefix),
+            describe: format!(
+                "s3 {}/{}/{}",
+                if cfg.endpoint.is_empty() {
+                    "aws"
+                } else {
+                    &cfg.endpoint
+                },
+                cfg.bucket,
+                cfg.prefix
+            ),
             prefix: cfg.prefix,
         })
     }
@@ -252,6 +288,50 @@ impl ObjectSink for S3Sink {
 
     fn describe(&self) -> String {
         self.describe.clone()
+    }
+}
+
+/// Writes every object to each of several sinks in order (for example a
+/// local directory plus two providers). A put fails if any target fails, so
+/// callers never advance state that a target is missing.
+#[derive(Debug, Clone)]
+pub struct MultiSink {
+    sinks: Vec<Arc<dyn ObjectSink>>,
+}
+
+impl MultiSink {
+    /// Fan out to `sinks` (at least one).
+    pub fn new(sinks: Vec<Arc<dyn ObjectSink>>) -> Result<Self> {
+        if sinks.is_empty() {
+            return Err(CatalogError::Config("no storage targets".into()));
+        }
+        Ok(Self { sinks })
+    }
+}
+
+#[async_trait]
+impl ObjectSink for MultiSink {
+    async fn put(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        content_type: &str,
+        cache: CachePolicy,
+    ) -> Result<()> {
+        for s in &self.sinks {
+            s.put(key, body.clone(), content_type, cache)
+                .await
+                .map_err(|e| CatalogError::Backend(format!("{}: {e}", s.describe())))?;
+        }
+        Ok(())
+    }
+
+    fn describe(&self) -> String {
+        self.sinks
+            .iter()
+            .map(|s| s.describe())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -307,6 +387,7 @@ mod tests {
             access_key_id: "AKID".into(),
             secret_access_key: "SECRET".into(),
             prefix: "pre".into(),
+            path_style: true,
             allow_http: true,
         })
         .unwrap();
@@ -318,22 +399,51 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            !format!(
-                "{:?}",
-                S3Config::r2_from_env(
-                    &R2Env {
-                        account_id: "TS_TEST_NOPE_A".into(),
-                        access_key: "TS_TEST_NOPE_B".into(),
-                        secret_key: "TS_TEST_NOPE_C".into()
-                    },
-                    "b",
-                    "",
-                    None
-                )
-                .unwrap_err()
-            )
-            .is_empty()
-        );
+        let missing = S3Config::from_env(&S3Settings {
+            endpoint: "https://s3.example.invalid".into(),
+            region: "auto".into(),
+            bucket: "b".into(),
+            access_key_env: "TS_TEST_NOPE_B".into(),
+            secret_key_env: "TS_TEST_NOPE_C".into(),
+            ..S3Settings::default()
+        })
+        .unwrap_err();
+        assert!(missing.to_string().contains("TS_TEST_NOPE_B"));
+    }
+
+    #[tokio::test]
+    async fn multi_sink_writes_every_target() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let m = MultiSink::new(vec![
+            Arc::new(DirSink::new(a.path())),
+            Arc::new(DirSink::new(b.path())),
+        ])
+        .unwrap();
+        m.put(
+            "x/y.json",
+            b"1".to_vec(),
+            "application/json",
+            CachePolicy::Immutable,
+        )
+        .await
+        .unwrap();
+        assert!(a.path().join("x/y.json").exists() && b.path().join("x/y.json").exists());
+        assert!(MultiSink::new(vec![]).is_err());
+    }
+
+    #[tokio::test]
+    async fn s3_virtual_hosted_style_is_selectable() {
+        let cfg = S3Config {
+            endpoint: "http://127.0.0.1:9".into(),
+            bucket: "bucket".into(),
+            region: "us-east-1".into(),
+            access_key_id: "A".into(),
+            secret_access_key: "S".into(),
+            prefix: String::new(),
+            path_style: false,
+            allow_http: true,
+        };
+        assert!(S3Sink::new(cfg).is_ok());
     }
 }
