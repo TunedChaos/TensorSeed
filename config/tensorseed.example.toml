@@ -44,9 +44,15 @@ snapshot_every = 64              # full snapshot every N revisions
 head_ttl_secs = 604800           # head expires after 7 days unless re-signed
 torrent = true                   # also publish each snapshot as a torrent (not implemented yet)
 
+# The Hugging Face token is optional (needed only for gated or private
+# repos and higher rate limits) and is NEVER written in this file: an inline
+# `token = "..."` is rejected. Tensorseed reads the environment variable named
+# by token_env first, then token_file. The token file must not be readable by
+# group or others (chmod 600), or Tensorseed refuses to use it.
 [huggingface]
 endpoint = "https://huggingface.co"
 token_env = "HF_TOKEN"
+token_file = ""                  # e.g. "~/.config/tensorseed/hf_token" (chmod 600)
 
 # BitTorrent (spec section 7.1; results in docs/M0-TORRENT-SPIKE.md).
 # harvest writes t/<name>.torrent next to each revision; `tensorseed seed`
@@ -227,8 +233,13 @@ exclude = []
 # enabled [[storage.target]] with upload = true. State lives in general.state_db, so reruns skip
 # finished revisions and resume interrupted ones. See docs/SPEC.md section 13.
 [harvest]
-repos = []                       # explicit model ids, e.g. ["org/name"]
-datasets = []                    # explicit dataset ids (needs include_datasets)
+# Explicit repos: plain ids, or tables with per-repo overrides. Use
+# allow_license to mirror a repo whose license is not on the allowlist,
+# typically your own `license: other` repo; the policy stays strict for
+# everything else and the manifest still records the license as unknown.
+#   repos = ["org/name", { id = "me/my-model", allow_license = ["other"] }]
+repos = []                       # explicit model ids
+datasets = []                    # explicit dataset ids (needs include_datasets), same forms
 authors = []                     # discover repos by these users or orgs
 tags = []                        # discovered repos must have all of these, e.g. ["safetensors"]
 min_downloads = 0                # discovered repos need at least this many downloads

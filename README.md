@@ -59,13 +59,22 @@ tensorseed catalog keygen           # minisign compatible, password protected
 tensorseed catalog create
 tensorseed harvest --dry-run        # plan from the [harvest] watchlist
 tensorseed harvest --watch          # keep mirroring new revisions
+tensorseed publish me/my-model --allow-license other   # one repo, e.g. your own `license: other` repo
 tensorseed mirror add https://mirror.example.org/ts/ --name eu-1 --priority 10
 tensorseed mirror list              # merged mirror ranking
 tensorseed seed                     # seed everything under storage.local_dir (Ctrl-C to stop)
 ```
 
 Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and
-gated repos are refused unless `--allow-gated`. Downloads resume after
+gated repos are refused unless `--allow-gated`. Publishing uses a strict license
+allowlist; `--allow-license <id>` or a watchlist entry
+`{ id = "org/name", allow_license = ["other"] }` lets you mirror a repo you hold
+the rights to without loosening it for anything else.
+
+A Hugging Face token is optional. It is never written in `tensorseed.toml`
+(an inline `token =` is rejected): set the variable named by
+`[huggingface] token_env` (default `HF_TOKEN`), or point `token_file` at a file
+only you can read (`chmod 600`). Downloads resume after
 interruption; `tensorseed jobs` shows their state.
 
 ## Workspace layout

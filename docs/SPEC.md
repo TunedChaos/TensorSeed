@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 7)
+# Tensorseed: Project Specification (Revision 8)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 > Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend is implemented against mocked RPC responses only.
+
+Revision 8 changes: the Hugging Face token can also come from `huggingface.token_file` (must not be readable by group or others); an inline `token =` in the config is rejected with a clear error. License overrides: `--allow-license <id>` on `pull`, `harvest`, and `publish`, and a per-repo `allow_license` in watchlist entries, let a publisher mirror their own `license: other` repos while the default allowlist stays strict; overridden repos keep their honest license class in the manifest. `publish <repo>` now runs the harvest pipeline for one repo (5, 9, 10, 11, 13).
 
 Revision 7 changes: M0 BitTorrent spike done (results in [M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md)). librqbit 9.1 cannot create v2 torrents, open v2 only torrents, resolve `btmh` only magnets, or use BEP 19 webseeds, but it seeds and downloads the v1 side of hybrid torrents and interoperates with libtorrent 2.x in the same swarm. Decisions: Tensorseed builds BEP 52 v2 and hybrid torrents itself in pure Rust (byte identical to libtorrent), hybrid is the default, librqbit is the swarm engine, webseed bytes come from Tensorseed's own HTTP fetcher while torrents still list webseeds for other clients, and the default piece length is automatic (4 MiB up to 64 MiB, at most 16,384 pieces). `harvest` writes torrents and manifest `torrent` blocks; `seed`, `pull --swarm`, `pull --seed-after`, and `provider = "torrent"` storage targets work (7.1, 8.2, 8.3, 9, 10, 10.1, 12).
 
@@ -132,7 +134,7 @@ Confirmed against live responses on 2026-11-12 (code: `tensorseed-hf`):
 - Listing (harvest discovery): `GET {endpoint}/api/models?author=..&filter=<tag>&sort=downloads&direction=-1&limit=N`, same pagination; entries carry `id`, `downloads`, `tags`, `gated`.
 - Downloads: `GET {endpoint}/{repo_id}/resolve/{commit}/{path}` (datasets under `/datasets/`), usually redirected to a CDN; Xet stored files are served there too. Always by commit SHA, never by branch.
 - Verification: LFS files against `lfs.oid` (SHA-256); small non-LFS files against their git blob id (SHA-1 of `"blob <size>\0" || content`), then hashed with SHA-256 for the manifest.
-- Auth: optional token from the env var named by `huggingface.token_env` (default `HF_TOKEN`), sent only to the endpoint origin (the HTTP client drops it on cross-origin redirects). Gated repos are refused unless explicitly allowed (`--allow-gated` for personal pulls, `harvest.allow_gated` for mirroring).
+- Auth: optional token from the env var named by `huggingface.token_env` (default `HF_TOKEN`), else from `huggingface.token_file` (refused if readable by group or others; chmod 600). The token is never written in the config file: an inline `token =` is a config error. It is sent only to the endpoint origin (the HTTP client drops it on cross-origin redirects). Gated repos are refused unless explicitly allowed (`--allow-gated` for personal pulls, `harvest.allow_gated` for mirroring).
 - Rate limits: HTTP 429 and 5xx are retried with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Downloads use bounded concurrency (default 2 files) and HTTP range resume.
 
 The `hf-hub` crate is not used: version 1.0 pulls in `hf-xet` (over 550 crates) and is built around the Hugging Face cache layout, while Tensorseed needs the raw tree hashes, its own output layout, streaming verification, and resumable jobs (section 12).
@@ -538,10 +540,10 @@ Single binary `tensorseed`.
 | `catalog export --out FILE [--backend chia\|file]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10). | done |
 | `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). | done |
 | `catalog resign-head`, `catalog snapshot` | File backend: re-sign `head.json` with a fresh expiry; write a snapshot now. | done |
-| `publish <repo_id> [--type] [--revision <commit>]` | Run the publish state machine for one repo (with torrents). | stub (M1; `harvest` covers the HTTP part) |
+| `publish <repo_id> [--type] [--revision <commit>] [--allow-license ID]...` | Run the harvest pipeline for exactly one repo (policy, verified download, torrent, signed entry, uploads), on the watchlist or not. | done |
 | `sync` | Publish every target in config. | stub |
-| `harvest [--watch] [--dry-run] [--only ...] [--status]` | Watchlist driven mirroring from the Hub (section 13). | done |
-| `pull <repo_id>[@commit] [--out DIR] [--from-hf\|--manifest-file\|--manifest-url] [--jobs N] [--allow-pickle] [--allow-gated] [--no-hf-fallback] [--no-wait] [--ignore-tombstone] [--swarm] [--peer HOST:PORT] [--seed-after DURATION]` | Download and verify (8.2). | done |
+| `harvest [--watch] [--dry-run] [--only ...] [--status] [--allow-license ID]...` | Watchlist driven mirroring from the Hub (section 13). | done |
+| `pull <repo_id>[@commit] [--out DIR] [--from-hf\|--manifest-file\|--manifest-url] [--jobs N] [--allow-pickle] [--allow-gated] [--allow-license ID]... [--no-hf-fallback] [--no-wait] [--ignore-tombstone] [--swarm] [--peer HOST:PORT] [--seed-after DURATION]` | Download and verify (8.2). | done |
 | `verify <dir\|repo_id[@commit]> [--repo] [--dir] [--hf] [--manifest-file] [--strict] [--threads N]` | Re-hash a local copy; exit 3 on mismatch. | done |
 | `list [--filter] [--no-wait]` | List catalog entries (from `index` keys). | done |
 | `show <repo_id>[@commit] [--revision]` | Print a manifest. | done |
@@ -595,7 +597,8 @@ torrent = true                   # also publish each snapshot as a torrent
 
 [huggingface]
 endpoint = "https://huggingface.co"
-token_env = "HF_TOKEN"
+token_env = "HF_TOKEN"              # name of the env var, never the token
+token_file = ""                     # or a chmod 600 file; inline `token =` is rejected
 
 [torrent]                        # section 7.1
 create = true                    # build a torrent for every harvested revision
@@ -646,7 +649,7 @@ prune = true
 serve_catalog = false
 
 [harvest]                        # section 13
-repos = []
+repos = []                       # ids or { id = "org/name", allow_license = ["other"] }
 authors = []
 tags = ["safetensors"]
 min_downloads = 1000
@@ -759,7 +762,8 @@ The S3 client is `object_store` (section 12): custom endpoints, path style or vi
 2. **Default allowlist:** only `open` licenses are published by default (see `policy.license_allowlist`). Unknown or missing license means skip.
 3. **Attribution-style licenses (Llama-style):** the Llama 3.1 Community License allows redistribution if you include a copy of the agreement, keep the required "Notice" text file, and prominently display "Built with Llama" (https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/LICENSE). These are allowed only when listed in `attribution_licenses`; the publisher then (a) mirrors the license and notice files, (b) sets `license.attribution` in the manifest to the required text, and (c) `pull` writes the license and NOTICE into the output directory and prints the attribution. The catalog explorer displays "Built with Llama" for those entries.
 4. **Gated repos:** "gated" is an HF access setting, not a license term. Gated repos are skipped unless `allow_gated = true` and the license class is `open` or `attribution`. Prior art (LLM Torrents) chooses never to rehost gated weights; we default to the same.
-5. **Restricted / non-commercial / no-redistribution licenses:** never published.
+5. **Restricted / non-commercial / no-redistribution licenses:** never published by default.
+5a. **Explicit overrides:** a publisher who holds the rights (typically their own repo tagged `license: other`) can accept one license id for one run with `--allow-license <id>` on `harvest` or `publish`, or for one repo with a watchlist entry `{ id = "org/name", allow_license = ["other"] }`. Overrides lift only the license refusal: gated, private, disabled, takedown, and tombstone rules still apply, the default allowlist is unchanged, and the manifest keeps the honest class (an overridden `other` is recorded as `unknown`, never `open`). On `pull` the flag only silences the "would not be published" warning, since personal downloads are never refused for license.
 6. **Takedown process:** a published contact address in `CatalogInfo.publisher.contact` and a policy URL. On a valid request: write a `Tombstone` (one generation), delete webseed objects on every storage target, stop seeding on publisher nodes. `harvest` never fetches repos on its takedown list (`harvest.takedown`, `harvest.takedown_file`) or tombstoned in the catalog. Seed daemons honor tombstones by default and stop seeding. Limits are stated publicly: past DataLayer history and existing swarm copies cannot be recalled.
 
 ---
@@ -814,7 +818,7 @@ MSRV is Rust 1.87 (needed by a patched dependency for RUSTSEC-2026-0385).
 2. Repo info at the default branch gives the current commit. Gated repos are skipped unless `allow_gated` (and a token with accepted terms); private or disabled repos are skipped.
 3. Already harvested (state DB says `done` for this commit): nothing to do. This makes passes idempotent and restart safe.
 4. Tombstoned in the catalog: skipped.
-5. License: the policy (section 11) with `harvest.license_allowlist` (or `[policy] license_allowlist` when empty); refusals skip the repo. Pickle formats are excluded unless `[policy] allow_pickle_formats`.
+5. License: the policy (section 11) with `harvest.license_allowlist` (or `[policy] license_allowlist` when empty), plus per-repo `allow_license` and `--allow-license` overrides (11.5a); refusals skip the repo. Pickle formats are excluded unless `[policy] allow_pickle_formats`.
 6. Size cap (`max_repo_bytes`) and disk budget (`disk_budget_bytes`, counting finished harvests).
 7. Download through `tensorseed-fetch` into `<storage.local_dir>/t/<content name>/` with hash verification, HTTP resume, and job records; files stay there for seeding.
 8. Build the manifest (SHA-256 for every file, `hf_lfs_oid` for LFS files, license, file pages above 2000 files, `torrent: null`, `webseeds` from storage), upload files to every enabled `[[storage.target]]` with `upload = true` first (when `harvest.upload = true`), then stage and commit `rev/<commit>` (plus pages), `latest`, and `index` as one catalog revision (file backend, or Chia), and write the signed manifest to `manifests/<type>/<org>/<name>/<commit>.json` in storage. With `publish = false`, an unsigned manifest is written there instead and the catalog is untouched.
