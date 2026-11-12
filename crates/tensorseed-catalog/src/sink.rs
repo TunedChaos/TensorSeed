@@ -24,7 +24,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
-use object_store::{Attribute, Attributes, ObjectStore, PutOptions, PutPayload};
+use object_store::{
+    Attribute, Attributes, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, WriteMultipart,
+};
 
 use crate::{CatalogError, Result};
 
@@ -59,7 +61,25 @@ pub trait ObjectSink: Send + Sync + fmt::Debug {
     ) -> Result<()>;
     /// Human readable destination, for logs.
     fn describe(&self) -> String;
+
+    /// Upload a local file (model files for webseeds). The default reads it
+    /// into memory; S3 targets stream large files as multipart uploads.
+    async fn put_file(
+        &self,
+        key: &str,
+        file: &std::path::Path,
+        content_type: &str,
+        cache: CachePolicy,
+    ) -> Result<()> {
+        let body = tokio::fs::read(file).await?;
+        self.put(key, body, content_type, cache).await
+    }
 }
+
+/// Files at or above this size go up as multipart uploads.
+pub const MULTIPART_THRESHOLD: u64 = 32 << 20;
+/// Multipart part size.
+pub const MULTIPART_PART: usize = 16 << 20;
 
 fn check_key(key: &str) -> Result<()> {
     if key.is_empty()
@@ -116,6 +136,31 @@ impl ObjectSink for DirSink {
 
     fn describe(&self) -> String {
         format!("directory {}", self.root.display())
+    }
+
+    async fn put_file(
+        &self,
+        key: &str,
+        file: &std::path::Path,
+        _content_type: &str,
+        _cache: CachePolicy,
+    ) -> Result<()> {
+        check_key(key)?;
+        let path = self.root.join(key);
+        if tokio::fs::canonicalize(&path).await.ok() == tokio::fs::canonicalize(file).await.ok()
+            && path.exists()
+        {
+            return Ok(()); // already in place (local storage is the download dir)
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| CatalogError::Config(format!("bad key {key}")))?
+            .to_path_buf();
+        tokio::fs::create_dir_all(&parent).await?;
+        let tmp = parent.join(".upload.tmp");
+        tokio::fs::copy(file, &tmp).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        Ok(())
     }
 }
 
@@ -221,6 +266,14 @@ pub struct S3Sink {
 }
 
 impl S3Sink {
+    fn full_key(&self, key: &str) -> String {
+        if self.prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{key}", self.prefix)
+        }
+    }
+
     /// Connect (no network traffic until the first put).
     pub fn new(cfg: S3Config) -> Result<Self> {
         let mut b = AmazonS3Builder::new();
@@ -263,11 +316,7 @@ impl ObjectSink for S3Sink {
         cache: CachePolicy,
     ) -> Result<()> {
         check_key(key)?;
-        let full = if self.prefix.is_empty() {
-            key.to_string()
-        } else {
-            format!("{}/{key}", self.prefix)
-        };
+        let full = self.full_key(key);
         let mut attributes = Attributes::new();
         attributes.insert(Attribute::ContentType, content_type.to_string().into());
         attributes.insert(Attribute::CacheControl, cache.header().into());
@@ -288,6 +337,53 @@ impl ObjectSink for S3Sink {
 
     fn describe(&self) -> String {
         self.describe.clone()
+    }
+
+    async fn put_file(
+        &self,
+        key: &str,
+        file: &std::path::Path,
+        content_type: &str,
+        cache: CachePolicy,
+    ) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+        let size = tokio::fs::metadata(file).await?.len();
+        if size < MULTIPART_THRESHOLD {
+            let body = tokio::fs::read(file).await?;
+            return self.put(key, body, content_type, cache).await;
+        }
+        check_key(key)?;
+        let full = self.full_key(key);
+        let mut attributes = Attributes::new();
+        attributes.insert(Attribute::ContentType, content_type.to_string().into());
+        attributes.insert(Attribute::CacheControl, cache.header().into());
+        let err = |e: object_store::Error| {
+            CatalogError::Backend(format!("multipart upload of {full} failed: {e}"))
+        };
+        let upload = self
+            .store
+            .put_multipart_opts(
+                &object_store::path::Path::from(full.as_str()),
+                PutMultipartOptions {
+                    attributes,
+                    ..PutMultipartOptions::default()
+                },
+            )
+            .await
+            .map_err(err)?;
+        let mut w = WriteMultipart::new_with_chunk_size(upload, MULTIPART_PART);
+        let mut f = tokio::fs::File::open(file).await?;
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = f.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            w.wait_for_capacity(4).await.map_err(err)?;
+            w.write(&buf[..n]);
+        }
+        w.finish().await.map_err(err)?;
+        Ok(())
     }
 }
 
@@ -320,6 +416,21 @@ impl ObjectSink for MultiSink {
     ) -> Result<()> {
         for s in &self.sinks {
             s.put(key, body.clone(), content_type, cache)
+                .await
+                .map_err(|e| CatalogError::Backend(format!("{}: {e}", s.describe())))?;
+        }
+        Ok(())
+    }
+
+    async fn put_file(
+        &self,
+        key: &str,
+        file: &std::path::Path,
+        content_type: &str,
+        cache: CachePolicy,
+    ) -> Result<()> {
+        for s in &self.sinks {
+            s.put_file(key, file, content_type, cache)
                 .await
                 .map_err(|e| CatalogError::Backend(format!("{}: {e}", s.describe())))?;
         }
@@ -445,5 +556,58 @@ mod tests {
             allow_http: true,
         };
         assert!(S3Sink::new(cfg).is_ok());
+    }
+
+    #[tokio::test]
+    async fn s3_large_files_use_multipart() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/bucket/t/big.bin"))
+            .and(query_param("uploads", ""))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "<InitiateMultipartUploadResult><Bucket>bucket</Bucket><Key>t/big.bin</Key><UploadId>U1</UploadId></InitiateMultipartUploadResult>",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/bucket/t/big.bin"))
+            .and(query_param("uploadId", "U1"))
+            .respond_with(ResponseTemplate::new(200).insert_header("etag", "\"p\""))
+            .expect(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/bucket/t/big.bin"))
+            .and(query_param("uploadId", "U1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "<CompleteMultipartUploadResult><ETag>\"done\"</ETag></CompleteMultipartUploadResult>",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("big.bin");
+        std::fs::write(&f, vec![7u8; (MULTIPART_THRESHOLD as usize) + 5]).unwrap();
+        let sink = S3Sink::new(S3Config {
+            endpoint: server.uri(),
+            bucket: "bucket".into(),
+            region: "auto".into(),
+            access_key_id: "AKID".into(),
+            secret_access_key: "SECRET".into(),
+            prefix: String::new(),
+            path_style: true,
+            allow_http: true,
+        })
+        .unwrap();
+        sink.put_file(
+            "t/big.bin",
+            &f,
+            "application/octet-stream",
+            CachePolicy::Immutable,
+        )
+        .await
+        .unwrap();
     }
 }
