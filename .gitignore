@@ -1,0 +1,20 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local config and secrets (use config/tensorseed.example.toml as a template)
+/tensorseed.toml
+/config/tensorseed.toml
+.env
+.env.*
+
+# Local state
+*.sqlite
+*.sqlite-journal
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,79 @@
+# Tensorseed example configuration (https://tensorseed.dev).
+# Copy to ~/.config/tensorseed/tensorseed.toml and edit.
+# Secrets are NEVER stored here: fields ending in _env name the environment
+# variable that holds the secret. Any key can be overridden with
+# TENSORSEED_<SECTION>__<KEY>, for example TENSORSEED_CHIA__FEE_MOJOS=1000.
+
+[general]
+state_db = "~/.local/share/tensorseed/state.sqlite"
+staging_dir = "/srv/tensorseed/staging"
+seed_dir = "/srv/tensorseed/seed"
+keep_local_seed = true
+max_concurrent_downloads = 2
+
+[catalog]
+backend = "chia"                 # only "chia" for now; see docs/SPEC.md section 6.0
+
+[chia]
+rpc_url = "https://localhost:8562"
+ssl_cert = "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.crt"
+ssl_key = "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.key"
+# ca_cert = "~/.chia/mainnet/config/ssl/ca/private_ca.crt"
+catalog_store_id = ""            # set by `tensorseed catalog create`
+fee_mojos = 0
+confirm_poll_secs = 20
+confirm_timeout_secs = 1800
+catalog_mirror_urls = []         # public URLs of your DataLayer HTTP server (port 8575)
+mirror_amount_mojos = 0
+
+[huggingface]
+endpoint = "https://huggingface.co"
+token_env = "HF_TOKEN"
+
+[torrent]
+hybrid = true
+piece_length = 4194304           # placeholder, tune in M0
+trackers = []
+listen_port = 6881
+upload_limit_kbps = 0            # 0 = unlimited
+dht = true
+
+[webseed.r2]
+enabled = true
+account_id_env = "R2_ACCOUNT_ID"
+access_key_env = "R2_ACCESS_KEY_ID"
+secret_key_env = "R2_SECRET_ACCESS_KEY"
+bucket = "tensorseed"
+public_base_url = "https://models.tensorseed.dev/t/"
+
+[backup.b2]
+enabled = false
+endpoint = "https://s3.us-west-004.backblazeb2.com"
+bucket = "tensorseed-cold"
+key_id_env = "B2_KEY_ID"
+app_key_env = "B2_APP_KEY"
+
+[backup.sia]
+enabled = false
+renterd_url = "http://localhost:9980"
+password_env = "RENTERD_PASSWORD"
+
+[policy]
+license_allowlist = ["apache-2.0", "mit", "bsd-3-clause", "bsd-2-clause", "cc-by-4.0", "cc0-1.0", "openrail", "openrail++"]
+attribution_licenses = []        # e.g. ["llama3.1", "gemma"]; enables attribution handling
+allow_gated = false
+allow_pickle_formats = false
+
+[[targets]]
+repo = "org/name"
+type = "model"
+include = ["*.safetensors", "*.json", "LICENSE*", "README.md"]
+exclude = []
+
+[seed]
+poll_interval_secs = 600
+max_bytes = 2_000_000_000_000
+select = ["org/*"]
+latest_only = true
+prune = true
+serve_catalog = false
