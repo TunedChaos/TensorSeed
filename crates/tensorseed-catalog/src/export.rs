@@ -101,14 +101,10 @@ mod tests {
 
     fn backend(seed: u8) -> FileCatalog {
         let sk = test_key(seed);
-        FileCatalog::new(FileCatalogConfig {
-            catalog: "main".into(),
-            base_url: String::new(),
-            publisher: sk.public_key(),
-        })
-        .unwrap()
-        .with_signer(sk)
-        .unwrap()
+        FileCatalog::new(FileCatalogConfig::new("main", "", sk.public_key()))
+            .unwrap()
+            .with_signer(sk)
+            .unwrap()
     }
 
     #[tokio::test]
@@ -140,12 +136,7 @@ mod tests {
 
         // Import into a fresh read only backend with the same pinned key: no
         // secret key needed, signatures carried over byte for byte.
-        let dst = FileCatalog::new(FileCatalogConfig {
-            catalog: "main".into(),
-            base_url: String::new(),
-            publisher: pk.clone(),
-        })
-        .unwrap();
+        let dst = FileCatalog::new(FileCatalogConfig::new("main", "", pk.clone())).unwrap();
         dst.stage_signed(&back.entries).unwrap();
 
         // A different pinned key refuses the bundle.

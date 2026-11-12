@@ -18,6 +18,7 @@ pub mod export;
 pub mod file;
 pub mod minisign;
 pub mod signed;
+pub mod sink;
 
 use signed::SignedEntry;
 
@@ -62,6 +63,9 @@ pub enum CatalogError {
         /// Revision with conflicting roots.
         revision: u64,
     },
+    /// The catalog (or a requested object) does not exist at any source.
+    #[error("not found: {0}")]
+    NotFound(String),
     /// Operation does not exist for this backend.
     #[error("not supported by this backend: {0}")]
     Unsupported(&'static str),
@@ -110,6 +114,9 @@ pub struct PendingCommit {
     pub expected_root: Option<String>,
     /// Backend transaction id, if any.
     pub tx_id: Option<String>,
+    /// Root before the commit, when the backend cannot predict the new root
+    /// (Chia: confirmation waits for a confirmed root different from this).
+    pub previous_root: Option<String>,
 }
 
 /// A confirmed catalog generation.
