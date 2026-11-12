@@ -10,12 +10,18 @@ staging_dir = "/srv/tensorseed/staging"
 seed_dir = "/srv/tensorseed/seed"
 keep_local_seed = true
 max_concurrent_downloads = 2
+download_dir = "."               # pull writes to <download_dir>/<org>/<name> unless --out is given
 
 [catalog]
 backend = "chia"                 # "chia" | "file"; see docs/SPEC.md sections 6.0 and 6.8
 name = "tensorseed"              # logical catalog name, bound into every entry signature
 publisher_pubkey = ""            # pinned minisign public key ("RW..."), same for every backend
 # publisher_seckey_file = "~/.config/tensorseed/publisher.key"   # only needed to publish
+                                 # (create with `tensorseed catalog keygen`; password from
+                                 # TENSORSEED_KEY_PASSWORD or a prompt)
+publisher_name = ""              # shown in ts/v1/catalog, written by `catalog create`
+publisher_contact = ""           # email or URL for takedown requests
+publisher_policy_url = ""
 
 [chia]
 rpc_url = "https://localhost:8562"
@@ -30,12 +36,13 @@ catalog_mirror_urls = []         # public URLs of your DataLayer HTTP server (po
 mirror_amount_mojos = 0
 
 [file]
-base_url = "https://catalog.tensorseed.dev/"   # head.json, deltas/, snapshots/ (+ .minisig)
+base_url = "https://catalog.tensorseed.dev/"   # example URL: whatever public URL serves your published
+                                               # catalog files (head.json, deltas/, snapshots/, .minisig)
 mirror_urls = []                 # any static host carrying the same files
 state_dir = "~/.local/share/tensorseed/catalog"
 snapshot_every = 64              # full snapshot every N revisions
 head_ttl_secs = 604800           # head expires after 7 days unless re-signed
-torrent = true                   # also publish each snapshot as a torrent
+torrent = true                   # also publish each snapshot as a torrent (pending M0)
 
 [huggingface]
 endpoint = "https://huggingface.co"
@@ -49,20 +56,82 @@ listen_port = 6881
 upload_limit_kbps = 0            # 0 = unlimited
 dht = true
 
-[webseed.r2]
-enabled = true
-account_id_env = "R2_ACCOUNT_ID"
-access_key_env = "R2_ACCESS_KEY_ID"
-secret_key_env = "R2_SECRET_ACCESS_KEY"
-bucket = "tensorseed"
-public_base_url = "https://models.tensorseed.dev/t/"
+# Where published objects go: signed catalog files under "<catalog name>/" and,
+# for webseeds, model files under "t/". Default is local disk only: no account
+# anywhere, seeding works from local files, and the directory can optionally
+# be exposed by any static web server. Object storage is optional and works
+# with any S3 compatible provider. See docs/SPEC.md section 10.1.
+[storage]
+backend = "local"                # "local" | "s3"
+local_dir = "~/.local/share/tensorseed/publish"
+local_public_base_url = ""       # set if a web server exposes local_dir; enables it as a webseed
 
-[backup.b2]
-enabled = false
-endpoint = "https://s3.us-west-004.backblazeb2.com"
-bucket = "tensorseed-cold"
-key_id_env = "B2_KEY_ID"
-app_key_env = "B2_APP_KEY"
+# For backend = "s3", list one or more targets; every object is written to all
+# of them, so you can publish to several providers at once. Credentials come
+# only from the environment variables named here, never from this file.
+# public_base_url is the public URL serving the bucket (custom domain or
+# provider URL); "<public_base_url>t/" becomes a webseed base. Leave it empty
+# for upload only targets (cold copies). Presets, tested by config shape;
+# check each provider's current pricing and terms yourself:
+#
+# Cloudflare R2: no egress fees.
+# [[storage.targets]]
+# name = "r2"
+# endpoint = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+# region = "auto"
+# bucket = "tensorseed"
+# public_base_url = "https://models.example.org/"   # R2 custom domain or r2.dev URL
+# access_key_env = "R2_ACCESS_KEY_ID"
+# secret_key_env = "R2_SECRET_ACCESS_KEY"
+#
+# Backblaze B2: low storage price; free egress up to 3x average stored data,
+# unlimited through partner CDNs such as Cloudflare (Bandwidth Alliance).
+# [[storage.targets]]
+# name = "b2"
+# endpoint = "https://s3.us-west-004.backblazeb2.com"
+# region = "us-west-004"
+# bucket = "tensorseed"
+# public_base_url = ""
+# access_key_env = "B2_KEY_ID"
+# secret_key_env = "B2_APP_KEY"
+#
+# Vultr Object Storage: flat monthly plans that bundle storage and transfer.
+# [[storage.targets]]
+# name = "vultr"
+# endpoint = "https://ewr1.vultrobjects.com"
+# region = "ewr1"
+# bucket = "tensorseed"
+# public_base_url = "https://tensorseed.ewr1.vultrobjects.com/"
+# access_key_env = "VULTR_S3_ACCESS_KEY"
+# secret_key_env = "VULTR_S3_SECRET_KEY"
+#
+# Wasabi: no egress fees while monthly egress stays at or below stored volume;
+# minimum storage duration applies (90 days on pay as you go).
+# [[storage.targets]]
+# name = "wasabi"
+# endpoint = "https://s3.us-east-1.wasabisys.com"
+# region = "us-east-1"
+# bucket = "tensorseed"
+# access_key_env = "WASABI_ACCESS_KEY"
+# secret_key_env = "WASABI_SECRET_KEY"
+#
+# MinIO (self hosted):
+# [[storage.targets]]
+# name = "minio"
+# endpoint = "http://localhost:9000"
+# region = "us-east-1"
+# bucket = "tensorseed"
+# path_style = true
+# public_base_url = "http://localhost:9000/tensorseed/"
+#
+# AWS S3: leave endpoint empty; egress is billed.
+# [[storage.targets]]
+# name = "aws"
+# region = "us-east-1"
+# bucket = "tensorseed"
+# path_style = false
+# access_key_env = "AWS_ACCESS_KEY_ID"
+# secret_key_env = "AWS_SECRET_ACCESS_KEY"
 
 [backup.sia]
 enabled = false

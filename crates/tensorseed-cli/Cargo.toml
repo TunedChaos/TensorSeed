@@ -17,10 +17,13 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 figment.workspace = true
+reqwest.workspace = true
+rpassword.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tensorseed-catalog.workspace = true
 tensorseed-core.workspace = true
+tensorseed-fetch.workspace = true
 tensorseed-hf.workspace = true
 tensorseed-torrent.workspace = true
 tokio.workspace = true
@@ -29,6 +32,10 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
+hex.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

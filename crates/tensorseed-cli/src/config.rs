@@ -30,8 +30,8 @@ pub struct Config {
     pub huggingface: HuggingFace,
     /// Torrent settings.
     pub torrent: Torrent,
-    /// Webseeds.
-    pub webseed: Webseeds,
+    /// Where published objects go (`[storage]`).
+    pub storage: Storage,
     /// Cold backups.
     pub backup: Backups,
     /// Publishing policy.
@@ -56,6 +56,8 @@ pub struct General {
     pub keep_local_seed: bool,
     /// Concurrent HF downloads.
     pub max_concurrent_downloads: u32,
+    /// Default parent directory for `pull` output (`<download_dir>/<org>/<name>`).
+    pub download_dir: String,
 }
 
 impl Default for General {
@@ -66,6 +68,7 @@ impl Default for General {
             seed_dir: "~/.local/share/tensorseed/seed".into(),
             keep_local_seed: true,
             max_concurrent_downloads: 2,
+            download_dir: ".".into(),
         }
     }
 }
@@ -83,6 +86,12 @@ pub struct Catalog {
     pub publisher_pubkey: String,
     /// Publisher secret key file (minisign format). Only needed to publish.
     pub publisher_seckey_file: Option<String>,
+    /// Publisher name shown in `ts/v1/catalog` (written by `catalog create`).
+    pub publisher_name: String,
+    /// Publisher contact (email or URL) for takedown requests.
+    pub publisher_contact: String,
+    /// URL of the publisher's mirroring and takedown policy.
+    pub publisher_policy_url: String,
 }
 
 impl Default for Catalog {
@@ -92,6 +101,9 @@ impl Default for Catalog {
             name: "tensorseed".into(),
             publisher_pubkey: String::new(),
             publisher_seckey_file: None,
+            publisher_name: String::new(),
+            publisher_contact: String::new(),
+            publisher_policy_url: String::new(),
         }
     }
 }
@@ -220,42 +232,92 @@ impl Default for Torrent {
     }
 }
 
-/// `[webseed]`
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Webseeds {
-    /// `[webseed.r2]`
-    pub r2: R2,
-}
-
-/// `[webseed.r2]`
+/// `[storage]`: where published objects go. Local disk by default; S3
+/// compatible object storage (any provider) is optional.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct R2 {
-    /// Enable the R2 webseed.
-    pub enabled: bool,
-    /// Env var holding the Cloudflare account id.
-    pub account_id_env: String,
+pub struct Storage {
+    /// `local` (default) or `s3`.
+    pub backend: String,
+    /// Root directory for `local`: catalog files under `<catalog name>/`,
+    /// webseed copies of model files under `t/`.
+    pub local_dir: String,
+    /// Public URL of `local_dir` if a static web server exposes it (enables
+    /// it as a webseed and catalog base). Empty: local only, no webseed.
+    pub local_public_base_url: String,
+    /// Targets for `s3`; every object is written to each of them.
+    pub targets: Vec<StorageTarget>,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Self {
+            backend: "local".into(),
+            local_dir: "~/.local/share/tensorseed/publish".into(),
+            local_public_base_url: String::new(),
+            targets: Vec::new(),
+        }
+    }
+}
+
+/// `[[storage.targets]]`: one S3 compatible bucket.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageTarget {
+    /// Label for logs.
+    pub name: String,
+    /// S3 endpoint URL; empty means AWS S3 itself.
+    pub endpoint: String,
+    /// Signing region (`auto` for R2).
+    pub region: String,
+    /// Bucket.
+    pub bucket: String,
+    /// Key prefix inside the bucket.
+    pub prefix: String,
+    /// Path style addressing (`endpoint/bucket/key`).
+    pub path_style: bool,
+    /// Public URL that serves this bucket (and prefix), ending in `/`. Used
+    /// as a webseed base (`<public_base_url>t/`) and catalog mirror. Empty:
+    /// upload only.
+    pub public_base_url: String,
     /// Env var holding the access key id.
     pub access_key_env: String,
     /// Env var holding the secret access key.
     pub secret_key_env: String,
-    /// Bucket name.
-    pub bucket: String,
-    /// Public base URL (custom domain), ending in `/`.
-    pub public_base_url: String,
 }
 
-impl Default for R2 {
+impl Default for StorageTarget {
     fn default() -> Self {
         Self {
-            enabled: false,
-            account_id_env: "R2_ACCOUNT_ID".into(),
-            access_key_env: "R2_ACCESS_KEY_ID".into(),
-            secret_key_env: "R2_SECRET_ACCESS_KEY".into(),
-            bucket: "tensorseed".into(),
-            public_base_url: "https://models.tensorseed.dev/t/".into(),
+            name: String::new(),
+            endpoint: String::new(),
+            region: "us-east-1".into(),
+            bucket: String::new(),
+            prefix: String::new(),
+            path_style: true,
+            public_base_url: String::new(),
+            access_key_env: "AWS_ACCESS_KEY_ID".into(),
+            secret_key_env: "AWS_SECRET_ACCESS_KEY".into(),
         }
+    }
+}
+
+impl Storage {
+    /// Webseed bases (`.../t/`) for manifests, from every public URL.
+    pub fn webseed_bases(&self) -> Vec<String> {
+        let publics: Vec<&str> = match self.backend.as_str() {
+            "s3" => self
+                .targets
+                .iter()
+                .map(|t| t.public_base_url.as_str())
+                .collect(),
+            _ => vec![self.local_public_base_url.as_str()],
+        };
+        publics
+            .into_iter()
+            .filter(|u| !u.is_empty())
+            .map(|u| format!("{}/t/", u.trim_end_matches('/')))
+            .collect()
     }
 }
 
@@ -263,38 +325,8 @@ impl Default for R2 {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Backups {
-    /// `[backup.b2]`
-    pub b2: B2,
     /// `[backup.sia]`
     pub sia: Sia,
-}
-
-/// `[backup.b2]`
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct B2 {
-    /// Enable B2 backup.
-    pub enabled: bool,
-    /// S3 endpoint.
-    pub endpoint: String,
-    /// Bucket name.
-    pub bucket: String,
-    /// Env var holding the key id.
-    pub key_id_env: String,
-    /// Env var holding the application key.
-    pub app_key_env: String,
-}
-
-impl Default for B2 {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            endpoint: String::new(),
-            bucket: "tensorseed-cold".into(),
-            key_id_env: "B2_KEY_ID".into(),
-            app_key_env: "B2_APP_KEY".into(),
-        }
-    }
 }
 
 /// `[backup.sia]`
@@ -406,6 +438,16 @@ impl Default for Seed {
     }
 }
 
+/// Expand a leading `~/` to `$HOME`.
+pub fn expand(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or_else(|| PathBuf::from(path)),
+        None => PathBuf::from(path),
+    }
+}
+
 /// Default config file location.
 pub fn default_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -419,7 +461,11 @@ pub fn default_path() -> PathBuf {
 pub fn figment(path: &Path) -> Figment {
     Figment::from(Serialized::defaults(Config::default()))
         .merge(Toml::file(path))
-        .merge(Env::prefixed("TENSORSEED_").ignore(&["CONFIG"]).split("__"))
+        .merge(
+            Env::prefixed("TENSORSEED_")
+                .ignore(&["CONFIG", "KEY_PASSWORD"])
+                .split("__"),
+        )
 }
 
 /// Load and validate configuration.
@@ -433,6 +479,20 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
         );
     }
     tensorseed_catalog::signed::check_catalog_name(&cfg.catalog.name)?;
+    match cfg.storage.backend.as_str() {
+        "local" => {}
+        "s3" => {
+            if cfg.storage.targets.is_empty() {
+                anyhow::bail!("storage.backend = \"s3\" needs at least one [[storage.targets]]");
+            }
+            for t in &cfg.storage.targets {
+                if t.bucket.is_empty() {
+                    anyhow::bail!("storage target {:?} has no bucket", t.name);
+                }
+            }
+        }
+        other => anyhow::bail!("unknown storage.backend {other:?} (use local or s3)"),
+    }
     if !cfg.catalog.publisher_pubkey.is_empty() {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }
@@ -454,10 +514,8 @@ mod tests {
             let cfg = load(Path::new("tensorseed.toml")).map_err(|e| e.to_string())?;
             assert_eq!(cfg.catalog.backend, "chia");
             assert_eq!(cfg.file.base_url, "https://catalog.tensorseed.dev/");
-            assert_eq!(
-                cfg.webseed.r2.public_base_url,
-                "https://models.tensorseed.dev/t/"
-            );
+            assert_eq!(cfg.storage.backend, "local");
+            assert!(cfg.storage.webseed_bases().is_empty());
             assert!(!cfg.targets.is_empty());
             Ok(())
         });
@@ -470,6 +528,7 @@ mod tests {
             let cfg = load(Path::new("does-not-exist.toml")).map_err(|e| e.to_string())?;
             assert_eq!(cfg.chia.fee_mojos, 1000);
             assert_eq!(cfg.general.max_concurrent_downloads, 2);
+            assert_eq!(cfg.storage.backend, "local");
             Ok(())
         });
     }
@@ -485,6 +544,26 @@ mod tests {
             assert_eq!(cfg.catalog.backend, "file");
             jail.create_file("bad.toml", "[catalog]\npublisher_pubkey = \"nope\"\n")?;
             assert!(load(Path::new("bad.toml")).is_err());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn storage_targets() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "s.toml",
+                "[storage]\nbackend = \"s3\"\n[[storage.targets]]\nname = \"a\"\nendpoint = \"https://s3.example.org\"\nbucket = \"x\"\npublic_base_url = \"https://a.example.org/\"\n[[storage.targets]]\nname = \"b\"\nbucket = \"y\"\n",
+            )?;
+            let cfg = load(Path::new("s.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.storage.targets.len(), 2);
+            assert!(cfg.storage.targets[1].path_style);
+            assert_eq!(
+                cfg.storage.webseed_bases(),
+                vec!["https://a.example.org/t/"]
+            );
+            jail.create_file("e.toml", "[storage]\nbackend = \"s3\"\n")?;
+            assert!(load(Path::new("e.toml")).is_err());
             Ok(())
         });
     }

@@ -77,7 +77,10 @@ pub enum Command {
     },
     /// Publish every target in the config.
     Sync,
-    /// Download and verify a mirrored revision.
+    /// Mirror repos from the Hugging Face Hub while it is available
+    /// (watchlist in `[harvest]`).
+    Harvest(HarvestArgs),
+    /// Download and verify a repo revision.
     Pull(PullArgs),
     /// Run the seeding daemon.
     Seed {
@@ -85,35 +88,30 @@ pub enum Command {
         #[arg(long)]
         serve_catalog: bool,
     },
-    /// Re-hash a local copy against its manifest.
-    Verify {
-        /// Directory holding the local copy.
-        dir: PathBuf,
-        /// Catalog id.
-        #[arg(long)]
-        catalog: String,
-        /// Hugging Face repo id (org/name).
-        repo_id: String,
-        /// Commit SHA (default: latest).
-        #[arg(long)]
-        revision: Option<String>,
-    },
+    /// Re-hash a local copy against a signed manifest or the Hub's hashes.
+    Verify(VerifyArgs),
     /// List catalog entries.
     List {
-        /// Catalog id (default: from config).
-        #[arg(long)]
-        catalog: Option<String>,
-        /// Filter by repo id substring or glob.
+        /// Filter by repo id substring.
         #[arg(long)]
         filter: Option<String>,
+        /// Use the local catalog copy without syncing.
+        #[arg(long)]
+        no_wait: bool,
     },
-    /// Print a manifest.
+    /// Print a manifest from the catalog.
     Show {
-        /// Hugging Face repo id (org/name).
-        repo_id: String,
+        /// Hugging Face repo id (org/name[@commit]).
+        repo: String,
+        /// Repo type.
+        #[arg(long = "type", value_enum, default_value_t = RepoTypeArg::Model)]
+        repo_type: RepoTypeArg,
         /// Commit SHA (default: latest).
         #[arg(long)]
         revision: Option<String>,
+        /// Use the local catalog copy without syncing.
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Write a tombstone for a repo and optionally delete webseed objects.
     Takedown {
@@ -131,10 +129,10 @@ pub enum Command {
     },
     /// Inspect and manage resumable jobs.
     Jobs {
-        /// Retry the job with this id.
+        /// Show the files of this job.
         #[arg(long)]
-        retry: Option<String>,
-        /// Clear the job with this id.
+        show: Option<String>,
+        /// Delete the record of this job (files on disk are kept).
         #[arg(long)]
         clear: Option<String>,
     },
@@ -148,11 +146,26 @@ pub enum Command {
 pub enum CatalogCmd {
     /// Create a new catalog through the configured backend.
     Create,
-    /// Show catalog info, generation, root, and mirrors.
-    Info {
-        /// Catalog id (default: from config).
+    /// Generate a publisher key pair (minisign format).
+    Keygen {
+        /// Directory for `<name>.key` and `<name>.pub` (default ~/.config/tensorseed).
         #[arg(long)]
-        store: Option<String>,
+        out_dir: Option<PathBuf>,
+        /// File name stem.
+        #[arg(long, default_value = "publisher")]
+        name: String,
+        /// Store the secret key unencrypted (not recommended).
+        #[arg(long)]
+        no_password: bool,
+        /// Overwrite existing files.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Sync and show catalog revision, root, and sources.
+    Info {
+        /// Use the local catalog copy without syncing.
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Advertise a catalog mirror.
     AddMirror {
@@ -174,6 +187,9 @@ pub enum CatalogCmd {
         /// Backend to read from (default: catalog.backend).
         #[arg(long, value_enum)]
         backend: Option<BackendArg>,
+        /// Use the local catalog copy without syncing (file backend).
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Verify a bundle against the pinned publisher key and publish its
     /// entries, signatures unchanged, as one new generation.
@@ -187,6 +203,10 @@ pub enum CatalogCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Re-sign head.json with a fresh expiry and upload it (file backend).
+    ResignHead,
+    /// Write a full snapshot now and point head.json at it (file backend).
+    Snapshot,
 }
 
 /// Catalog backend argument (mirrors `catalog.backend`).
@@ -196,6 +216,16 @@ pub enum BackendArg {
     Chia,
     /// Signed static files.
     File,
+}
+
+impl BackendArg {
+    /// Config name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chia => "chia",
+            Self::File => "file",
+        }
+    }
 }
 
 /// `config` subcommands.
@@ -210,32 +240,99 @@ pub enum ConfigCmd {
 /// `pull` arguments.
 #[derive(Debug, Args)]
 pub struct PullArgs {
-    /// Hugging Face repo id (org/name).
-    pub repo_id: String,
-    /// Catalog id to read from.
-    #[arg(long)]
-    pub catalog: Option<String>,
-    /// Commit SHA (default: latest).
+    /// Hugging Face repo id, optionally with a revision: `org/name[@rev]`.
+    pub repo: String,
+    /// Repo type.
+    #[arg(long = "type", value_enum, default_value_t = RepoTypeArg::Model)]
+    pub repo_type: RepoTypeArg,
+    /// Revision (catalog: commit SHA; --from-hf: branch, tag, or commit).
     #[arg(long)]
     pub revision: Option<String>,
-    /// Output directory.
+    /// Output directory (default: <general.download_dir>/<org>/<name>).
     #[arg(long)]
     pub out: Option<PathBuf>,
-    /// Keep seeding for this long after download (for example 2h).
-    #[arg(long)]
-    pub seed_after: Option<String>,
-    /// Use a local manifest file instead of the catalog (no chain verification).
+    /// Ignore the catalog and download straight from the Hub, verifying
+    /// against the Hub's published SHA-256 and git blob ids (unsigned).
+    #[arg(long, conflicts_with_all = ["manifest_file", "manifest_url"])]
+    pub from_hf: bool,
+    /// Use a local manifest file (signed entry or plain manifest) instead of the catalog.
     #[arg(long, conflicts_with = "manifest_url")]
     pub manifest_file: Option<PathBuf>,
-    /// Use a manifest URL instead of the catalog (no chain verification).
+    /// Use a manifest URL (signed entry or plain manifest) instead of the catalog.
     #[arg(long)]
     pub manifest_url: Option<String>,
-    /// Use the current local catalog copy without waiting for sync.
+    /// Do not fall back to Hugging Face when webseeds fail.
+    #[arg(long)]
+    pub no_hf_fallback: bool,
+    /// Files downloaded at the same time (default: general.max_concurrent_downloads).
+    #[arg(long)]
+    pub jobs: Option<usize>,
+    /// Also download pickle based files (.bin, .pt, .ckpt, ...), which can run code when loaded.
+    #[arg(long)]
+    pub allow_pickle: bool,
+    /// Allow gated repos with --from-hf (needs HF_TOKEN and accepted terms).
+    #[arg(long)]
+    pub allow_gated: bool,
+    /// Use the current local catalog copy without syncing.
     #[arg(long)]
     pub no_wait: bool,
     /// Download even if the repo is tombstoned.
     #[arg(long)]
     pub ignore_tombstone: bool,
+    /// Keep seeding for this long after download (needs torrent support, pending M0).
+    #[arg(long)]
+    pub seed_after: Option<String>,
+}
+
+/// `verify` arguments.
+#[derive(Debug, Args)]
+pub struct VerifyArgs {
+    /// A directory written by `pull`, or a repo id `org/name[@rev]`.
+    pub target: String,
+    /// Directory to check when the target is a repo id (default: the pull default).
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+    /// Repo whose catalog manifest to check a directory against.
+    #[arg(long)]
+    pub repo: Option<String>,
+    /// Repo type.
+    #[arg(long = "type", value_enum, default_value_t = RepoTypeArg::Model)]
+    pub repo_type: RepoTypeArg,
+    /// Revision (commit SHA for the catalog; any revision with --hf).
+    #[arg(long)]
+    pub revision: Option<String>,
+    /// Check against the Hugging Face Hub's own SHA-256 (LFS) and git blob ids.
+    #[arg(long, conflicts_with = "manifest_file")]
+    pub hf: bool,
+    /// Check against a manifest file (signed entry or plain manifest).
+    #[arg(long)]
+    pub manifest_file: Option<PathBuf>,
+    /// Use the local catalog copy without syncing.
+    #[arg(long)]
+    pub no_wait: bool,
+    /// Count missing pickle files as failures (by default they were skipped on pull).
+    #[arg(long)]
+    pub strict: bool,
+    /// Hashing threads.
+    #[arg(long, default_value_t = 4)]
+    pub threads: usize,
+}
+
+/// `harvest` arguments.
+#[derive(Debug, Args)]
+pub struct HarvestArgs {
+    /// Keep running: re-check the watchlist every `harvest.poll_interval_secs`.
+    #[arg(long)]
+    pub watch: bool,
+    /// Only harvest these repo ids (default: everything in the watchlist).
+    #[arg(long, num_args = 1..)]
+    pub only: Vec<String>,
+    /// Plan only: discover and print what would be harvested.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Stop after this many watch cycles (0 = forever; for testing).
+    #[arg(long, default_value_t = 0, hide = true)]
+    pub max_cycles: u64,
 }
 
 impl Command {
@@ -244,15 +341,19 @@ impl Command {
         match self {
             Self::Doctor => "doctor",
             Self::Catalog(CatalogCmd::Create) => "catalog create",
+            Self::Catalog(CatalogCmd::Keygen { .. }) => "catalog keygen",
             Self::Catalog(CatalogCmd::Info { .. }) => "catalog info",
             Self::Catalog(CatalogCmd::AddMirror { .. }) => "catalog add-mirror",
             Self::Catalog(CatalogCmd::Export { .. }) => "catalog export",
             Self::Catalog(CatalogCmd::Import { .. }) => "catalog import",
+            Self::Catalog(CatalogCmd::ResignHead) => "catalog resign-head",
+            Self::Catalog(CatalogCmd::Snapshot) => "catalog snapshot",
             Self::Publish { .. } => "publish",
             Self::Sync => "sync",
+            Self::Harvest(_) => "harvest",
             Self::Pull(_) => "pull",
             Self::Seed { .. } => "seed",
-            Self::Verify { .. } => "verify",
+            Self::Verify(_) => "verify",
             Self::List { .. } => "list",
             Self::Show { .. } => "show",
             Self::Takedown { .. } => "takedown",
@@ -278,14 +379,37 @@ mod tests {
         let cli = Cli::try_parse_from([
             "tensorseed",
             "pull",
-            "org/name",
-            "--catalog",
-            "abc",
+            "org/name@main",
+            "--from-hf",
             "--out",
             "/tmp/x",
         ])
         .unwrap();
         assert_eq!(cli.command.name(), "pull");
+        assert!(
+            Cli::try_parse_from([
+                "tensorseed",
+                "pull",
+                "o/n",
+                "--from-hf",
+                "--manifest-file",
+                "m.json"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_verify_modes() {
+        let cli = Cli::try_parse_from(["tensorseed", "verify", "--hf", "org/name", "--dir", "d"])
+            .unwrap();
+        match cli.command {
+            Command::Verify(v) => {
+                assert!(v.hf);
+                assert_eq!(v.target, "org/name");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
