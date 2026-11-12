@@ -128,6 +128,9 @@ pub fn engine_options(cfg: &Config, listen: bool, dir: &Path) -> anyhow::Result<
             0 => None,
             k => Some(u32::try_from(k.saturating_mul(1024)).unwrap_or(u32::MAX)),
         },
+        download_bps: None,
+        utp: false,
+        tcp: true,
         default_dir: dir.to_owned(),
     })
 }

@@ -46,6 +46,14 @@ pub struct EngineOptions {
     pub lsd: bool,
     /// Upload cap in bytes per second, `None` for unlimited.
     pub upload_bps: Option<u32>,
+    /// Download cap in bytes per second, `None` for unlimited.
+    pub download_bps: Option<u32>,
+    /// Also accept and dial uTP (BEP 29, over UDP on the listen port) next
+    /// to TCP. librqbit 9.1 implements uTP but still defaults to TCP only.
+    pub utp: bool,
+    /// Accept and dial TCP (default). Turning it off with `utp` on gives a
+    /// uTP only session (tests).
+    pub tcp: bool,
     /// Fallback output directory (every torrent here sets its own).
     pub default_dir: PathBuf,
 }
@@ -59,6 +67,9 @@ impl EngineOptions {
             trackers: false,
             lsd: false,
             upload_bps: None,
+            download_bps: None,
+            utp: false,
+            tcp: true,
             default_dir: dir.to_owned(),
         }
     }
@@ -90,6 +101,27 @@ pub struct Progress {
     pub live: bool,
     /// Error, if the torrent stopped on one.
     pub error: Option<String>,
+}
+
+/// Session wide counters.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EngineStats {
+    /// Payload bytes uploaded since the session started.
+    pub uploaded: u64,
+    /// Payload bytes fetched from peers since the session started.
+    pub downloaded: u64,
+    /// Connected peers over all torrents.
+    pub peers_live: u32,
+    /// Peers over uTP among them.
+    pub peers_utp: u32,
+    /// Peers being connected.
+    pub peers_connecting: u32,
+    /// Upload speed in MiB/s.
+    pub upload_mibps: f64,
+    /// Download speed in MiB/s.
+    pub download_mibps: f64,
+    /// Torrents in the session.
+    pub torrents: usize,
 }
 
 /// Download options.
@@ -140,19 +172,26 @@ impl Engine {
                     None
                 },
                 listen: o.listen.map(|addr| ListenerOptions {
-                    mode: ListenerMode::TcpOnly,
+                    mode: match (o.tcp, o.utp) {
+                        (true, true) => ListenerMode::TcpAndUtp,
+                        (false, true) => ListenerMode::UtpOnly,
+                        _ => ListenerMode::TcpOnly,
+                    },
                     listen_addr: addr,
                     ipv4_only: addr.is_ipv4(),
                     ..Default::default()
                 }),
-                connect: Some(ConnectionOptions::default()),
+                connect: Some(ConnectionOptions {
+                    enable_tcp: o.tcp || !o.utp,
+                    ..Default::default()
+                }),
                 disable_trackers: !o.trackers,
                 disable_local_service_discovery: !o.lsd,
                 fastresume: false,
                 persistence: None,
                 ratelimits: LimitsConfig {
                     upload_bps: o.upload_bps.and_then(NonZeroU32::new),
-                    download_bps: None,
+                    download_bps: o.download_bps.and_then(NonZeroU32::new),
                 },
                 client_name_and_version: Some(
                     concat!("tensorseed/", env!("CARGO_PKG_VERSION")).into(),
@@ -271,6 +310,28 @@ impl Engine {
             .map_err(eng)
     }
 
+    /// Session wide counters.
+    pub fn stats(&self) -> EngineStats {
+        let s = self.session.stats_snapshot();
+        EngineStats {
+            uploaded: s.counters.uploaded_bytes,
+            downloaded: s.counters.fetched_bytes,
+            peers_live: s.peers.live,
+            peers_utp: s.peers.live_utp,
+            peers_connecting: s.peers.connecting,
+            upload_mibps: s.upload_speed.mbps,
+            download_mibps: s.download_speed.mbps,
+            torrents: self.session.with_torrents(|it| it.count()),
+        }
+    }
+
+    /// Change the upload cap (bytes per second, `None` for unlimited).
+    pub fn set_upload_limit(&self, bps: Option<u32>) {
+        self.session
+            .ratelimits
+            .set_upload_bps(bps.and_then(NonZeroU32::new));
+    }
+
     /// Stop the session.
     pub async fn stop(&self) {
         self.session.stop().await;
@@ -289,6 +350,15 @@ impl Handle {
             live: matches!(s.state, TorrentStatsState::Live),
             error: s.error,
         }
+    }
+
+    /// Connected peers of this torrent.
+    pub fn peers(&self) -> u32 {
+        self.handle
+            .stats()
+            .live
+            .map(|l| l.snapshot.peer_stats.live)
+            .unwrap_or(0)
     }
 
     /// v1 info hash the swarm uses.
@@ -362,6 +432,48 @@ mod tests {
             );
         }
         assert!(!out.join(".pad").exists(), "pad files must not be written");
+        client.stop().await;
+        seeder.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loopback_over_utp_only() {
+        let (d, t) = setup(true).await;
+        let content = d.path().join(NAME);
+        let utp = |dir: &Path| {
+            let mut o = EngineOptions::loopback(0, dir);
+            o.tcp = false;
+            o.utp = true;
+            o
+        };
+        let seeder = Engine::start(utp(d.path())).await.unwrap();
+        let _s = seeder
+            .seed(&t, &content, None, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let addr = seeder.listen_addr().unwrap();
+        let out = d.path().join("out");
+        let client = Engine::start(utp(&out)).await.unwrap();
+        let (h, p) = client
+            .download(
+                &t,
+                &out,
+                DownloadOptions {
+                    peers: vec![addr],
+                    only: None,
+                },
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        assert!(p.finished, "{p:?}");
+        for f in &t.files {
+            assert!(t.verify_file(&f.path, &out.join(&f.path)).unwrap());
+        }
+        let st = seeder.stats();
+        assert!(st.uploaded > 0, "{st:?}");
+        assert_eq!(st.torrents, 1);
+        let _ = h.peers();
         client.stop().await;
         seeder.stop().await;
     }
