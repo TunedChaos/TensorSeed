@@ -17,6 +17,7 @@ pub mod chia;
 pub mod export;
 pub mod file;
 pub mod minisign;
+pub mod mirrors;
 pub mod signed;
 pub mod sink;
 

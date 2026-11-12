@@ -2229,6 +2229,7 @@ dependencies = [
  "tensorseed-core",
  "thiserror",
  "tokio",
+ "toml",
  "tracing",
  "wiremock",
 ]

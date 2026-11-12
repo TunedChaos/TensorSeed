@@ -33,6 +33,7 @@ rpassword = "7"
 rusqlite = { version = "0.42", features = ["bundled"] }
 scrypt = { version = "0.12", default-features = false }
 sha1 = "0.10"
+toml = "0.8"
 url = "2"
 wiremock = "0.6"
 async-trait = "0.1"
