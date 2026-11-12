@@ -156,7 +156,7 @@ Decisions recorded for M0:
 - Loopback tests: engine seed and download with per file Merkle checks;
   refusal of v2 only and corrupt seeds; an end to end CLI test where
   `harvest` publishes, `tensorseed seed` serves, and a subscriber pulls with
-  `--swarm` (every file then "already present" for the HTTP pass) and seeds
+  `--swarm` (every file then reported as "swarm" by the HTTP pass) and seeds
   after.
 - `cargo deny`: librqbit's tree passes the license allow list. One advisory is
   ignored with a reason: RUSTSEC-2026-0293 in `ringbuf` 0.4 (pinned by
@@ -178,3 +178,26 @@ Decisions recorded for M0:
   webseeds, `pull --swarm` can drop the HTTP gap fill for webseeds.
 - Measure real network throughput between two hosts, and the `.torrent` size
   for a large (100 GB or more) revision.
+
+## Real model test (2026-11-12)
+
+Model: `TunedChaos/ChaosNexus_Tuned_v1-GGUF` at `b43d53d2b975`, 9 files,
+5,357,631,287 bytes (one 5,347,914,496 byte Q4_K_M GGUF plus tokenizer and
+card files). The repo is tagged `license: other`, so it was published with
+`--allow-license other` (recorded as class `unknown`). Release binary built
+on the build host (needs glibc 2.38; the test machine has 2.44).
+
+| Step | Where | Result |
+|---|---|---|
+| `catalog keygen`, `catalog create`, `publish --allow-license other` | build host | 9 files from the Hub, hybrid torrent (68,587 byte `.torrent`), catalog revision 2; about 615 s including hashing (Hub at roughly 9 MB/s) |
+| `seed` smoke test | build host | rechecked 5.0 GiB in 5 s and listened |
+| `pull` (webseed 404, Hub fallback) | test machine, data dir A | 9 of 9 files over HTTP from the Hub in about 300 s (about 17.9 MB/s), then `--seed-after` seeding on 127.0.0.1 |
+| `pull --swarm --peer 127.0.0.1:46881` | test machine, data dir B | 5,389,680,640 bytes from the swarm (payload plus BEP 47 padding) in 9.3 s, 0 bytes over HTTP, 13.9 s for the whole command |
+| `verify` and `verify --hf` | test machine, both dirs | 9 of 9 passed (3.6 s); GGUF SHA-256 matches the Hub's LFS oid |
+
+The two hosts could not open a TCP connection to each other in either
+direction (both are behind NAT and no existing tunnel was available), so the
+peer transfer ran on loopback on the test machine. A cross host peer transfer
+still needs a reachable `torrent.listen_port` or NAT traversal (uTP, UPnP).
+Found and fixed: `pull --swarm` labelled swarm written files as "already
+present"; it now reports swarm and HTTP bytes separately.
