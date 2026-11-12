@@ -6,13 +6,14 @@
 //!
 //! This crate has no network code. It defines the catalog JSON schemas
 //! (spec section 6.4), the `ts/v1/` key layout (section 6.3), canonical JSON
-//! encoding, and a streaming SHA-256 helper.
+//! encoding, streaming hash helpers, and local directory verification.
 
 pub mod canonical;
 pub mod error;
 pub mod hash;
 pub mod keys;
 pub mod manifest;
+pub mod verify;
 
 pub use error::{Error, Result};
 

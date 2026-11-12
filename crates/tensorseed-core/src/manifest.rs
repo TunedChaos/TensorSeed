@@ -256,9 +256,11 @@ pub struct Manifest {
     pub files: Vec<FileEntry>,
     /// Number of [`FilePage`] values.
     pub file_pages: u32,
-    /// Torrent details.
-    pub torrent: TorrentInfo,
-    /// BEP 19 webseed base URLs.
+    /// Torrent details. `null` until torrent creation exists (pending the M0
+    /// BitTorrent spike); HTTP sources work without it.
+    pub torrent: Option<TorrentInfo>,
+    /// BEP 19 webseed base URLs, each ending in `/`. A file is at
+    /// `<base><content name>/<path>` (see [`Manifest::webseed_file_urls`]).
     pub webseeds: Vec<String>,
     /// Cold backups.
     pub backups: Vec<BackupLocation>,
@@ -292,22 +294,55 @@ impl Manifest {
                 return Err(Error::invalid("totals", "do not match file list"));
             }
         }
-        let pl = self.torrent.piece_length;
-        if pl < 16 * 1024 || !pl.is_power_of_two() {
-            return Err(Error::invalid(
-                "piece_length",
-                "must be a power of two >= 16 KiB",
-            ));
+        if let Some(t) = &self.torrent {
+            let pl = t.piece_length;
+            if pl < 16 * 1024 || !pl.is_power_of_two() {
+                return Err(Error::invalid(
+                    "piece_length",
+                    "must be a power of two >= 16 KiB",
+                ));
+            }
+            if !is_lower_hex(&t.infohash_v2, 64) {
+                return Err(Error::invalid("infohash_v2", "expected 64 lowercase hex"));
+            }
+            if let Some(v1) = &t.infohash_v1
+                && !is_lower_hex(v1, 40)
+            {
+                return Err(Error::invalid("infohash_v1", "expected 40 lowercase hex"));
+            }
+            if t.name != self.content_name() {
+                return Err(Error::invalid(
+                    "torrent name",
+                    format!("expected {}", self.content_name()),
+                ));
+            }
         }
-        if !is_lower_hex(&self.torrent.infohash_v2, 64) {
-            return Err(Error::invalid("infohash_v2", "expected 64 lowercase hex"));
-        }
-        if let Some(v1) = &self.torrent.infohash_v1
-            && !is_lower_hex(v1, 40)
-        {
-            return Err(Error::invalid("infohash_v1", "expected 40 lowercase hex"));
+        for w in &self.webseeds {
+            if !(w.starts_with("https://") || w.starts_with("http://")) || !w.ends_with('/') {
+                return Err(Error::invalid(
+                    "webseeds",
+                    format!("base must be an http(s) URL ending in '/': {w}"),
+                ));
+            }
         }
         Ok(())
+    }
+
+    /// Content (torrent) name: `{org}__{name}@{commit12}` (spec section 7.1).
+    /// Webseed objects live under this directory.
+    pub fn content_name(&self) -> String {
+        TorrentInfo::name_for(&self.repo.id, &self.hf_commit)
+    }
+
+    /// BEP 19 URLs for one file, one per webseed base, in manifest order.
+    /// Path components are percent encoded.
+    pub fn webseed_file_urls(&self, path: &str) -> Vec<String> {
+        let name = encode_path(&self.content_name());
+        let rel = encode_path(path);
+        self.webseeds
+            .iter()
+            .map(|b| format!("{b}{name}/{rel}"))
+            .collect()
     }
 
     /// Parse and validate a manifest from JSON bytes.
@@ -321,6 +356,26 @@ impl Manifest {
     pub fn to_canonical_json(&self) -> Result<Vec<u8>> {
         crate::canonical::to_canonical_vec(self)
     }
+}
+
+/// Percent encode each `/` separated component of a path for use in a URL
+/// path (RFC 3986 unreserved characters and `@` stay as they are).
+pub fn encode_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| {
+            let mut out = String::with_capacity(seg.len());
+            for b in seg.bytes() {
+                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'@' | b'+')
+                {
+                    out.push(b as char);
+                } else {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// `.../files/{page:06}` value.
@@ -416,14 +471,14 @@ mod tests {
                 pickle_risk: false,
             }],
             file_pages: 0,
-            torrent: TorrentInfo {
+            torrent: Some(TorrentInfo {
                 infohash_v2: SHA.into(),
                 infohash_v1: None,
                 magnet: format!("magnet:?xt=urn:btmh:1220{SHA}"),
                 name: TorrentInfo::name_for("org/name", COMMIT),
                 piece_length: 4 * 1024 * 1024,
                 torrent_file_urls: vec![format!("https://models.tensorseed.dev/t/{SHA}.torrent")],
-            },
+            }),
             webseeds: vec![format!("https://models.tensorseed.dev/t/{SHA}/")],
             backups: vec![BackupLocation {
                 kind: "b2".into(),
@@ -491,7 +546,7 @@ mod tests {
         assert!(m.validate().is_err(), "lfs oid mismatch");
 
         let mut m = sample();
-        m.torrent.piece_length = 3 * 16384;
+        m.torrent.as_mut().unwrap().piece_length = 3 * 16384;
         assert!(m.validate().is_err(), "non power of two piece length");
 
         let mut m = sample();
@@ -541,6 +596,26 @@ mod tests {
         };
         let s = serde_json::to_string(&i).unwrap();
         assert_eq!(serde_json::from_str::<IndexEntry>(&s).unwrap(), i);
+    }
+
+    #[test]
+    fn torrent_optional_and_webseed_urls() {
+        let mut m = sample();
+        m.torrent = None;
+        m.validate().unwrap();
+        m.files[0].path = "sub dir/model #1.safetensors".into();
+        assert_eq!(
+            m.webseed_file_urls(&m.files[0].path),
+            vec![format!(
+                "https://models.tensorseed.dev/t/{SHA}/org__name@0123456789ab/sub%20dir/model%20%231.safetensors"
+            )]
+        );
+        let mut bad = sample();
+        bad.webseeds = vec!["https://x/no-slash".into()];
+        assert!(bad.validate().is_err());
+        let mut bad = sample();
+        bad.torrent.as_mut().unwrap().name = "other".into();
+        assert!(bad.validate().is_err());
     }
 
     #[test]
