@@ -1,0 +1,164 @@
+/* Tensorseed landing page. System fonts only, no trackers, no external assets. */
+
+:root {
+  --bg: #12140f;
+  --bg-card: #1b2016;
+  --ink: #efe8d4;
+  --muted: #a39a82;
+  --accent: #d4a017;
+  --leaf: #8fb36a;
+  --line: #2d3426;
+  --measure: 42rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #24301a 0%, transparent 60%),
+    var(--bg);
+  color: var(--ink);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
+
+.wrap {
+  width: min(var(--measure), calc(100% - 2.5rem));
+  margin-left: auto;
+  margin-right: auto;
+}
+
+header {
+  padding: 4.5rem 0 2rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  margin: 0 0 0.75rem;
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.lede {
+  margin: 0;
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  max-width: 18ch;
+}
+
+h1, h2 {
+  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 2.5rem 0 1rem;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin: 0 0 0.6rem;
+}
+
+section {
+  padding: 0.5rem 0 0.25rem;
+}
+
+section > h2 {
+  margin-top: 2.25rem;
+}
+
+p {
+  margin: 0 0 1rem;
+  color: var(--ink);
+}
+
+p, article p {
+  color: #e6dec8;
+}
+
+.muted, .pending, footer p {
+  color: var(--muted);
+}
+
+a {
+  color: var(--leaf);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  color: var(--accent);
+}
+
+code {
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: #10140c;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  padding: 0.05em 0.35em;
+}
+
+.pending {
+  display: inline-block;
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  word-break: break-all;
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+@media (min-width: 720px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+article {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  padding: 1.15rem 1.2rem 0.4rem;
+}
+
+footer {
+  margin-top: 3rem;
+  padding: 1.5rem 0 3rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.92rem;
+}
+
+.page-404 {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.page-404 .code {
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  color: var(--accent);
+  letter-spacing: 0.12em;
+  margin: 0 0 0.75rem;
+}

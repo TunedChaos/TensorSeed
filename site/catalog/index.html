@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tensorseed catalog</title>
+  <style>
+    body { margin: 0; background: #12140f; color: #efe8d4;
+           font-family: "Segoe UI", system-ui, sans-serif; line-height: 1.6; }
+    main { width: min(42rem, calc(100% - 2.5rem)); margin: 4rem auto; }
+    h1 { font-family: Georgia, serif; font-weight: 600; }
+    a { color: #8fb36a; }
+    a:hover { color: #d4a017; }
+    code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }
+    pre { background: #1b2016; border: 1px solid #2d3426; padding: 1rem;
+          overflow: auto; border-radius: 0.4rem; }
+    p.note { color: #a39a82; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tensorseed catalog</h1>
+    <p>
+      This is the public base URL for the signed static-file catalog
+      (<code>file.base_url</code> in Tensorseed). The catalog is not published
+      yet.
+    </p>
+    <p>
+      When it is, documents live under one directory per logical catalog name,
+      as specified in <code>docs/SPEC.md</code> sections 6.8 and 6.12:
+    </p>
+    <pre><code>&lt;base_url&gt;/&lt;catalog&gt;/head.json
+&lt;base_url&gt;/&lt;catalog&gt;/deltas/&lt;revision:010&gt;.json
+&lt;base_url&gt;/&lt;catalog&gt;/snapshots/&lt;revision:010&gt;.json
+&lt;base_url&gt;/&lt;catalog&gt;/mirrors.toml</code></pre>
+    <p>
+      Each of those files has a detached <code>.minisig</code>. Webseed
+      objects and <code>.torrent</code> files will be advertised under
+      <code>/t/</code>. Model weights themselves are not hosted on Pages.
+    </p>
+    <p>
+      See <a href="/README.txt">README.txt</a> for the full layout,
+      cache rules, and signature comments.
+    </p>
+    <p class="note">Copyright Tuned Chaos. Licensed under AGPL-3.0-or-later.
+    <a href="https://tensorseed.dev/">tensorseed.dev</a></p>
+  </main>
+</body>
+</html>

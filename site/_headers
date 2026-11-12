@@ -1,0 +1,51 @@
+# Tensorseed landing site headers.
+# https://developers.cloudflare.com/pages/configuration/headers/
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Cache-Control: public, max-age=300
+
+# HTML should stay fresh enough that a deploy is visible quickly.
+/*.html
+  Cache-Control: public, max-age=120, must-revalidate
+
+# Catalog documents may also be mirrored under /catalog/ on this project.
+# Short TTL for the mutable head and the published mirror list.
+/catalog/:name/head.json
+/catalog/:name/head.json.minisig
+/catalog/:name/mirrors.toml
+/catalog/:name/mirrors.toml.minisig
+  Cache-Control: public, max-age=60, must-revalidate
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+
+# Deltas and snapshots are append-only and never rewritten (SPEC 6.8).
+/catalog/:name/deltas/*
+/catalog/:name/snapshots/*
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+
+# Correct types for torrent metainfo and minisign detached signatures.
+/*.torrent
+/t/*.torrent
+/catalog/t/*.torrent
+  Content-Type: application/x-bittorrent
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+
+/*.minisig
+/catalog/:name/*.minisig
+/catalog/:name/deltas/*.minisig
+/catalog/:name/snapshots/*.minisig
+  Content-Type: application/minisign; charset=utf-8
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+
+https://:project.pages.dev/*
+https://:version.:project.pages.dev/*
+  X-Robots-Tag: noindex
