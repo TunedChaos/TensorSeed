@@ -40,6 +40,82 @@ pub struct Config {
     pub targets: Vec<Target>,
     /// Seeding daemon.
     pub seed: Seed,
+    /// Automatic harvest watchlist (`[harvest]`).
+    pub harvest: Harvest,
+}
+
+/// `[harvest]`: what `tensorseed harvest` mirrors from the Hub.
+///
+/// Explicit `repos` and `datasets` skip the discovery rules (`tags`,
+/// `min_downloads`) but every candidate still passes the license allowlist,
+/// gated check, takedown list, size cap, and disk budget.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Harvest {
+    /// Model repo ids to mirror.
+    pub repos: Vec<String>,
+    /// Dataset repo ids to mirror (needs `include_datasets`).
+    pub datasets: Vec<String>,
+    /// Users or orgs whose repos are discovered.
+    pub authors: Vec<String>,
+    /// Discovered repos must carry every one of these tags.
+    pub tags: Vec<String>,
+    /// Discovered repos need at least this many downloads.
+    pub min_downloads: u64,
+    /// Most repos considered per author and type, by downloads.
+    pub max_per_author: usize,
+    /// License allowlist; empty means `[policy] license_allowlist`.
+    pub license_allowlist: Vec<String>,
+    /// Skip revisions larger than this (bytes, 0 = no cap).
+    pub max_repo_bytes: u64,
+    /// Stop when harvested data would exceed this (bytes, 0 = no budget).
+    pub disk_budget_bytes: u64,
+    /// Also discover datasets from `authors` and mirror `datasets`.
+    pub include_datasets: bool,
+    /// Mirror gated repos (needs HF_TOKEN with accepted terms). Off by default.
+    pub allow_gated: bool,
+    /// Repo ids never to fetch.
+    pub takedown: Vec<String>,
+    /// File with more repo ids never to fetch (one per line, `#` comments).
+    pub takedown_file: String,
+    /// Seconds between watch cycles.
+    pub poll_interval_secs: u64,
+    /// Pause between Hub API calls (politeness).
+    pub request_delay_ms: u64,
+    /// Retries for HTTP 429 and 5xx from the Hub.
+    pub max_retries: u32,
+    /// First backoff step when the Hub sends no Retry-After.
+    pub retry_base_ms: u64,
+    /// Sign and commit catalog entries for each harvested revision.
+    pub publish: bool,
+    /// With `storage.backend = "s3"`, upload model files to every target.
+    pub upload: bool,
+}
+
+impl Default for Harvest {
+    fn default() -> Self {
+        Self {
+            repos: Vec::new(),
+            datasets: Vec::new(),
+            authors: Vec::new(),
+            tags: Vec::new(),
+            min_downloads: 0,
+            max_per_author: 100,
+            license_allowlist: Vec::new(),
+            max_repo_bytes: 0,
+            disk_budget_bytes: 0,
+            include_datasets: false,
+            allow_gated: false,
+            takedown: Vec::new(),
+            takedown_file: String::new(),
+            poll_interval_secs: 6 * 3600,
+            request_delay_ms: 500,
+            max_retries: 5,
+            retry_base_ms: 2000,
+            publish: true,
+            upload: true,
+        }
+    }
 }
 
 /// `[general]`

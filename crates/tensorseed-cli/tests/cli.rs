@@ -387,9 +387,19 @@ async fn tombstoned_repo_is_refused() {
 }
 
 async fn mount_hf_repo(server: &MockServer, repo: &str, gated: serde_json::Value, fx: &Fixture) {
+    mount_hf_repo_lic(server, repo, gated, "apache-2.0", fx).await;
+}
+
+async fn mount_hf_repo_lic(
+    server: &MockServer,
+    repo: &str,
+    gated: serde_json::Value,
+    license: &str,
+    fx: &Fixture,
+) {
     let info = serde_json::json!({
         "id": repo, "sha": C2, "gated": gated, "private": false,
-        "cardData": {"license": "apache-2.0"}, "tags": ["license:apache-2.0"]
+        "cardData": {"license": license}, "tags": [format!("license:{license}")]
     });
     Mock::given(method("GET"))
         .and(path_regex(format!("^/api/models/{repo}(/revision/.*)?$")))
@@ -558,4 +568,130 @@ async fn keygen_create_export_import_on_local_storage() {
     assert_eq!(code(&o), 0);
     assert!(stdout(&o).contains("revision 1"));
     assert!(c.join("publish/main/deltas").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn harvest_discovers_mirrors_publishes_and_is_idempotent() {
+    use wiremock::matchers::query_param;
+    let tmp = tempfile::tempdir().unwrap();
+    let hub = MockServer::start().await;
+    let mirror = MockServer::start().await; // later serves the published tree
+    let fx = Fixture::new();
+
+    // Discovery: one 429 first (backoff), then the listing.
+    Mock::given(method("GET"))
+        .and(path("/api/models"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .mount(&hub)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/models"))
+        .and(query_param("author", "org"))
+        .and(query_param("filter", "safetensors"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {"id": "org/a", "downloads": 500, "tags": ["safetensors"]},
+            {"id": "org/locked", "downloads": 400, "tags": ["safetensors"], "gated": "manual"},
+            {"id": "org/custom", "downloads": 300, "tags": ["safetensors"]},
+            {"id": "org/banned", "downloads": 200, "tags": ["safetensors"]},
+            {"id": "org/low", "downloads": 3, "tags": ["safetensors"]}
+        ])))
+        .mount(&hub)
+        .await;
+    mount_hf_repo(&hub, "org/a", serde_json::json!(false), &fx).await;
+    mount_hf_repo(&hub, "org/explicit", serde_json::json!(false), &fx).await;
+    mount_hf_repo(&hub, "org/locked", serde_json::json!("manual"), &fx).await;
+    mount_hf_repo_lic(&hub, "org/custom", serde_json::json!(false), "llama3", &fx).await;
+
+    let sk = key();
+    let keyfile = tmp.path().join("pub.key");
+    std::fs::write(
+        &keyfile,
+        sk.to_minisign_file(None, tensorseed_catalog::minisign::KdfLimits::INSECURE_TEST)
+            .unwrap(),
+    )
+    .unwrap();
+    let pk = sk.public_key().to_base64();
+    let extra = format!(
+        "publisher_seckey_file = \"{}\"\n\n[harvest]\nrepos = [\"org/explicit\"]\nauthors = [\"org\"]\ntags = [\"safetensors\"]\nmin_downloads = 10\ntakedown = [\"org/banned\"]\nrequest_delay_ms = 0\nretry_base_ms = 1\n",
+        keyfile.display()
+    );
+    let cfg = write_config(tmp.path(), &hub.uri(), &pk, &extra);
+    // Expose the publish dir as a webseed via the mirror server.
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(&format!("local_public_base_url = \"{}/\"\n", mirror.uri()));
+    std::fs::write(&cfg, text).unwrap();
+
+    let o = run(&cfg, &["harvest", "--dry-run"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let s = stdout(&o);
+    assert!(
+        s.contains("plan     model org/a@89abcdef0123: 2 files"),
+        "{s}"
+    );
+    assert!(s.contains("plan     model org/explicit@"), "{s}");
+    assert!(s.contains("org/locked@89abcdef0123: gated"), "{s}");
+    assert!(s.contains("skip     model org/custom@"), "{s}");
+    assert!(s.contains("org/banned: on the takedown list"), "{s}");
+    assert!(!s.contains("org/low"), "{s}");
+    assert!(!tmp.path().join("publish/t").exists());
+
+    let o = run(&cfg, &["harvest"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let s = stdout(&o);
+    assert!(
+        s.contains("2 harvested, 0 up to date, 3 skipped, 0 failed"),
+        "{s}"
+    );
+    let content = tmp.path().join("publish/t/org__a@89abcdef0123");
+    assert_eq!(
+        std::fs::read(content.join("model.safetensors")).unwrap(),
+        fx.get("model.safetensors")
+    );
+    assert!(
+        !content.join("pytorch_model.bin").exists(),
+        "pickle excluded"
+    );
+    assert!(!content.join(".tensorseed").exists(), "scratch dir removed");
+    let mf = tmp
+        .path()
+        .join(format!("publish/manifests/model/org/a/{C2}.json"));
+    let entry =
+        tensorseed_catalog::signed::SignedEntry::from_bytes(&std::fs::read(&mf).unwrap()).unwrap();
+    entry.verify(&sk.public_key(), "main").unwrap();
+    let m = Manifest::from_json(entry.value.as_bytes()).unwrap();
+    assert_eq!(m.webseeds, vec![format!("{}/t/", mirror.uri())]);
+    assert_eq!(m.files.len(), 2);
+    assert!(tmp.path().join("publish/main/head.json").exists());
+
+    // Rerun: nothing new.
+    let o = run(&cfg, &["harvest"], &[]).await;
+    assert_eq!(code(&o), 0);
+    assert!(
+        stdout(&o).contains("0 harvested, 2 up to date"),
+        "{}",
+        stdout(&o)
+    );
+    let o = run(&cfg, &["harvest", "--status"], &[]).await;
+    assert!(stdout(&o).contains("done    model org/a@89abcdef0123"));
+    // Daemon mode: repeated passes stay idempotent.
+    let o = run(
+        &cfg,
+        &["harvest", "--watch", "--max-cycles", "2"],
+        &[("TENSORSEED_HARVEST__POLL_INTERVAL_SECS", "1")],
+    )
+    .await;
+    assert_eq!(code(&o), 0);
+    assert!(stdout(&o).contains("harvest pass 2: 0 harvested, 2 up to date"));
+
+    // A subscriber pulls org/a from the published tree, webseed only.
+    mount_dir(&mirror, &tmp.path().join("publish")).await;
+    let sub = tmp.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let scfg = write_config(&sub, &mirror.uri(), &pk, "");
+    let o = run(&scfg, &["pull", "org/a", "--no-hf-fallback"], &[]).await;
+    assert_eq!(code(&o), 0);
+    assert!(stdout(&o).contains("ok     model.safetensors (webseed)"));
+    let o = run(&scfg, &["verify", "org/a"], &[]).await;
+    assert_eq!(code(&o), 0);
 }

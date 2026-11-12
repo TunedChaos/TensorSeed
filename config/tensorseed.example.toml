@@ -150,6 +150,33 @@ type = "model"
 include = ["*.safetensors", "*.json", "LICENSE*", "README.md"]
 exclude = []
 
+# Automatic harvest: `tensorseed harvest` (one pass) or `tensorseed harvest
+# --watch` (daemon). Each new revision is downloaded with hash verification
+# and resume into "<storage.local_dir>/t/<repo>@<commit12>/", gets a signed
+# manifest, is staged and committed to the catalog, and (with s3 storage) is
+# uploaded to every target. State lives in general.state_db, so reruns skip
+# finished revisions and resume interrupted ones. See docs/SPEC.md section 13.
+[harvest]
+repos = []                       # explicit model ids, e.g. ["org/name"]
+datasets = []                    # explicit dataset ids (needs include_datasets)
+authors = []                     # discover repos by these users or orgs
+tags = []                        # discovered repos must have all of these, e.g. ["safetensors"]
+min_downloads = 0                # discovered repos need at least this many downloads
+max_per_author = 100
+license_allowlist = []           # empty: use [policy] license_allowlist
+max_repo_bytes = 0               # skip revisions larger than this (0 = no cap)
+disk_budget_bytes = 0            # total harvested bytes allowed (0 = unlimited)
+include_datasets = false
+allow_gated = false              # never fetch gated repos unless set (and HF_TOKEN accepted)
+takedown = []                    # repo ids never to fetch
+takedown_file = ""               # more ids, one per line
+poll_interval_secs = 21600       # --watch: time between passes
+request_delay_ms = 500           # pause between Hub API calls
+max_retries = 5                  # on HTTP 429/5xx, honoring Retry-After
+retry_base_ms = 2000
+publish = true                   # sign and commit catalog entries (needs publisher_seckey_file)
+upload = true                    # with storage.backend = "s3": upload files to every target
+
 [seed]
 poll_interval_secs = 600
 max_bytes = 2_000_000_000_000

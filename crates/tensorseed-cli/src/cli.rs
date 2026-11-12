@@ -330,6 +330,9 @@ pub struct HarvestArgs {
     /// Plan only: discover and print what would be harvested.
     #[arg(long)]
     pub dry_run: bool,
+    /// Print what has been harvested so far and exit.
+    #[arg(long, conflicts_with_all = ["watch", "dry_run"])]
+    pub status: bool,
     /// Stop after this many watch cycles (0 = forever; for testing).
     #[arg(long, default_value_t = 0, hide = true)]
     pub max_cycles: u64,

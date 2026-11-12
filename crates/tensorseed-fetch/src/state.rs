@@ -41,7 +41,39 @@ CREATE TABLE IF NOT EXISTS pull_files (
     updated_unix INTEGER NOT NULL,
     PRIMARY KEY (job_id, path)
 );
+CREATE TABLE IF NOT EXISTS harvest_revisions (
+    repo_type TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    status TEXT NOT NULL,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    detail TEXT,
+    updated_unix INTEGER NOT NULL,
+    PRIMARY KEY (repo_type, repo, commit_sha)
+);
 ";
+
+/// One harvested (or attempted) repo revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarvestRecord {
+    /// `model` or `dataset`.
+    pub repo_type: String,
+    /// Repo id.
+    pub repo: String,
+    /// Commit SHA.
+    pub commit: String,
+    /// `done` or `failed`.
+    pub status: String,
+    /// Bytes kept on disk for this revision.
+    pub bytes: u64,
+    /// Attempts so far.
+    pub attempts: u64,
+    /// Error or note.
+    pub detail: Option<String>,
+    /// Last update (Unix seconds).
+    pub updated_unix: i64,
+}
 
 /// Status of a job or file.
 pub mod status {
@@ -288,6 +320,72 @@ impl StateDb {
         rows.collect::<std::result::Result<_, _>>().map_err(db_err)
     }
 
+    /// Record the outcome of harvesting a revision (`done` or `failed`).
+    pub fn harvest_set(
+        &self,
+        repo_type: &str,
+        repo: &str,
+        commit: &str,
+        st: &str,
+        bytes: u64,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        self.conn()
+            .execute(
+                "INSERT INTO harvest_revisions (repo_type, repo, commit_sha, status, bytes, attempts, detail, updated_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)
+                 ON CONFLICT(repo_type, repo, commit_sha) DO UPDATE SET status = ?4, bytes = ?5,
+                     attempts = attempts + 1, detail = ?6, updated_unix = ?7",
+                params![repo_type, repo, commit, st, bytes as i64, detail, now()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The record for one revision.
+    pub fn harvest_get(
+        &self,
+        repo_type: &str,
+        repo: &str,
+        commit: &str,
+    ) -> Result<Option<HarvestRecord>> {
+        self.conn()
+            .query_row(
+                "SELECT repo_type, repo, commit_sha, status, bytes, attempts, detail, updated_unix
+                 FROM harvest_revisions WHERE repo_type = ?1 AND repo = ?2 AND commit_sha = ?3",
+                params![repo_type, repo, commit],
+                row_to_harvest,
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// Every harvest record, newest first.
+    pub fn harvest_list(&self) -> Result<Vec<HarvestRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT repo_type, repo, commit_sha, status, bytes, attempts, detail, updated_unix
+                 FROM harvest_revisions ORDER BY updated_unix DESC, repo",
+            )
+            .map_err(db_err)?;
+        let rows = stmt.query_map([], row_to_harvest).map_err(db_err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db_err)
+    }
+
+    /// Bytes held by finished harvests (for the disk budget).
+    pub fn harvest_bytes_done(&self) -> Result<u64> {
+        let n: i64 = self
+            .conn()
+            .query_row(
+                "SELECT COALESCE(SUM(bytes), 0) FROM harvest_revisions WHERE status = 'done'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        Ok(n as u64)
+    }
+
     /// Delete a job and its file rows. Returns true if it existed.
     pub fn clear_job(&self, job: &str) -> Result<bool> {
         let n = self
@@ -296,6 +394,19 @@ impl StateDb {
             .map_err(db_err)?;
         Ok(n > 0)
     }
+}
+
+fn row_to_harvest(r: &rusqlite::Row<'_>) -> rusqlite::Result<HarvestRecord> {
+    Ok(HarvestRecord {
+        repo_type: r.get(0)?,
+        repo: r.get(1)?,
+        commit: r.get(2)?,
+        status: r.get(3)?,
+        bytes: r.get::<_, i64>(4)? as u64,
+        attempts: r.get::<_, i64>(5)? as u64,
+        detail: r.get(6)?,
+        updated_unix: r.get(7)?,
+    })
 }
 
 fn row_to_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
@@ -314,6 +425,22 @@ fn row_to_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn harvest_records() {
+        let db = StateDb::open_in_memory().unwrap();
+        db.harvest_set("model", "o/a", "c1", "failed", 0, Some("boom"))
+            .unwrap();
+        db.harvest_set("model", "o/a", "c1", "done", 10, None)
+            .unwrap();
+        db.harvest_set("model", "o/b", "c2", "done", 5, None)
+            .unwrap();
+        let r = db.harvest_get("model", "o/a", "c1").unwrap().unwrap();
+        assert_eq!((r.status.as_str(), r.attempts, r.bytes), ("done", 2, 10));
+        assert!(db.harvest_get("dataset", "o/a", "c1").unwrap().is_none());
+        assert_eq!(db.harvest_bytes_done().unwrap(), 15);
+        assert_eq!(db.harvest_list().unwrap().len(), 2);
+    }
 
     #[test]
     fn job_lifecycle() {

@@ -8,6 +8,7 @@ mod catalog_cmd;
 mod cli;
 mod config;
 mod consumer;
+mod harvest;
 mod keys;
 
 use std::process::ExitCode;
@@ -62,6 +63,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Catalog(cmd) => catalog_cmd::run(cmd, load).await,
+        Command::Harvest(args) => harvest::run(&load()?, args).await,
         Command::Pull(args) => consumer::pull(&load()?, args).await,
         Command::Verify(args) => consumer::verify(&load()?, args).await,
         Command::List { filter, no_wait } => {
