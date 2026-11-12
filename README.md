@@ -60,7 +60,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Copyright 2026 Tuned Chaos LLC.
+Copyright 2026 Tuned Chaos.
 
 Tensorseed is licensed under the GNU Affero General Public License v3.0 or later
 (**AGPL-3.0-or-later**). See [LICENSE](LICENSE).

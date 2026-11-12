@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Tuned Chaos LLC
+// Copyright 2026 Tuned Chaos
 
 //! Catalog JSON value types (spec section 6.4).
 //!
@@ -31,7 +31,7 @@ pub const PICKLE_EXTENSIONS: &[&str] = &["bin", "pt", "pth", "pkl", "pickle", "c
 /// Publisher identity inside [`CatalogInfo`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Publisher {
-    /// Display name, for example "Tuned Chaos LLC".
+    /// Display name, for example "Tuned Chaos".
     pub display_name: String,
     /// Contact address for takedown and policy questions.
     pub contact: String,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Tuned Chaos LLC
+// Copyright 2026 Tuned Chaos
 
 //! Canonical JSON (spec section 6.4): UTF-8, object keys sorted, no
 //! insignificant whitespace. The same content always yields the same bytes,

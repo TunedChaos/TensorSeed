@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Tuned Chaos LLC
+// Copyright 2026 Tuned Chaos
 
 //! Chia DataLayer backend (spec sections 6.1 to 6.7).
 //!

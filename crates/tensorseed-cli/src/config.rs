@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Tuned Chaos LLC
+// Copyright 2026 Tuned Chaos
 
 //! Configuration (spec section 10), loaded with figment from TOML plus
 //! `TENSORSEED_*` environment overrides (nested keys split on `__`, for

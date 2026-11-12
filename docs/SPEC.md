@@ -2,7 +2,7 @@
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
-> Publisher: Tuned Chaos LLC. License: AGPL-3.0-or-later.
+> Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 > Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Initial Rust workspace scaffold exists; no product logic yet.
 
 Revision 3 changes: renamed the project to Tensorseed, switched key and schema prefixes to `ts`, and made the catalog layer explicitly pluggable through a `CatalogBackend` trait with Chia DataLayer as the first implementation (section 6.0).

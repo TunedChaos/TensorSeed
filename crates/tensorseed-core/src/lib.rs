@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Tuned Chaos LLC
+// Copyright 2026 Tuned Chaos
 
 //! Core types for Tensorseed: a chain agnostic, verifiable mirror of open
 //! Hugging Face models. See `docs/SPEC.md` and <https://tensorseed.dev>.

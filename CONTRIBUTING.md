@@ -12,7 +12,7 @@ right to license it that way. New source files start with:
 
 ```rust
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Tuned Chaos LLC
+// Copyright 2026 Tuned Chaos
 ```
 
 New dependencies must use a license compatible with AGPL-3.0-or-later; `cargo deny

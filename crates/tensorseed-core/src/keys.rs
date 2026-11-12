@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Tuned Chaos LLC
+// Copyright 2026 Tuned Chaos
 
 //! Catalog key layout (spec section 6.3). Keys are backend independent; the
 //! Chia backend hex encodes them on the wire.
