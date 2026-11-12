@@ -82,9 +82,17 @@ pub enum Command {
     Harvest(HarvestArgs),
     /// Download and verify a repo revision.
     Pull(PullArgs),
-    /// Run the seeding daemon.
+    /// Seed published revisions (storage.local_dir and torrent targets) or
+    /// pulled directories over BitTorrent.
     Seed {
-        /// Also subscribe to and serve the catalog.
+        /// Seed these directories instead: a pulled directory (with
+        /// `.tensorseed/torrent`) or a published tree (with `t/`).
+        #[arg(long)]
+        dir: Vec<PathBuf>,
+        /// Stop after this long (30s, 10m, 2h, 1d; default: until Ctrl-C).
+        #[arg(long = "for")]
+        duration: Option<String>,
+        /// Also subscribe to and serve the catalog (not implemented yet).
         #[arg(long)]
         serve_catalog: bool,
     },
@@ -330,7 +338,17 @@ pub struct PullArgs {
     /// Download even if the repo is tombstoned.
     #[arg(long)]
     pub ignore_tombstone: bool,
-    /// Keep seeding for this long after download (needs torrent support, pending M0).
+    /// Download from the BitTorrent swarm first (up to
+    /// torrent.swarm_timeout_secs), then fill gaps over HTTP. Every file is
+    /// checked against the manifest either way.
+    #[arg(long)]
+    pub swarm: bool,
+    /// Extra peer to dial (`host:port`), repeatable; implies nothing without
+    /// --swarm.
+    #[arg(long)]
+    pub peer: Vec<String>,
+    /// After a verified download, seed it for this long (30s, 10m, 2h, 1d,
+    /// or forever).
     #[arg(long)]
     pub seed_after: Option<String>,
 }

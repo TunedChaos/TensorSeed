@@ -352,9 +352,16 @@ fn state_db(cfg: &Config) -> anyhow::Result<Arc<StateDb>> {
 
 /// `tensorseed pull`.
 pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
-    if args.seed_after.is_some() {
-        bail!("--seed-after needs torrent support, which is pending the M0 librqbit spike");
+    let wants_torrent = args.swarm || args.seed_after.is_some();
+    if wants_torrent && args.from_hf {
+        bail!("--swarm and --seed-after need a Tensorseed manifest with a torrent, not --from-hf");
     }
+    let seed_after = args
+        .seed_after
+        .as_deref()
+        .map(crate::torrents::parse_duration)
+        .transpose()?;
+    let mut torrent: Option<tensorseed_torrent::Metainfo> = None;
     let (repo, revision) = parse_repo(&args.repo, args.repo_type.into(), args.revision.as_deref())?;
     let hf = hf_client(cfg)?;
     let jobs = args
@@ -478,6 +485,9 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         // priority; the Hub stays the last resort.
         let mut seeds = m.clone();
         seeds.webseeds = crate::mirrors::webseed_bases(cfg, &m.webseeds);
+        if wants_torrent {
+            torrent = Some(crate::torrents::fetch_for_manifest(m, &seeds.webseeds).await?);
+        }
         for f in &m.files {
             let ef = ExpectedFile::from_manifest(f);
             if ef.pickle_risk && !args.allow_pickle {
@@ -527,6 +537,11 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
     );
     for s in &skipped {
         println!("skip   {s} (pickle format; --allow-pickle to include)");
+    }
+    if args.swarm
+        && let Some(t) = &torrent
+    {
+        swarm_download(cfg, args, t, &out, &files).await?;
     }
     let fetcher = Fetcher::new(Some(state_db(cfg)?))?;
     let report = fetcher
@@ -578,6 +593,9 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         files: expected.iter().map(PullFile::from_expected).collect(),
         skipped,
     };
+    if let Some(t) = &torrent {
+        write_meta(&out, crate::torrents::PULLED_TORRENT, &t.bytes)?;
+    }
     write_meta(&out, "pull.json", &serde_json::to_vec_pretty(&record)?)?;
     println!("{down} downloaded, {present} already present, {failed} failed");
     if !report.ok() {
@@ -587,7 +605,68 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
     if !signed {
         println!("note: hashes came from an unsigned source ({source}), not the signed catalog");
     }
+    if let (Some(dur), Some(t)) = (seed_after, torrent) {
+        let item = crate::torrents::pulled_dir(&out)?;
+        debug_assert_eq!(item.torrent.info_hash_v2, t.info_hash_v2);
+        return crate::torrents::run_seeder(cfg, vec![item], dur).await;
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Swarm first: let librqbit fetch what peers have, in place. Nothing it
+/// writes is trusted: the HTTP fetcher that runs next hashes every file
+/// against the manifest, keeps the ones that match, and downloads the rest.
+async fn swarm_download(
+    cfg: &Config,
+    args: &PullArgs,
+    t: &tensorseed_torrent::Metainfo,
+    out: &Path,
+    files: &[FileJob],
+) -> anyhow::Result<()> {
+    use tensorseed_torrent::engine::{DownloadOptions, Engine};
+    let mut peers = cfg.torrent.peer_addrs()?;
+    for p in &args.peer {
+        use std::net::ToSocketAddrs;
+        peers.extend(
+            p.to_socket_addrs()
+                .with_context(|| format!("--peer {p:?}"))?,
+        );
+    }
+    let timeout = Duration::from_secs(cfg.torrent.swarm_timeout_secs.max(1));
+    let engine = Engine::start(crate::torrents::engine_options(cfg, false, out)?)
+        .await
+        .context("starting the BitTorrent engine")?;
+    let t0 = std::time::Instant::now();
+    let r = engine
+        .download(
+            t,
+            out,
+            DownloadOptions {
+                peers,
+                only: Some(files.iter().map(|f| f.path.clone()).collect()),
+            },
+            timeout,
+        )
+        .await;
+    match r {
+        Ok((h, p)) => {
+            println!(
+                "swarm  {} of {} bytes in {:.1}s{}",
+                p.have,
+                p.total,
+                t0.elapsed().as_secs_f64(),
+                if p.finished {
+                    ""
+                } else {
+                    " (HTTP sources fill the rest)"
+                }
+            );
+            let _ = engine.remove(&h).await;
+        }
+        Err(e) => println!("swarm  unavailable ({e}); using HTTP sources"),
+    }
+    engine.stop().await;
+    Ok(())
 }
 
 fn read_pull_record(dir: &Path) -> anyhow::Result<Option<PullRecord>> {

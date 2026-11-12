@@ -64,7 +64,7 @@ pub struct Mirror {
     /// `<url><catalog>/` and webseed objects under `<url>t/`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
-    /// Magnet for `provider = "torrent"` (catalog snapshot torrent; pending M0).
+    /// Magnet for `provider = "torrent"` (catalog snapshot torrent; reserved, not used yet).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub magnet: String,
     /// Free text.

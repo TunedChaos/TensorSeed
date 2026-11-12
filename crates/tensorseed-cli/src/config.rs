@@ -279,34 +279,101 @@ impl Default for HuggingFace {
     }
 }
 
-/// `[torrent]`
+/// `[torrent]`: torrent creation and the built-in seeder (spec section 7.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Torrent {
-    /// Build hybrid v1+v2 torrents.
+    /// Build a torrent for every harvested or published revision.
+    pub create: bool,
+    /// Build hybrid v1+v2 torrents. The built-in engine (librqbit) only
+    /// seeds and downloads hybrids; v2 only torrents are for other clients.
     pub hybrid: bool,
-    /// Piece length in bytes (tune in M0).
+    /// Piece length in bytes (power of two, at least 16 KiB), or 0 for auto:
+    /// 4 MiB, doubled until a revision has at most 16384 pieces, capped at
+    /// 64 MiB.
     pub piece_length: u64,
-    /// Tracker announce URLs.
+    /// Tracker announce URLs written into new torrents and announced to.
     pub trackers: Vec<String>,
+    /// Listen address for `seed` and `--seed-after`.
+    pub listen_addr: String,
     /// Listen port.
     pub listen_port: u16,
     /// Upload cap in KiB/s, 0 means unlimited.
     pub upload_limit_kbps: u64,
     /// Enable DHT.
     pub dht: bool,
+    /// Local service discovery (BEP 14) on the LAN.
+    pub lsd: bool,
+    /// Peers (`host:port`) to dial for every torrent, for example your own
+    /// seed boxes.
+    pub peers: Vec<String>,
+    /// Longest `pull --swarm` waits on peers before HTTP takes over.
+    pub swarm_timeout_secs: u64,
 }
 
 impl Default for Torrent {
     fn default() -> Self {
         Self {
+            create: true,
             hybrid: true,
-            piece_length: 4 * 1024 * 1024,
+            piece_length: 0,
             trackers: Vec::new(),
+            listen_addr: "0.0.0.0".into(),
             listen_port: 6881,
             upload_limit_kbps: 0,
             dht: true,
+            lsd: false,
+            peers: Vec::new(),
+            swarm_timeout_secs: 600,
         }
+    }
+}
+
+impl Torrent {
+    /// Effective piece length for a revision of `total` bytes.
+    pub fn piece_length_for(&self, total: u64) -> u64 {
+        if self.piece_length != 0 {
+            return self.piece_length;
+        }
+        let mut pl: u64 = 4 << 20;
+        while pl < (64 << 20) && total.div_ceil(pl) > 16384 {
+            pl *= 2;
+        }
+        pl
+    }
+
+    /// Parsed `peers`.
+    pub fn peer_addrs(&self) -> anyhow::Result<Vec<std::net::SocketAddr>> {
+        use std::net::ToSocketAddrs;
+        let mut out = Vec::new();
+        for p in &self.peers {
+            out.extend(
+                p.to_socket_addrs()
+                    .map_err(|e| anyhow::anyhow!("torrent.peers: {p:?}: {e}"))?,
+            );
+        }
+        Ok(out)
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        let pl = self.piece_length;
+        if pl != 0 && (pl < 16 * 1024 || !pl.is_power_of_two() || pl > 1 << 30) {
+            anyhow::bail!(
+                "torrent.piece_length must be 0 (auto) or a power of two from 16 KiB to 1 GiB"
+            );
+        }
+        if self.listen_addr.parse::<std::net::IpAddr>().is_err() {
+            anyhow::bail!("torrent.listen_addr must be an IP address");
+        }
+        for t in &self.trackers {
+            if !["http://", "https://", "udp://"]
+                .iter()
+                .any(|s| t.starts_with(s))
+            {
+                anyhow::bail!("torrent.trackers: unsupported tracker URL {t:?}");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -567,9 +634,13 @@ impl StorageTarget {
                 }
             }
             "torrent" => {
-                anyhow::bail!(
-                    "storage target {n:?}: torrent targets are not implemented yet (seeding is stubbed); list torrents as [[mirror]] in mirrors.toml"
-                )
+                // A seeding root: `tensorseed seed` serves every revision
+                // under `<dir>/t/` (default: storage.local_dir).
+                if !self.public_base_url.is_empty() || !self.bucket.is_empty() {
+                    anyhow::bail!(
+                        "storage target {n:?} (torrent) takes only dir, enabled, and priority"
+                    );
+                }
             }
             _ => {
                 if self.bucket.is_empty() {
@@ -610,6 +681,22 @@ impl Storage {
             .into_iter()
             .map(|(_, u)| format!("{u}t/"))
             .collect()
+    }
+
+    /// Seeding roots: `local_dir` plus every enabled `torrent` target's
+    /// `dir`, each holding `t/<content name>.torrent` and `t/<content name>/`.
+    pub fn seed_roots(&self) -> Vec<String> {
+        let mut v = vec![self.local_dir.clone()];
+        for t in self
+            .target
+            .iter()
+            .filter(|t| t.enabled && t.provider == "torrent")
+        {
+            if !t.dir.is_empty() && !v.contains(&t.dir) {
+                v.push(t.dir.clone());
+            }
+        }
+        v
     }
 
     /// Targets publishing writes to.
@@ -807,6 +894,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     }
     tensorseed_catalog::signed::check_catalog_name(&cfg.catalog.name)?;
     cfg.storage.validate()?;
+    cfg.torrent.validate()?;
     if !cfg.catalog.publisher_pubkey.is_empty() {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }
@@ -1017,9 +1105,12 @@ dir = "/mnt/nas/tensorseed"
                     "[[storage.target]]\nname=\"a\"\nprovider = \"minio\"\nbucket=\"b\"\n[[storage.target]]\nname=\"a\"\nprovider = \"minio\"\nbucket=\"c\"\n",
                 ),
                 (
-                    "torrent",
-                    "[[storage.target]]\nname=\"a\"\nprovider = \"torrent\"\n",
+                    "torrent_with_bucket",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"torrent\"\nbucket = \"b\"\n",
                 ),
+                ("bad_piece", "[torrent]\npiece_length = 1000\n"),
+                ("bad_listen", "[torrent]\nlisten_addr = \"nope\"\n"),
+                ("bad_tracker", "[torrent]\ntrackers = [\"ftp://x\"]\n"),
                 ("oldbackend", "[storage]\nbackend = \"s3\"\n"),
             ] {
                 let f = format!("{name}.toml");

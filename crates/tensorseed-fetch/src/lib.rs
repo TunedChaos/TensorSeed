@@ -11,8 +11,10 @@
 //! downloads resume with HTTP range requests, and job state lives in SQLite
 //! so `tensorseed jobs` can show it and reruns skip verified files.
 //!
-//! This is the HTTP source path. BitTorrent v2 fetching is pending the M0
-//! librqbit spike and will plug in as another source kind.
+//! This is the HTTP source path, and Tensorseed's BEP 19 webseed client.
+//! Swarm downloads (`pull --swarm`, `tensorseed-torrent`) run first and
+//! write in place; a fetcher run afterwards hashes those files and keeps
+//! only the ones that match.
 
 pub mod state;
 

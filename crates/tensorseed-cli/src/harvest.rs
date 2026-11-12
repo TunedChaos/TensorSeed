@@ -538,6 +538,24 @@ async fn harvest_one(
             pickle_risk: FileEntry::path_has_pickle_risk(&e.path),
         });
     }
+    // Torrent (spec 7.1): one hashing pass gives the BEP 52 roots, written
+    // into the manifest, and `t/<name>.torrent` next to the content.
+    let webseeds = cfg.storage.webseed_bases();
+    let mut torrent_bytes: Option<Vec<u8>> = None;
+    let torrent = if cfg.torrent.create {
+        let t =
+            crate::torrents::build_for_revision(cfg, &content_dir, &name, &mut files, &webseeds)
+                .await
+                .context("building the torrent")?;
+        let tpath = store_root.join("t").join(format!("{name}.torrent"));
+        let tmp = store_root.join("t").join(format!(".{name}.torrent.tmp"));
+        std::fs::write(&tmp, &t.bytes)?;
+        std::fs::rename(&tmp, &tpath)?;
+        torrent_bytes = Some(t.bytes.clone());
+        Some(t.torrent_info(crate::torrents::torrent_file_urls(&webseeds, &name)))
+    } else {
+        None
+    };
     let totals = Totals {
         files: files.len() as u64,
         bytes: files.iter().map(|f| f.size).sum(),
@@ -588,8 +606,8 @@ async fn harvest_one(
             Vec::new()
         },
         file_pages: pages.len() as u32,
-        torrent: None,
-        webseeds: cfg.storage.webseed_bases(),
+        torrent,
+        webseeds,
         backups: Vec::new(),
         published_at: now_rfc3339(),
         publisher_tool: concat!("tensorseed/", env!("CARGO_PKG_VERSION")).into(),
@@ -612,6 +630,16 @@ async fn harvest_one(
             )
             .await
             .with_context(|| format!("uploading {key} to {}", s.describe()))?;
+        }
+        if let Some(b) = &torrent_bytes {
+            s.put(
+                &format!("t/{name}.torrent"),
+                b.clone(),
+                "application/x-bittorrent",
+                CachePolicy::Immutable,
+            )
+            .await
+            .with_context(|| format!("uploading {name}.torrent to {}", s.describe()))?;
         }
         tracing::info!(repo = %repo.id, "uploaded {} files to {}", files.len(), s.describe());
     }

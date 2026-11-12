@@ -739,6 +739,109 @@ async fn harvest_discovers_mirrors_publishes_and_is_idempotent() {
     assert!(stdout(&o).contains("ok     model.safetensors (webseed)"));
     let o = run(&scfg, &["verify", "org/a"], &[]).await;
     assert_eq!(code(&o), 0);
+
+    // Harvest also built a hybrid torrent with the webseed in it.
+    let t = m.torrent.as_ref().expect("manifest has a torrent");
+    assert!(t.infohash_v1.is_some());
+    assert!(t.magnet.contains("xt=urn:btmh:1220"));
+    assert_eq!(
+        t.torrent_file_urls,
+        vec![format!("{}/t/org__a@89abcdef0123.torrent", mirror.uri())]
+    );
+    assert!(m.files.iter().all(|f| f.bt_v2_pieces_root.is_some()));
+    let tbytes = std::fs::read(tmp.path().join("publish/t/org__a@89abcdef0123.torrent")).unwrap();
+    let meta = tensorseed_torrent::Metainfo::parse(&tbytes).unwrap();
+    meta.check_manifest(&m, &m.files).unwrap();
+    assert_eq!(meta.webseeds, m.webseeds);
+
+    // The publisher seeds its tree on loopback; a subscriber pulls over the
+    // swarm, and the HTTP pass then finds every file already present.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let port_s = port.to_string();
+    let net = [
+        ("TENSORSEED_TORRENT__LISTEN_ADDR", "127.0.0.1"),
+        ("TENSORSEED_TORRENT__LISTEN_PORT", port_s.as_str()),
+        ("TENSORSEED_TORRENT__DHT", "false"),
+    ];
+    let mut seeder = std::process::Command::new(env!("CARGO_BIN_EXE_tensorseed"));
+    seeder
+        .arg("--config")
+        .arg(&cfg)
+        .args(["seed", "--for", "120s"])
+        .env("RUST_LOG", "warn")
+        .stdout(std::process::Stdio::piped());
+    for (k, v) in net {
+        seeder.env(k, v);
+    }
+    let mut child = seeder.spawn().unwrap();
+    let out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let mut seen = String::new();
+    while !seen.contains("listening on") {
+        let line = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("seeder did not start: {seen}"));
+        seen.push_str(&line);
+        seen.push('\n');
+    }
+    assert!(seen.contains("seeding org__a@89abcdef0123"), "{seen}");
+    assert!(
+        seen.contains("seeding org__explicit@89abcdef0123"),
+        "{seen}"
+    );
+
+    let peer = format!("127.0.0.1:{port}");
+    let swarm_out = sub.join("swarm");
+    let swarm_out_s = swarm_out.to_str().unwrap();
+    let o = run(
+        &scfg,
+        &[
+            "pull",
+            "org/a",
+            "--no-hf-fallback",
+            "--swarm",
+            "--peer",
+            &peer,
+            "--out",
+            swarm_out_s,
+            "--seed-after",
+            "1s",
+        ],
+        &[
+            ("TENSORSEED_TORRENT__DHT", "false"),
+            ("TENSORSEED_TORRENT__LISTEN_ADDR", "127.0.0.1"),
+            ("TENSORSEED_TORRENT__LISTEN_PORT", "0"),
+        ],
+    )
+    .await;
+    child.kill().ok();
+    child.wait().ok();
+    assert_eq!(code(&o), 0);
+    let s = stdout(&o);
+    assert!(s.contains("swarm  "), "{s}");
+    assert!(!s.contains("HTTP sources fill the rest"), "{s}");
+    assert!(
+        s.contains("ok     model.safetensors (already present)"),
+        "{s}"
+    );
+    assert!(s.contains("seeding org__a@89abcdef0123"), "{s}");
+    assert_eq!(
+        std::fs::read(swarm_out.join("model.safetensors")).unwrap(),
+        fx.get("model.safetensors")
+    );
+    assert!(swarm_out.join(".tensorseed/torrent").exists());
+    let o = run(&scfg, &["verify", swarm_out_s], &[]).await;
+    assert_eq!(code(&o), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
