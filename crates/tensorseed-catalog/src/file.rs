@@ -977,12 +977,23 @@ impl FileCatalog {
         )))
     }
 
-    /// Publisher: sync with the published catalog first. A catalog that has
-    /// never been published (no head anywhere) is fine at revision 0.
+    /// Publisher: sync with the published catalog first. When no source
+    /// serves a head at all (never published, or local only storage that
+    /// nothing exposes at `base_url`), continue from the verified local
+    /// state. Any other error, including a fork, stops publishing.
     pub async fn sync_for_publish(&self) -> Result<()> {
         match self.sync().await {
             Ok(_) => Ok(()),
-            Err(CatalogError::NotFound(_)) if self.state().revision == 0 => Ok(()),
+            Err(CatalogError::NotFound(m)) => {
+                let rev = self.state().revision;
+                if rev > 0 {
+                    tracing::warn!(
+                        revision = rev,
+                        "no published head reachable ({m}); continuing from local state"
+                    );
+                }
+                Ok(())
+            }
             Err(e) => Err(e),
         }
     }
