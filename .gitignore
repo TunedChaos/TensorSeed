@@ -22,3 +22,7 @@
 # Spike build output
 /spikes/*/target/
 /spikes/*/Cargo.lock
+
+# Publisher secret keys and passphrases (never commit)
+*.key
+**/passphrase

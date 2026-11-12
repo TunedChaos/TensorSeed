@@ -13,9 +13,9 @@ max_concurrent_downloads = 2
 download_dir = "."               # pull writes to <download_dir>/<org>/<name> unless --out is given
 
 [catalog]
-backend = "chia"                 # "chia" | "file"; see docs/SPEC.md sections 6.0 and 6.8
+backend = "file"                 # "chia" | "file"; the public catalog uses the file backend
 name = "tensorseed"              # logical catalog name, bound into every entry signature
-publisher_pubkey = ""            # pinned minisign public key ("RW..."), same for every backend
+publisher_pubkey = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd"  # official Tuned Chaos catalog key (id CE1E0E3D543DFFB8)
 # publisher_seckey_file = "~/.config/tensorseed/publisher.key"   # only needed to publish
                                  # (create with `tensorseed catalog keygen`; password from
                                  # TENSORSEED_KEY_PASSWORD or a prompt)

@@ -1,0 +1,3 @@
+schema = "ts.mirrors/1"
+catalog = "tensorseed"
+mirror = []

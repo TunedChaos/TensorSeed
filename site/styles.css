@@ -162,3 +162,15 @@ footer {
   letter-spacing: 0.12em;
   margin: 0 0 0.75rem;
 }
+
+.key {
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  background: #10140c;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  word-break: break-all;
+  color: var(--ink);
+}

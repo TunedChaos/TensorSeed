@@ -63,12 +63,29 @@
     <section>
       <h2>Status</h2>
       <p>
-        The software is under active development. The signed catalog is not
-        published yet. When it is, heads, deltas, snapshots, and the signed
-        mirror list will live under
-        <a href="https://catalog.tensorseed.dev/">catalog.tensorseed.dev</a>
-        as described in the
-        <a href="https://catalog.tensorseed.dev/README.txt">catalog README</a>.
+        The software is under active development. The signed catalog is live
+        at <a href="https://catalog.tensorseed.dev/">catalog.tensorseed.dev</a>.
+        The first published model is
+        TunedChaos/ChaosNexus_Tuned_v1-GGUF. See the
+        <a href="https://catalog.tensorseed.dev/README.txt">catalog README</a>
+        for the file layout.
+      </p>
+    </section>
+
+    <section>
+      <h2>Verify the catalog</h2>
+      <p>
+        Pin this publisher public key (minisign, key id CE1E0E3D543DFFB8) in
+        <code>catalog.publisher_pubkey</code>. Clients reject any catalog
+        file that is not signed by it.
+      </p>
+      <pre class="key"><code>RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd</code></pre>
+      <p>
+        Set <code>catalog.backend = "file"</code>,
+        <code>catalog.name = "tensorseed"</code>, and
+        <code>file.base_url = "https://catalog.tensorseed.dev/"</code>,
+        then run <code>tensorseed catalog info</code>, <code>list</code>,
+        <code>show</code>, <code>pull</code>, and <code>verify</code>.
       </p>
     </section>
 

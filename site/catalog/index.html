@@ -15,6 +15,7 @@
     pre { background: #1b2016; border: 1px solid #2d3426; padding: 1rem;
           overflow: auto; border-radius: 0.4rem; }
     p.note { color: #a39a82; }
+    .key { word-break: break-all; }
   </style>
 </head>
 <body>
@@ -22,21 +23,27 @@
     <h1>Tensorseed catalog</h1>
     <p>
       This is the public base URL for the signed static-file catalog
-      (<code>file.base_url</code> in Tensorseed). The catalog is not published
-      yet.
+      (<code>file.base_url</code>). The catalog <code>tensorseed</code> is
+      live at revision 2.
     </p>
+    <p>Pin this publisher public key (minisign, key id CE1E0E3D543DFFB8):</p>
+    <pre class="key"><code>RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd</code></pre>
     <p>
-      When it is, documents live under one directory per logical catalog name,
-      as specified in <code>docs/SPEC.md</code> sections 6.8 and 6.12:
+      Documents live under one directory per logical catalog name, as
+      specified in <code>docs/SPEC.md</code> sections 6.8 and 6.12:
     </p>
     <pre><code>&lt;base_url&gt;/&lt;catalog&gt;/head.json
 &lt;base_url&gt;/&lt;catalog&gt;/deltas/&lt;revision:010&gt;.json
 &lt;base_url&gt;/&lt;catalog&gt;/snapshots/&lt;revision:010&gt;.json
 &lt;base_url&gt;/&lt;catalog&gt;/mirrors.toml</code></pre>
     <p>
-      Each of those files has a detached <code>.minisig</code>. Webseed
-      objects and <code>.torrent</code> files will be advertised under
-      <code>/t/</code>. Model weights themselves are not hosted on Pages.
+      Each of those files has a detached <code>.minisig</code>. The first
+      published revision is
+      <code>TunedChaos/ChaosNexus_Tuned_v1-GGUF</code>. The
+      <code>.torrent</code> file is under
+      <a href="/t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent"><code>/t/</code></a>.
+      Model weights themselves are not hosted on Pages; pull verifies the
+      signed manifest and fetches bytes from the Hub or a later HTTP mirror.
     </p>
     <p>
       See <a href="/README.txt">README.txt</a> for the full layout,
