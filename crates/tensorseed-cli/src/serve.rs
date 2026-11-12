@@ -1440,6 +1440,22 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::result_large_err)] // figment::Error is large; fine in tests
+    fn systemd_example_config_parses() {
+        const TOML: &str = include_str!("../../../contrib/systemd/tensorseed.toml");
+        figment::Jail::expect_with(|jail| {
+            jail.create_file("tensorseed.toml", TOML)?;
+            let cfg = crate::config::load(std::path::Path::new("tensorseed.toml"))
+                .map_err(|e| e.to_string())?;
+            assert_eq!(cfg.catalog.backend, "file");
+            assert_eq!(cfg.serve.select, vec!["TunedChaos/*".to_string()]);
+            assert!(cfg.serve.fetch && !cfg.serve.port_mapping);
+            assert_eq!(cfg.serve.health_listen, "127.0.0.1:6880");
+            Ok(())
+        });
+    }
+
+    #[test]
     fn config_defaults_and_validation() {
         let s = ServeConfig::default();
         s.validate().unwrap();

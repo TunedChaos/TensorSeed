@@ -73,12 +73,15 @@ side of M1 and M2 is already done.
 
 ## M3: Seeding daemon
 - [x] `seed` for harvested revisions on local disk, torrent targets, and pulled directories
-- [ ] Selection rules and the catalog driven loop
-- [x] Upload cap (`torrent.upload_limit_kbps`)
-- [ ] Disk budget
-- [ ] Measure throughput between two real hosts; uTP and UPnP
-- [ ] Honor tombstones
-- [ ] Optional `--serve-catalog`
+- [x] `serve`: catalog driven loop with selection rules (globs, excludes, watchlist, types, license classes, latest only)
+- [x] Upload and download caps (`torrent.upload_limit_kbps`, `serve.upload_limit_kbps`, `serve.download_limit_kbps`, `serve.http_upload_limit_kbps`)
+- [x] Disk budget (`serve.max_bytes`, `serve.max_revision_bytes`)
+- [x] Honor tombstones (stop at the next sync, prune downloaded copies)
+- [x] Auto fetch of newly selected revisions through the pull pipeline (`serve.fetch`)
+- [x] uTP (librqbit 9.1, on by default in `serve`) and opt in NAT-PMP / UPnP IGD port mapping (`serve.port_mapping`)
+- [x] HTTP webseed serving with ranges, `--serve-catalog`, health endpoint, state file resume, systemd unit
+- [ ] Measure throughput between two real hosts (needs one reachable port)
+- [ ] Free disk space check before fetching (today only the byte budget applies)
 - [ ] Catalog `.dat` torrent (Chia) and snapshot torrent seeding (file)
 
 ## M4: Catalog explorer

@@ -7,8 +7,8 @@ Website: [tensorseed.dev](https://tensorseed.dev)
 > **Status: pre-alpha, milestone M0.** Downloading and verifying works today
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
-> v1+v2 torrents, `seed` serves them, and `pull --swarm` / `--seed-after` use the
-> swarm. The Chia backend has only been tested against mocked RPC responses, and
+> v1+v2 torrents, `seed` serves them, `serve` keeps seeding whatever the
+> catalog says, and `pull --swarm` / `--seed-after` use the swarm. The Chia backend has only been tested against mocked RPC responses, and
 > `publish`, `takedown`, and `doctor` still print "not implemented yet". Expect
 > breaking changes.
 
@@ -65,6 +65,33 @@ tensorseed mirror list              # merged mirror ranking
 tensorseed seed                     # seed everything under storage.local_dir (Ctrl-C to stop)
 ```
 
+### Run a seeder
+
+`tensorseed serve` is the long running seeder anyone can run to help keep the
+catalog available. It syncs the signed catalog every few minutes, picks
+revisions with the `[serve]` rules (globs, watchlist, types, license classes,
+latest only, a disk budget), seeds the ones it has on disk, downloads new ones
+if `fetch = true`, and stops seeding anything that gets taken down at the next
+sync.
+
+```sh
+tensorseed serve                                  # seed what is on disk and selected
+tensorseed serve --fetch                          # also download newly selected revisions
+tensorseed serve --http 0.0.0.0:8080 --serve-catalog   # also act as a webseed and catalog mirror
+curl -s http://127.0.0.1:6880/health              # JSON: bytes, peers, torrents, catalog head, last error
+```
+
+- Swarm traffic uses TCP and uTP on `torrent.listen_port`. Forward that port
+  (TCP and UDP) on your router, or set `[serve] port_mapping = true` to have
+  the daemon ask the router through NAT-PMP or UPnP (off by default).
+- `--http` serves verified files in the BEP 19 webseed layout
+  (`/t/<name>/<path>`, with byte ranges), so others can add the address as a
+  mirror. `--serve-catalog` adds the signed catalog under `/<catalog>/`.
+- Upload caps: `[serve] upload_limit_kbps` and `http_upload_limit_kbps`.
+- SIGTERM stops cleanly; a restart picks up where it left off.
+- A hardened systemd unit and a minimal config are in
+  [`contrib/systemd/`](contrib/systemd/).
+
 Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and
 gated repos are refused unless `--allow-gated`. Publishing uses a strict license
 allowlist; `--allow-license <id>` or a watchlist entry
@@ -86,6 +113,7 @@ interruption; `tensorseed jobs` shows their state.
 | `crates/tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback |
 | `crates/tensorseed-catalog` | `CatalogBackend` trait, signed entries and keys (minisign format), signed-file backend, Chia DataLayer backend, storage sinks |
 | `crates/tensorseed-torrent` | BEP 52 v2 and hybrid torrent builder and parser (pure Rust), Merkle checks, librqbit seeding and swarm downloads |
+| `crates/tensorseed-serve` | Building blocks of `serve`: webseed HTTP server, health endpoint, NAT-PMP and UPnP port mapping, selection rules |
 | `crates/tensorseed-cli` | The `tensorseed` binary |
 | `spikes/` | M0 spike programs (not built by CI), see [spikes/README.md](spikes/README.md) |
 

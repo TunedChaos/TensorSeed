@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 8)
+# Tensorseed: Project Specification (Revision 9)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 > Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend is implemented against mocked RPC responses only.
+
+Revision 9 changes: `tensorseed serve`, the long running seeder (8.3): catalog driven loop with selection rules, disk budget, takedowns, auto fetch through the pull pipeline, upload and download caps, uTP, opt in NAT-PMP and UPnP IGD port mapping, HTTP webseed serving with ranges, `--serve-catalog` (also on `seed`), a localhost JSON health endpoint, state file resume, graceful SIGTERM, and a hardened systemd unit. New crate `tensorseed-serve`; the `[serve]` config block replaces `[seed]` (9, 10, 12.1).
 
 Revision 8 changes: the Hugging Face token can also come from `huggingface.token_file` (must not be readable by group or others); an inline `token =` in the config is rejected with a clear error. License overrides: `--allow-license <id>` on `pull`, `harvest`, and `publish`, and a per-repo `allow_license` in watchlist entries, let a publisher mirror their own `license: other` repos while the default allowlist stays strict; overridden repos keep their honest license class in the manifest. `publish <repo>` now runs the harvest pipeline for one repo (5, 9, 10, 11, 13).
 
@@ -506,20 +508,36 @@ START (args: <repo_id>[@commit] [--revision] | --manifest-file | --manifest-url 
 
 Implemented today: the catalog is synced (`--no-wait` uses the local copy), revisions must be full commit SHAs (otherwise `latest` is followed), tombstones stop the pull unless `--ignore-tombstone`, pickle formats are skipped unless `--allow-pickle`, and files download through `tensorseed-fetch`: up to `--jobs` files at once, webseeds and mirrors in priority order (10.1, 6.12) then the Hub, streaming SHA-256 (or git blob SHA-1 for small Hub files), resume from `.tensorseed/partial/` with HTTP ranges, job records in the SQLite state DB, and an atomic rename into place. The output directory gets `.tensorseed/pull.json` (`ts.pull/1`, the full expected file list), `.tensorseed/manifest.json` (the signed entry, when there is one), and `.tensorseed/NOTICE` (license and attribution). With `--swarm` or `--seed-after`, pull first downloads the manifest's torrent (`torrent_file_urls`, then `<base><content name>.torrent` on every webseed and mirror base), parses it, and checks that its name, files, sizes, roots, and info hashes match the manifest. `--swarm` then lets librqbit download from peers (DHT, trackers, `torrent.peers`, `--peer`) for up to `torrent.swarm_timeout_secs`, into the output directory; the HTTP pass that follows hashes every file, keeps those that match, and downloads the rest (a partly fetched file is currently fetched again in full). The torrent is kept as `.tensorseed/torrent`. `--seed-after <duration>` (`30s`, `10m`, `2h`, `1d`, `forever`) seeds the verified result, leaving out skipped pickle files. `verify` re-hashes a directory against `pull.json` (re-checking the stored manifest signature), the catalog (`verify org/name` or `--repo`), a manifest file, or the Hub (`--hf`), prints a PASS or FAIL line per file, and exits with code 3 on any mismatch. Missing pickle files count as skipped unless `--strict`.
 
-### 8.3 Seed daemon
+### 8.3 Seed daemon (`tensorseed serve`)
 
 ```
-LOOP every poll_interval:
-  sync catalog (subscription)
-  compute desired set = policy(selection rules, disk budget, license classes)
-  for new items: pull (data) then seed
-  for removed/tombstoned items: stop seeding; delete if prune=true
-  report status (local only: JSON status endpoint on localhost, optional)
+START   load <data_dir>/serve-state.json; seed last run's revisions (resume)
+LOOP every serve.sync_interval_secs:
+  sync catalog (file: head, deltas, snapshot; chia: sync status)
+  read head.json expiry; with serve_catalog, mirror the signed catalog files
+  desired = rules(select/exclude globs, watchlist, types, license classes,
+                  latest_only, max_revision_bytes, max_bytes budget) minus tombstoned
+  for seeded items not desired: stop seeding, stop HTTP serving; delete if owned and prune
+  for desired items on disk: check torrent against the signed manifest, librqbit piece check, seed
+  for desired items missing: if fetch, pull (one at a time, in the background) then seed
+  update the health document; persist state
+SIGTERM / SIGINT: delete port mappings, persist state, stop
 ```
 
-Implemented today: `tensorseed seed` seeds every revision under `storage.local_dir` and every enabled `provider = "torrent"` storage target `dir` (each `t/<name>.torrent` with its `t/<name>/` directory), or the directories passed with `--dir` (pulled directories with `.tensorseed/torrent`, or published trees), in place without copying. librqbit checks every piece first and a revision with missing or corrupt files is refused. It listens on `torrent.listen_addr`:`torrent.listen_port`, honors `torrent.upload_limit_kbps`, `dht`, and `lsd`, reports uploaded bytes every 5 minutes, and runs until `--for <duration>` passes or Ctrl-C. Not yet: the catalog loop, selection rules, tombstones, disk budgets, `--serve-catalog`.
+Implemented (Revision 9). `tensorseed serve [--for DURATION] [--serve-catalog] [--http ADDR:PORT] [--health ADDR:PORT|off] [--fetch|--no-fetch] [--dir DIR]... [--sync-interval SECS]` runs the loop above; flags override `[serve]` keys.
 
-Selection rules (planned): explicit repo list, glob patterns (`org/*`), "latest revision only" vs "all revisions", max bytes, license classes allowed. Bandwidth caps (upload/download), and connection limits. Optional `--serve-catalog` (section 6.7).
+- **Where revisions come from.** Selected revisions are looked up as `t/<content name>/` (with `t/<content name>.torrent`) under `serve.data_dir` (downloaded by the daemon, "owned"), `storage.local_dir`, every enabled `provider = "torrent"` target, and `serve.dirs`. The local torrent must match the signed manifest (`Metainfo::check_manifest`: name, files, sizes, BEP 52 roots, info hashes), then librqbit checks every piece before the revision is announced, so a revision is only seeded and served when it matches the catalog. If no torrent file is on disk, it is fetched from the manifest's `torrent_file_urls`. With `fetch = true`, missing revisions are downloaded into `<data_dir>/t/<content name>/` with the pull pipeline (8.2: swarm first when `fetch_swarm`, then webseeds, mirrors, the Hub; every file SHA-256 checked), one at a time in the background so takedowns stay prompt; a failed download is retried after an hour. An incomplete owned copy (crash mid download) is resumed rather than seeded.
+- **Selection.** `select` globs (`*` matches across `/`) with `exclude`, plus the `[harvest]` watchlist with `select_watchlist`; `types`, `license_classes`, `latest_only`, `max_revision_bytes`, and the `max_bytes` disk budget (sum of all seeded revisions). Priority for the budget: first matching `select` pattern, then latest before older revisions, then newer `published_at`. The default `select = ["*"]` with `fetch = false` seeds everything of the catalog that is already on disk and downloads nothing.
+- **Takedowns.** A tombstone covering a revision (or an index entry marked `taken_down`) stops seeding and HTTP serving at the next sync (default every 300 s). Owned copies are deleted with `prune = true` (default), also when a revision is deselected; published trees (`storage.local_dir`, `serve.dirs`) are never deleted by `serve`. An in-flight download of a revision that is taken down is cancelled.
+- **Limits.** Upload cap from `serve.upload_limit_kbps` (falls back to `torrent.upload_limit_kbps`), swarm download cap `serve.download_limit_kbps`, HTTP upload cap `serve.http_upload_limit_kbps` shared by all connections.
+- **NAT traversal.** uTP (BEP 29) is on by default in `serve` (`serve.utp`): librqbit 9.1 accepts and dials uTP on the UDP side of `torrent.listen_port` next to TCP (librqbit itself still defaults to TCP only, so `pull` and `seed` keep TCP only). Port mapping is off by default because it opens a port on the router; `serve.port_mapping = true` tries NAT-PMP (RFC 6886, which PCP routers also answer) on the default gateway, then UPnP IGD (`WANIPConnection` / `WANPPPConnection` `AddPortMapping`), for TCP and UDP, with one hour leases renewed at half time and deleted on shutdown. If the router grants a different external port, the daemon warns (peers learn the local port). uTP is not hole punching: two peers that are both behind NAT without a mapping still cannot connect.
+- **HTTP serving** (`serve.http_listen`, off by default): `GET /t/<content name>.torrent` and `GET /t/<content name>/<path>` for every seeded revision, which is the BEP 19 layout, so `http://host:port/` works as a `mirrors.toml` entry or a webseed base (`.../t/`). Single `Range` requests get 206 with `Content-Range`, unsatisfiable ones 416, `HEAD` works, only files listed in the torrent are reachable (no `.tensorseed/` state, no traversal), files whose size changed on disk are refused, and a revision disappears from HTTP the moment it stops seeding.
+- **`--serve-catalog`** (`serve.serve_catalog`, needs `http_listen`): after each sync the daemon copies `head.json`, every `deltas/*.json`, the head's snapshot, and `mirrors.toml`, each with its `.minisig`, from the sync source into `<data_dir>/catalog/<catalog>/`, checking every signature against the pinned key, and serves them at `/<catalog>/`, so the daemon is a valid `file.mirror_urls` entry. `seed --serve-catalog` serves the publisher's own `<storage.local_dir>/<catalog>/` on `serve.http_listen`.
+- **Health** (`serve.health_listen`, default `127.0.0.1:6880`; keep it on localhost): `GET /health` returns `ts.serve.health/1` JSON: status, uptime, catalog (name, backend, revision, root, `head_expires_unix`, source, last sync times, `last_sync_error`, serving), swarm (listen address, uTP, DHT, bytes up and down for this run and in total, speeds, live and connecting peers, limits), every seeded torrent (name, repo, commit, dir, bytes, info hash, uploaded bytes, peers, state, owned), seeded bytes and budget, downloads in progress, skipped revisions with reasons, takedowns applied, HTTP counters, and port mapping state. It answers 503 when the last sync failed and the head is expired (or no sync ever worked); `GET /healthz` is the plain text version.
+- **State and shutdown.** `<data_dir>/serve-state.json` (`ts.servestate/1`) records the seeded revisions and lifetime byte counters; torrents are kept in `<data_dir>/torrents/`. On restart the daemon seeds those revisions again right away (librqbit rechecks pieces), then the first sync applies any takedown. SIGTERM and SIGINT remove port mappings, save state, and exit 0. A hardened unit is in `contrib/systemd/tensorseed-serve.service` (DynamicUser, ProtectSystem=strict, empty capability set, syscall filter) with a minimal config next to it.
+- **Not yet:** a free disk space check before fetching (only the byte budget applies), BitTorrent seeding of catalog snapshots, announcing a different external port than the local one, and Chia head expiry (the Chia backend reports its generation only).
+
+`tensorseed seed` stays the simple one shot seeder: it seeds every revision under `storage.local_dir`, every enabled `provider = "torrent"` storage target `dir`, or the directories passed with `--dir`, in place, honors `torrent.upload_limit_kbps`, `dht`, and `lsd`, and runs until `--for <duration>` or Ctrl-C. The `[seed]` config block is superseded by `[serve]` and ignored.
 
 ---
 
@@ -548,7 +566,8 @@ Single binary `tensorseed`.
 | `list [--filter] [--no-wait]` | List catalog entries (from `index` keys). | done |
 | `show <repo_id>[@commit] [--revision]` | Print a manifest. | done |
 | `jobs [--show ID] [--clear ID]` | Inspect resumable download jobs. | done |
-| `seed [--dir DIR]... [--for DURATION] [--serve-catalog]` | Seed published revisions or pulled directories in place (8.3). | done (no catalog loop, selection rules, or `--serve-catalog` yet) |
+| `seed [--dir DIR]... [--for DURATION] [--serve-catalog]` | Seed published revisions or pulled directories in place; `--serve-catalog` also serves the local catalog files on `serve.http_listen` (8.3). | done |
+| `serve [--for DURATION] [--serve-catalog] [--http ADDR] [--health ADDR\|off] [--fetch\|--no-fetch] [--dir DIR]... [--sync-interval SECS]` | Long running seeder: catalog loop, selection rules, takedowns, budget, auto fetch, HTTP webseed, catalog mirror, health endpoint, port mapping (8.3). | done |
 | `takedown <repo_id> --reason ... [--revisions ...] [--delete-webseed]` | Write a tombstone, optionally delete webseed objects on every storage target. | stub |
 
 Exit codes: 0 success, 1 error, 2 not implemented yet, 3 verification or download failure.
@@ -640,13 +659,31 @@ type = "model"
 include = ["*.safetensors", "*.json", "LICENSE*", "README.md"]
 exclude = []
 
-[seed]
-poll_interval_secs = 600
-max_bytes = 2_000_000_000_000
-select = ["org/*"]
+[serve]                          # section 8.3; [seed] is superseded and ignored
+data_dir = "~/.local/share/tensorseed/serve"
+dirs = []
+sync_interval_secs = 300
+select = ["*"]
+exclude = []
+select_watchlist = false
+types = []
+license_classes = []
 latest_only = true
+max_bytes = 0                    # disk budget (0 = unlimited)
+max_revision_bytes = 0
+fetch = false
+fetch_swarm = true
 prune = true
+upload_limit_kbps = 0            # 0 = torrent.upload_limit_kbps
+download_limit_kbps = 0
+utp = true
+port_mapping = false             # NAT-PMP / UPnP IGD; opens a router port
+port_mapping_lease_secs = 3600
+http_listen = ""                 # e.g. "0.0.0.0:8080" (webseed layout)
+http_upload_limit_kbps = 0
 serve_catalog = false
+health_listen = "127.0.0.1:6880"
+check_timeout_secs = 3600
 
 [harvest]                        # section 13
 repos = []                       # ids or { id = "org/name", allow_license = ["other"] }
@@ -800,7 +837,8 @@ There is no official Rust DataLayer daemon; M1 talks to the Python `chia data` s
 | `tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback and SQLite job state. |
 | `tensorseed-catalog` | `CatalogBackend` trait and backends. `minisign` (signature format and key files), `signed` (`SignedEntry`), `chia` (DataLayer RPC over mTLS with `reqwest` + rustls), `file` (signed static files, hash chain, HTTPS sync), `sink` (local directory and S3 targets), `export` (bundles). |
 | `tensorseed-torrent` | BEP 52 v2 and hybrid torrent creation and parsing in pure Rust (BEP 19 `url-list`, magnets, Merkle verification), and the librqbit swarm engine (seed in place, download with peers). |
-| `tensorseed-cli` | The `tensorseed` binary: clap commands, figment config, tracing setup, pull, verify, harvest, seed. |
+| `tensorseed-serve` | Building blocks of `serve`: BEP 19 HTTP file serving with ranges and the catalog mirror route, the health document and endpoint, NAT-PMP and UPnP IGD port mapping, selection rules, a shared rate limiter. |
+| `tensorseed-cli` | The `tensorseed` binary: clap commands, figment config, tracing setup, pull, verify, harvest, seed, and the `serve` loop. |
 
 MSRV is Rust 1.87 (needed by a patched dependency for RUSTSEC-2026-0385).
 
