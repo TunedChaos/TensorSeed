@@ -5,6 +5,7 @@ members = [
     "crates/tensorseed-hf",
     "crates/tensorseed-catalog",
     "crates/tensorseed-torrent",
+    "crates/tensorseed-fetch",
     "crates/tensorseed-cli",
 ]
 
@@ -22,6 +23,7 @@ tensorseed-core = { path = "crates/tensorseed-core", version = "0.1.0" }
 tensorseed-hf = { path = "crates/tensorseed-hf", version = "0.1.0" }
 tensorseed-catalog = { path = "crates/tensorseed-catalog", version = "0.1.0" }
 tensorseed-torrent = { path = "crates/tensorseed-torrent", version = "0.1.0" }
+tensorseed-fetch = { path = "crates/tensorseed-fetch", version = "0.1.0" }
 
 anyhow = "1"
 bytes = "1"
