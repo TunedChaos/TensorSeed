@@ -6,6 +6,11 @@ Derived from [SPEC.md](SPEC.md) section 15. Current milestone: **M0**.
 
 - [x] Project named Tensorseed; domains tensorseed.dev (primary), tensorseed.org, tensorseed.garden
 - [x] Rust workspace scaffold: core types, `CatalogBackend` trait, CLI skeleton, config loading, CI
+- [x] Decision: keep Chia DataLayer as the first backend and add a chain-free signed-file backend (spec 6.8)
+- [x] Minisign compatible signing and verification (checked both ways against the `minisign` tool)
+- [x] `SignedEntry` envelope: every entry signed by the publisher key, bound to catalog name and key
+- [x] Signed-file backend: hash chain, rollback, fork, gap, and stale head detection, with unit tests
+- [x] Export bundle (`ts.export/1`) build and verify; CLI `catalog export` / `catalog import` stubs (`import --dry-run` works)
 
 ## M0: Spikes (scaffold only, no product logic)
 
@@ -27,6 +32,11 @@ Derived from [SPEC.md](SPEC.md) section 15. Current milestone: **M0**.
 - [ ] `add_mirror`
 - [ ] Check the `CatalogBackend` trait against the real call sequence and adjust it
 
+### Signed-file catalog (spec 6.8 to 6.10)
+- [ ] Load minisign encrypted secret key files (scrypt) and add `catalog keygen`
+- [ ] Persist the trust anchor `(revision, root)` in `file.state_dir`
+- [ ] Confirm value size overhead of the `SignedEntry` envelope against the 1 MiB target (spec 6.5)
+
 ### Hugging Face
 - [ ] Confirm API field names: tree `lfs.oid`, `gated`, `cardData.license`
 - [ ] Confirm `hf-hub` Xet downloads by commit SHA
@@ -40,6 +50,11 @@ Derived from [SPEC.md](SPEC.md) section 15. Current milestone: **M0**.
 ## M1: Publish
 - [ ] `doctor`
 - [ ] `catalog create`, `catalog info`, `catalog add-mirror`
+- [ ] Chia backend stores `SignedEntry` envelopes and verifies them on read
+- [ ] File backend: HTTPS fetch of head, deltas, snapshots with mirror fallback
+- [ ] File backend: upload to R2 (`catalog.tensorseed.dev`), snapshot every N revisions, head re-signing before expiry
+- [ ] File backend: catalog snapshot torrent
+- [ ] `catalog export` and `catalog import` end to end (Chia to file and file to Chia)
 - [ ] `publish` state machine (spec section 8.1)
 - [ ] `sync`
 - [ ] `jobs`
@@ -61,7 +76,7 @@ Derived from [SPEC.md](SPEC.md) section 15. Current milestone: **M0**.
 - [ ] Disk budget and bandwidth caps
 - [ ] Honor tombstones
 - [ ] Optional `--serve-catalog`
-- [ ] Catalog `.dat` torrent
+- [ ] Catalog `.dat` torrent (Chia) and snapshot torrent seeding (file)
 
 ## M4: Catalog explorer
 - [ ] Static site at tensorseed.dev generated from the catalog

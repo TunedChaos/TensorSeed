@@ -11,7 +11,9 @@ use std::process::ExitCode;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use cli::{Cli, Command, ConfigCmd, LogFormat};
+use cli::{CatalogCmd, Cli, Command, ConfigCmd, LogFormat};
+use tensorseed_catalog::export::ExportBundle;
+use tensorseed_catalog::minisign::PublicKey;
 
 /// Exit code used for commands that are not implemented yet.
 const EXIT_NOT_IMPLEMENTED: u8 = 2;
@@ -55,6 +57,34 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Config(ConfigCmd::Show) => {
             let cfg = config::load(&path)?;
             println!("{}", serde_json::to_string_pretty(&cfg)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Catalog(CatalogCmd::Import {
+            bundle,
+            dry_run: true,
+            ..
+        }) => {
+            let cfg = config::load(&path)?;
+            if cfg.catalog.publisher_pubkey.is_empty() {
+                anyhow::bail!("catalog.publisher_pubkey must be set to verify a bundle");
+            }
+            let pinned = PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
+            let parsed: ExportBundle = serde_json::from_slice(&std::fs::read(bundle)?)?;
+            if parsed.catalog != cfg.catalog.name {
+                anyhow::bail!(
+                    "bundle is for catalog {:?}, config catalog.name is {:?}",
+                    parsed.catalog,
+                    cfg.catalog.name
+                );
+            }
+            parsed.verify(&pinned)?;
+            println!(
+                "ok: {} entries from {} ({}) verify against pinned key {}",
+                parsed.entries.len(),
+                parsed.source_kind,
+                parsed.source_id,
+                pinned.key_id_hex()
+            );
             Ok(ExitCode::SUCCESS)
         }
         other => {

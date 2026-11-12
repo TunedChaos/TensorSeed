@@ -12,7 +12,10 @@ keep_local_seed = true
 max_concurrent_downloads = 2
 
 [catalog]
-backend = "chia"                 # only "chia" for now; see docs/SPEC.md section 6.0
+backend = "chia"                 # "chia" | "file"; see docs/SPEC.md sections 6.0 and 6.8
+name = "tensorseed"              # logical catalog name, bound into every entry signature
+publisher_pubkey = ""            # pinned minisign public key ("RW..."), same for every backend
+# publisher_seckey_file = "~/.config/tensorseed/publisher.key"   # only needed to publish
 
 [chia]
 rpc_url = "https://localhost:8562"
@@ -25,6 +28,14 @@ confirm_poll_secs = 20
 confirm_timeout_secs = 1800
 catalog_mirror_urls = []         # public URLs of your DataLayer HTTP server (port 8575)
 mirror_amount_mojos = 0
+
+[file]
+base_url = "https://catalog.tensorseed.dev/"   # head.json, deltas/, snapshots/ (+ .minisig)
+mirror_urls = []                 # any static host carrying the same files
+state_dir = "~/.local/share/tensorseed/catalog"
+snapshot_every = 64              # full snapshot every N revisions
+head_ttl_secs = 604800           # head expires after 7 days unless re-signed
+torrent = true                   # also publish each snapshot as a torrent
 
 [huggingface]
 endpoint = "https://huggingface.co"

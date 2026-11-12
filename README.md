@@ -17,8 +17,10 @@ original host goes away, and lets anyone check that a copy is genuine.
   every file, its size, its SHA-256, the license, and the Hugging Face commit it came
   from. Only the catalog owner can update it, every version is kept, and anyone can
   subscribe and re-serve it. The catalog sits behind a pluggable `CatalogBackend`
-  trait; the first backend is **Chia DataLayer**, where only the Merkle root goes on
-  chain. Other chains can be added later without changing the manifest format.
+  trait with two backends: **Chia DataLayer** (first; only the Merkle root goes on
+  chain) and a chain-free **signed static-file catalog** served over HTTPS and as a
+  torrent. Every entry is signed with the same publisher key in both, so the catalog
+  can be exported from one backend and imported into another with signatures intact.
 - **Bytes over BitTorrent v2.** Model files travel as BEP 52 torrents, which verify
   every block with SHA-256, plus BEP 19 HTTP webseeds (Cloudflare R2 first) so
   downloads work even with zero peers.
@@ -34,7 +36,7 @@ Read the full design in [docs/SPEC.md](docs/SPEC.md) and the plan in
 |---|---|
 | `crates/tensorseed-core` | Manifest and catalog JSON types, `ts/v1/` keys, canonical JSON, streaming SHA-256 |
 | `crates/tensorseed-hf` | Hugging Face Hub API client (stub) |
-| `crates/tensorseed-catalog` | `CatalogBackend` trait and the Chia DataLayer backend (stub) |
+| `crates/tensorseed-catalog` | `CatalogBackend` trait, signed entries (minisign format), Chia DataLayer backend (stub), signed-file backend (verification and hash chain done, transport stubbed) |
 | `crates/tensorseed-torrent` | BitTorrent v2 + webseed content layer (stub, pending M0) |
 | `crates/tensorseed-cli` | The `tensorseed` binary |
 

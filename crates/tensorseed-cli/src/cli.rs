@@ -166,6 +166,36 @@ pub enum CatalogCmd {
         #[arg(long)]
         fee: Option<u64>,
     },
+    /// Export every signed entry to a backend neutral bundle (ts.export/1).
+    Export {
+        /// Output file for the bundle.
+        #[arg(long)]
+        out: PathBuf,
+        /// Backend to read from (default: catalog.backend).
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
+    /// Verify a bundle against the pinned publisher key and publish its
+    /// entries, signatures unchanged, as one new generation.
+    Import {
+        /// Bundle written by `catalog export`.
+        bundle: PathBuf,
+        /// Backend to write to (default: catalog.backend).
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+        /// Verify only; do not write anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// Catalog backend argument (mirrors `catalog.backend`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BackendArg {
+    /// Chia DataLayer.
+    Chia,
+    /// Signed static files.
+    File,
 }
 
 /// `config` subcommands.
@@ -216,6 +246,8 @@ impl Command {
             Self::Catalog(CatalogCmd::Create) => "catalog create",
             Self::Catalog(CatalogCmd::Info { .. }) => "catalog info",
             Self::Catalog(CatalogCmd::AddMirror { .. }) => "catalog add-mirror",
+            Self::Catalog(CatalogCmd::Export { .. }) => "catalog export",
+            Self::Catalog(CatalogCmd::Import { .. }) => "catalog import",
             Self::Publish { .. } => "publish",
             Self::Sync => "sync",
             Self::Pull(_) => "pull",
@@ -254,6 +286,40 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cli.command.name(), "pull");
+    }
+
+    #[test]
+    fn parses_catalog_export_import() {
+        let cli = Cli::try_parse_from([
+            "tensorseed",
+            "catalog",
+            "export",
+            "--out",
+            "bundle.json",
+            "--backend",
+            "chia",
+        ])
+        .unwrap();
+        assert_eq!(cli.command.name(), "catalog export");
+        let cli = Cli::try_parse_from([
+            "tensorseed",
+            "catalog",
+            "import",
+            "bundle.json",
+            "--backend",
+            "file",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Catalog(CatalogCmd::Import {
+                backend, dry_run, ..
+            }) => {
+                assert_eq!(backend, Some(BackendArg::File));
+                assert!(dry_run);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::signed::SignedEntry;
 use crate::{
     CatalogBackend, CatalogError, CatalogId, CatalogOp, Generation, PendingCommit, Result,
     SyncStatus,
@@ -147,6 +148,15 @@ impl CatalogBackend for ChiaDataLayer {
             .await?;
         match resp.get("value").and_then(Value::as_str) {
             Some(v) => Ok(Some(from_hex(v)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_signed(&self, catalog: &CatalogId, key: &str) -> Result<Option<SignedEntry>> {
+        // Stored values are SignedEntry envelopes (spec section 6.9).
+        // TODO(M1): `get` should unwrap and verify the envelope with the pinned key.
+        match self.get(catalog, key).await? {
+            Some(bytes) => Ok(Some(SignedEntry::from_bytes(&bytes)?)),
             None => Ok(None),
         }
     }

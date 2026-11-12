@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 3)
+# Tensorseed: Project Specification (Revision 4)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 > Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Initial Rust workspace scaffold exists; no product logic yet.
+
+Revision 4 changes: added a second, chain-free catalog backend (signed static files, section 6.8) next to Chia DataLayer, made every catalog entry a publisher-signed envelope in every backend (6.9), and defined `catalog export` / `catalog import` for moving a catalog between backends with signatures intact (6.10).
 
 Revision 3 changes: renamed the project to Tensorseed, switched key and schema prefixes to `ts`, and made the catalog layer explicitly pluggable through a `CatalogBackend` trait with Chia DataLayer as the first implementation (section 6.0).
 
@@ -13,7 +15,7 @@ Revision 3 changes: renamed the project to Tensorseed, switched key and schema p
 
 A Rust CLI and daemon that keeps open AI models and datasets from Hugging Face (HF) available even if HF goes away. It does this in two layers:
 
-1. **Catalog layer (pluggable; Chia DataLayer first):** a small, signed, versioned index behind a `CatalogBackend` trait so other chains can be added later without changing the manifest format. In the first backend, one DataLayer store maps each HF repository to its mirrored revisions. Each revision has a manifest: file list, sizes, SHA-256 hashes, license, the HF commit it came from, and how to fetch the bytes. Only the Merkle root of this store goes on chain. Values are kilobytes, not gigabytes.
+1. **Catalog layer (pluggable; Chia DataLayer first, signed static files second):** a small, signed, versioned index behind a `CatalogBackend` trait so other chains can be added later without changing the manifest format. Every entry is signed with one publisher key in every backend, so the catalog can move between backends. The `file` backend (6.8) needs no chain at all. In the first backend, one DataLayer store maps each HF repository to its mirrored revisions. Each revision has a manifest: file list, sizes, SHA-256 hashes, license, the HF commit it came from, and how to fetch the bytes. Only the Merkle root of this store goes on chain. Values are kilobytes, not gigabytes.
 2. **Content layer (BitTorrent v2 plus HTTP webseeds):** the actual model bytes travel as BitTorrent v2 torrents (BEP 52) with BEP 19 webseeds. A Cloudflare R2 bucket is the primary always-on webseed. Backblaze B2 and/or Sia are optional cold backups. Volunteers seed whatever subset they choose.
 
 A user who knows only the catalog store ID (for the Chia backend) can find any mirrored model, download it from the swarm or the webseed, and verify every byte against hashes that are anchored on Chia and traceable to the original HF commit.
@@ -39,13 +41,13 @@ This directly answers the question in the tweet that started this project: model
 ### 2.1 Goals
 
 - G1. Mirror selected HF model and dataset revisions with byte-exact fidelity, identified by HF commit SHA.
-- G2. Publish a tamper-evident, versioned catalog anchored on Chia that anyone can subscribe to and re-serve.
+- G2. Publish a tamper-evident, versioned catalog that anyone can subscribe to and re-serve: anchored on Chia, and also available as signed static files with no chain dependence.
 - G3. Let anyone download a mirrored revision without HF and without trusting any single host, verifying SHA-256 per file.
 - G4. Distribute bandwidth across volunteer seeders, with an always-on HTTP webseed so downloads work with zero peers.
 - G5. Be idempotent and resumable: re-running does nothing if the HF commit is already published; interrupted work resumes.
 - G6. Respect licenses: record each repo's license, default to an open-license allowlist, support takedowns.
 - G7. Single static Rust binary for publish, pull, and seed.
-- G8. Stay chain agnostic: manifests and key layout do not depend on Chia, and every chain specific operation goes through the `CatalogBackend` trait so a different or additional chain can be adopted later.
+- G8. Stay chain agnostic: manifests and key layout do not depend on Chia, and every chain specific operation goes through the `CatalogBackend` trait so a different or additional chain can be adopted later. Entry signatures are backend independent (6.9).
 
 ### 2.2 Non-goals
 
@@ -100,7 +102,11 @@ Key property: the catalog says *what* the correct bytes are (hashes) and *where*
 | Threat | Impact | Mitigation |
 |---|---|---|
 | Malicious or buggy webseed / peer serves wrong bytes | Corrupt or poisoned weights | BitTorrent v2 per-16 KiB-block Merkle verification during transfer, plus full-file SHA-256 check against the manifest before a file is moved out of the temp dir. Failing sources are dropped. |
-| Malicious DataLayer mirror serves forged catalog `.dat` | Fake manifests | Chia DataLayer validates downloaded data against the on-chain root before accepting it. Clients pin the catalog store ID. |
+| Malicious DataLayer mirror serves forged catalog `.dat` | Fake manifests | Chia DataLayer validates downloaded data against the on-chain root before accepting it. Clients pin the catalog store ID. Every entry is also verified against the pinned publisher key (6.9). |
+| Malicious file-catalog host or mirror forges, rolls back, or forks the catalog | Fake or outdated manifests | Head, deltas, and snapshots are minisign-signed with the pinned publisher key; every entry is verified again; the revision and `prev_root` hash chain plus the local trust anchor reject rollback, replay, gaps, and forks (6.8). |
+| File-catalog host freezes the catalog (serves an old, validly signed head forever) | Users miss new revisions and tombstones | `head.json` carries `expires_unix`; clients refuse expired heads. Publisher re-signs the head before `file.head_ttl_secs` lapses. |
+| Publisher shows different file-catalog chains to different users (split view) | Targeted users get different manifests | Not preventable by the file backend alone. Detectable by comparing heads across mirrors; prevented by the Chia backend's on-chain root (6.11). |
+| Publisher signing key compromise (any backend) | Attacker signs valid looking entries | Keep the key offline; rotation and revocation design is an open question (section 16). Rollback and fork checks still stop rewriting history already seen by clients. |
 | Catalog owner key compromise | Attacker publishes manifests pointing to malicious weights (pickle `.bin`/`.pt` can execute code on load) | Keep the owner key in a cold or Vault-style setup; publish from a CHIP-0035 delegated writer key that the owner can revoke (optional, see 6.6). Manifests record `hf_commit` and HF-reported hashes so anyone can audit against HF while it exists. `pull` warns loudly on pickle-based formats and prefers `safetensors`/`gguf`. `pull` shows the publishing generation and timestamp and supports `--expect-sha256` / pinned revisions. |
 | Upstream HF repo itself is malicious or later altered | We mirror bad content, or a force-push rewrites history | We mirror by immutable commit SHA; new commits become new revisions and never overwrite old manifests. Record HF security-scan status if exposed by the API (unverified, M0). |
 | Publisher host compromise | Same as key compromise; also R2 credentials | Least-privilege R2 token (write to one bucket), DataLayer RPC never exposed beyond localhost (RPC reference warns port 8562 must not be public). |
@@ -138,6 +144,8 @@ pub trait CatalogBackend: Send + Sync {
     async fn create_catalog(&self) -> Result<CatalogId>;
     /// Read one value by key from the latest synced generation.
     async fn get(&self, catalog: &CatalogId, key: &str) -> Result<Option<Vec<u8>>>;
+    /// Read the signed envelope for a key (used by export, 6.10).
+    async fn get_signed(&self, catalog: &CatalogId, key: &str) -> Result<Option<SignedEntry>>;
     /// List keys under a prefix.
     async fn keys(&self, catalog: &CatalogId, prefix: &str) -> Result<Vec<String>>;
     /// Stage a batch of upserts and deletes without publishing.
@@ -156,11 +164,12 @@ pub trait CatalogBackend: Send + Sync {
 ```
 
 Rules:
-- The first and only M1 implementation is `chia` (Chia DataLayer over its local RPC with mTLS). Sections 6.1 to 6.7 describe it.
+- Two implementations in M1: `chia` (Chia DataLayer over its local RPC with mTLS, the first and canonical backend, sections 6.1 to 6.7) and `file` (signed static files, no chain, section 6.8).
 - Backends must provide: an owner controlled writer, atomic multi key generations, a verifiable history (each generation anchored by a root hash or equivalent), and third party subscription or replication.
+- Every stored value is a `SignedEntry` (6.9) signed by the one publisher key pinned in `catalog.publisher_pubkey`, whatever the backend. Backends add history and distribution on top; they are never the only source of authenticity.
 - Manifests, key names, and canonical JSON are backend independent, so the same manifest bytes can be published to several backends at once. A future migration means publishing the same keys into a new backend and announcing its catalog ID in `ts/v1/catalog` of the old one.
-- Config selects the backend with `catalog.backend = "chia"`. Unknown backends are a config error.
-- Candidate future backends (not planned for M1 to M4): other chains with a key value store or an anchored Merkle root, or a signed static file catalog for offline use.
+- Config selects the backend with `catalog.backend = "chia" | "file"`. Unknown backends are a config error.
+- Candidate future backends (not planned for M1 to M4, only on demand): other chains with a key value store or an anchored Merkle root, for example an EVM layer 2. Migration uses export and import (6.10).
 
 
 ### 6.1 Chia DataLayer backend: facts this design relies on (verified 2026-11-12)
@@ -284,6 +293,7 @@ Field rules:
 
 - Target: each value under 1 MiB raw; hard cap 4 MiB raw (well under the about 12.5 MiB raw per RPC call implied by the 25 MiB hex body default).
 - If a manifest's `files` would exceed the target (large datasets with many files), split into `FilePage` values of at most 1 MiB each.
+- The `SignedEntry` envelope adds about 350 bytes of signature plus JSON string escaping of the value (roughly 10 to 20 percent for manifests); budgets above apply to the envelope. Confirm in M0.
 - One publish (all keys for one revision plus index and latest pointer) must stay far below the 250 MiB per-generation delta cap. In practice it is kilobytes to a few MiB.
 
 ### 6.6 Write path rules
@@ -300,6 +310,93 @@ Field rules:
 - The publisher runs the DataLayer HTTP server (port 8575) and calls `add_mirror` once for the catalog store with its public URL(s). `amount` default 0 (refundable, minimum 0 per docs).
 - Volunteers who `seed` with `--serve-catalog` subscribe to the catalog (their Chia node then serves the `.dat` files automatically) and may optionally call `add_mirror` themselves to advertise. That costs a transaction fee and requires a reachable port 8575.
 - Optionally also publish each catalog generation's full `.dat` file as a small torrent, so the catalog survives even if all DataLayer mirrors vanish (same idea as The Hugging Bay's catalog torrent).
+
+### 6.8 Signed static-file backend (`file`, no chain)
+
+A second backend with zero chain dependence. It carries the same keys (6.3) and the same canonical JSON documents (6.4), wrapped in the same `SignedEntry` envelopes (6.9) as the Chia backend, but publishes them as plain files. Config: `catalog.backend = "file"` and the `[file]` table (section 10). Code: `tensorseed-catalog::file`.
+
+**Layout** under `file.base_url` (default `https://catalog.tensorseed.dev/`, an R2 bucket on a custom domain), one directory per logical catalog name:
+
+```
+<base_url>/<catalog>/head.json                       (+ head.json.minisig)    rewritten each revision
+<base_url>/<catalog>/deltas/<revision:010>.json      (+ .minisig)             one per revision, never rewritten
+<base_url>/<catalog>/snapshots/<revision:010>.json   (+ .minisig)             full state, every file.snapshot_every revisions
+```
+
+Everything except `head.json` is append-only: a published delta or snapshot is never modified or deleted, so any static host, mirror, or archive can carry the full history. Each snapshot is also published as a small BitTorrent v2 torrent (magnet listed in `head.json` in M1), so the catalog survives if every HTTPS host vanishes. Extra read mirrors go in `file.mirror_urls`.
+
+**Documents** (canonical JSON, schemas `ts.filehead/1`, `ts.filedelta/1`, `ts.filesnapshot/1`):
+
+- `Delta { catalog, revision, prev_root, state_hash, root, ops: [ {"op":"upsert","entry":SignedEntry} | {"op":"delete","key":...} ] }`
+- `Snapshot { catalog, revision, prev_root, state_hash, root, entries: [SignedEntry sorted by key] }`
+- `Head { catalog, revision, root, prev_root, snapshot: {revision, path, sha256} | null, expires_unix }`
+
+**Hash chain:**
+
+- `state_hash` = SHA-256 of the canonical JSON array of `[key, sha256(canonical SignedEntry bytes)]` pairs, sorted by key.
+- `root(n)` = SHA-256 of canonical `{"schema":"ts.fileroot/1","catalog","revision":n,"prev_root":root(n-1),"state_hash"}`; `root(0)` is 64 zeros.
+- Revisions increase by exactly 1. Each delta names the root it builds on, so the chain is a linked list from revision 1 to the head.
+
+**Signatures:** every head, delta, and snapshot has a detached minisign signature (6.9) whose trusted comment is exactly `ts.file/1 kind=<head|delta|snapshot> catalog=<name> rev=<n> root=<hex>`. Every entry inside a delta or snapshot is verified again on its own, so a correctly signed delta cannot smuggle in an entry signed by another key.
+
+**Client rules** (implemented in `ChainState`, unit tested):
+
+| Situation | Result |
+|---|---|
+| Head revision lower than the highest accepted revision | `Rollback` error |
+| Same revision, different root | `Fork` error |
+| Delta revision lower than next | `Rollback` (replay) error |
+| Delta revision higher than next | `Chain` error (gap): fetch the missing deltas or a newer snapshot |
+| Delta `prev_root` differs from the local root | `Fork` error |
+| Recomputed `state_hash` or `root` differs | `Chain` error |
+| `expires_unix` in the past | `Chain` error (stale head, freeze attack) |
+| Wrong key, tampered body, or wrong trusted comment | `Signature` error |
+
+Clients keep a trust anchor `(revision, root)` in `file.state_dir` (persistence is M1) and never go below it. A new client bootstraps from the newest snapshot, then applies later deltas. The publisher re-signs `head.json` (same revision, new `expires_unix`) before `file.head_ttl_secs` lapses.
+
+**What it does not give you:** the file backend proves *who* published each revision and that history was not rewritten for clients that already saw it. It cannot prove to a brand new client that the publisher never showed a different chain to someone else (a split view); only cross-checking with other mirrors or a public ledger can. That is what Chia adds (6.11).
+
+### 6.9 Signed entries and the signature format
+
+Every value stored under a `ts/v1/` key, in every backend, is a `SignedEntry` envelope:
+
+```json
+{ "schema": "ts.signed/1", "key": "ts/v1/...", "value": "<canonical JSON document as a string>", "sig": "<minisign signature over the UTF-8 bytes of value>" }
+```
+
+The signature's trusted comment is exactly `ts.entry/1 catalog=<name> key=<key> sha256=<sha256 of value>`, which binds the document to its key and to the logical catalog name (`catalog.name`, independent of backend ids such as a Chia store id). One publisher Ed25519 key signs every entry, and its public key is pinned in config as `catalog.publisher_pubkey`. Verification rejects non-canonical values, unknown schemas, and any context mismatch. On Chia the stored value is the canonical JSON of the envelope (hex encoded on the wire as before).
+
+**Format choice: minisign** (https://jedisct1.github.io/minisign/), Ed25519 over a BLAKE2b-512 prehash (`ED` mode).
+
+- *Why minisign:* a single fixed algorithm, so no algorithm negotiation or downgrade surface. Keys are one short base64 line that fits in TOML. The trusted comment is covered by a second signature, which gives us a signed, human readable context line (catalog, key, revision, root) for free. Anyone can check any Tensorseed signature with the stock `minisign -V` tool or `rsign2`, without trusting Tensorseed code; our implementation is checked both ways against the `minisign` tool. The implementation is small (about 200 lines over `ed25519-dalek` and `blake2`, both permissively licensed and accepted by `deny.toml`).
+- *Why not ssh-sig (`ssh-keygen -Y sign`):* it accepts many key types (RSA, ECDSA, security keys), needs an allowed_signers file and namespace handling, has no signed comment field for context, and pulls in a much larger parser. Its advantage (reusing an existing SSH key, keys discoverable on GitHub) matters less for a single project key. It could be added later as a second accepted signature type (open question).
+- Not yet done: loading minisign's scrypt encrypted secret key file and a `catalog keygen` command (M0). Until then only in-memory keys exist (tests).
+
+### 6.10 Export, import, and migration
+
+Because signatures live in the entries and not in a backend, a catalog can move between backends with signatures intact:
+
+```
+tensorseed catalog export --out catalog.ts-export.json [--backend chia|file]
+tensorseed catalog import catalog.ts-export.json [--backend chia|file] [--dry-run]
+```
+
+- `export` reads every `ts/` key through `CatalogBackend::get_signed`, verifies each entry against the pinned key, and writes an `ExportBundle` (`ts.export/1`: `catalog`, informational `publisher_pubkey`, `source_kind`, `source_id`, `entries` sorted by key). The bundle is not signed as a whole; every entry already is.
+- `import` verifies every entry against the key pinned in the *destination* config (never the key inside the bundle), then stages all entries unchanged and publishes them as one new generation (Chia) or one new revision (file). No re-signing, so the destination holds byte-identical signed entries. `--dry-run` only verifies; this mode works today.
+- Migration (for example Chia to file, or file to a future chain): export, import into the new backend, then publish a `ts/v1/catalog` update in the old backend announcing the new location. Running both backends side by side from the same publisher key is supported and recommended during a transition.
+
+### 6.11 Backend comparison
+
+| | `chia` (DataLayer) | `file` (signed static files) |
+|---|---|---|
+| Entry authenticity | publisher signature (6.9) plus store owner key | publisher signature (6.9) |
+| History | public, tamper-evident, on-chain root per generation; split views are impossible | hash chain; rollback and forks detected for clients that saw a newer state; split views detectable only by cross-checking mirrors |
+| Mirror discovery | permissionless, on-chain `add_mirror` coins | static list in config (`file.mirror_urls`) plus any host copying the files |
+| Dependencies | Chia full node, wallet, XCH for fees | none beyond HTTPS or BitTorrent |
+| Cost per update | one transaction fee (often 0) | a few R2 writes |
+| Best for | the canonical, publicly auditable catalog | offline use, simple mirrors, and insurance against Chia becoming unavailable |
+
+Sia stays an optional cold store for *bytes* (7.3); it has no catalog or signature features and is not a catalog backend. Other chains (for example an EVM layer 2) can be added later as further `CatalogBackend` implementations only if users ask for them; the entry format and export bundles already make that a migration, not a redesign.
 
 ---
 
@@ -321,6 +418,7 @@ Field rules:
 
 ### 7.3 Cold backups (optional)
 
+- Sia stays optional cold storage for bytes only; it is not a catalog backend (6.11).
 - Backblaze B2 bucket and/or Sia (via `renterd`) holding the same object layout. Recorded under `backups` in the manifest so a future operator can restore the R2 webseed. Not used by `pull` unless `--allow-backup-sources` is set.
 
 ---
@@ -396,10 +494,12 @@ Single binary `tensorseed`.
 
 | Command | Purpose |
 |---|---|
-| `doctor` | Check config, catalog backend (Chia: DataLayer RPC mTLS), wallet and node sync, R2 credentials, torrent ports, disk space. |
+| `doctor` | Check config, pinned publisher key, catalog backend (Chia: DataLayer RPC mTLS; file: head fetch and signature), wallet and node sync, R2 credentials, torrent ports, disk space. |
 | `catalog create` | Create the catalog through the configured backend (Chia: `create_data_store`), wait for confirmation, write `CatalogInfo`. |
 | `catalog info [--store]` | Show catalog info, generation, root, mirrors. |
-| `catalog add-mirror --url ... [--amount] [--fee]` | Advertise a DataLayer mirror for the catalog. |
+| `catalog add-mirror --url ... [--amount] [--fee]` | Advertise a DataLayer mirror for the catalog (Chia only; the file backend lists mirrors in config). |
+| `catalog export --out FILE [--backend chia\|file]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10). |
+| `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). |
 | `publish <repo_id> [--type model\|dataset] [--revision <commit>]` | Run the publish state machine for one repo. |
 | `sync` | Publish every target in config (sequential chain writes, bounded downloads). |
 | `pull <repo_id> --catalog <store_id> [--revision] [--out DIR] [--seed-after DUR]` | Download and verify. |
@@ -427,7 +527,10 @@ keep_local_seed = true
 max_concurrent_downloads = 2
 
 [catalog]
-backend = "chia"                 # only "chia" in M1; see section 6.0
+backend = "chia"                 # "chia" | "file"; see sections 6.0 and 6.8
+name = "tensorseed"              # logical catalog name, bound into every entry signature
+publisher_pubkey = ""            # pinned minisign public key ("RW..."), same for every backend
+# publisher_seckey_file = "~/.config/tensorseed/publisher.key"   # only needed to publish
 
 [chia]
 rpc_url = "https://localhost:8562"
@@ -439,6 +542,14 @@ confirm_poll_secs = 20
 confirm_timeout_secs = 1800
 catalog_mirror_urls = []         # public URLs of DataLayer HTTP server (port 8575)
 mirror_amount_mojos = 0
+
+[file]
+base_url = "https://catalog.tensorseed.dev/"   # head.json, deltas/, snapshots/ (+ .minisig)
+mirror_urls = []                 # any static host carrying the same files
+state_dir = "~/.local/share/tensorseed/catalog"
+snapshot_every = 64              # full snapshot every N revisions
+head_ttl_secs = 604800           # head expires after 7 days unless re-signed
+torrent = true                   # also publish each snapshot as a torrent
 
 [huggingface]
 endpoint = "https://huggingface.co"
@@ -517,6 +628,7 @@ Secrets are only read from environment variables or a file outside the repo; nev
 | HF Hub | `hf-hub` 1.x | Xet support via `hf-xet` |
 | Serialization | `serde`, `serde_json` | canonical JSON helper (sorted keys) |
 | Hashing / hex | `sha2`, `hex` | streaming SHA-256 |
+| Signatures | `ed25519-dalek` 2.x, `blake2`, `base64` | minisign compatible format (6.9); BSD-3-Clause and MIT/Apache-2.0, pass `deny.toml` |
 | CLI / config | `clap` (derive), `figment` + `toml` | |
 | Errors / logs | `thiserror`, `anyhow`, `tracing`, `tracing-subscriber` | |
 | State | `rusqlite` or `sqlx` (sqlite) | decision in M0 |
@@ -534,7 +646,7 @@ There is no official Rust DataLayer daemon; M1 talks to the Python `chia data` s
 |---|---|
 | `tensorseed-core` | Manifest and catalog JSON types, key builders (`ts/v1/...`), canonical JSON, streaming SHA-256, shared errors. No network code. |
 | `tensorseed-hf` | Hugging Face API client (model info, tree, downloads by commit). |
-| `tensorseed-catalog` | `CatalogBackend` trait and backends; `chia` module talks to DataLayer RPC over mTLS with `reqwest` + rustls. |
+| `tensorseed-catalog` | `CatalogBackend` trait and backends. `minisign` (signature format), `signed` (`SignedEntry`), `chia` (DataLayer RPC over mTLS with `reqwest` + rustls), `file` (signed static files and hash chain), `export` (bundles). |
 | `tensorseed-torrent` | BitTorrent v2 torrent creation, seeding, and fetching with BEP 19 webseeds (librqbit pending M0). |
 | `tensorseed-cli` | The `tensorseed` binary: clap commands, figment config, tracing setup. |
 
@@ -568,7 +680,7 @@ Implications:
 - **Academic Torrents LLM Weights collection** (https://academictorrents.com/collection/llm-weights).
 - **DIG Network**: Chia-anchored Layer 2 that plans to pay mirrors for proven availability; whitepaper (May 2026) says "late prototype, pre-public-testnet" (https://dig.net/whitepapers/DIG-Network-Part1-Consensus.pdf). A possible future incentive layer, not usable today.
 
-What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog with Merkle proofs, so the index itself has no single point of failure and its history is auditable. Interoperating with the two indexes above (for example, exporting our manifests in their format) is an open question.
+What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog with Merkle proofs, so the index itself has no single point of failure and its history is auditable, plus a chain-free signed-file copy of the same signed entries. Interoperating with the two indexes above (for example, exporting our manifests in their format) is an open question.
 
 ---
 
@@ -580,9 +692,11 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 - Confirm HF API field names (tree `lfs.oid`, `gated`, license tag) and hf-hub Xet downloads.
 - Pick sqlite crate and S3 crate. Pick default `piece_length`.
 - Check the `CatalogBackend` trait (section 6.0) against the real DataLayer call sequence and adjust it before M1 depends on it.
+- Signed-file backend core (done): minisign compatible signing, `SignedEntry`, hash chain with rollback, fork, gap, and stale head checks, export bundles. Still in M0: encrypted key files and `catalog keygen`, trust anchor persistence.
 
 **M1: Publish**
 - `doctor`, `catalog create/info/add-mirror`, `publish`, `sync`, `jobs`. Resumable state, R2 upload, torrent creation, atomic catalog writes. Testnet first, then mainnet.
+- File backend transport: HTTPS fetch with mirror fallback, upload of deltas, snapshots, and head to `catalog.tensorseed.dev`, head re-signing, snapshot torrent. `catalog export` / `catalog import` end to end between both backends.
 
 **M2: Pull**
 - `pull`, `verify`, `list`, `show`; tombstone handling; license and NOTICE output; `--manifest-file` mode.
@@ -605,3 +719,8 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 6. License policy: open licenses only at launch, or also Llama-style attribution licenses?
 7. Build standalone, or build on / interoperate with The Hugging Bay or LLM Torrents?
 8. ~~Final project name.~~ Resolved: Tensorseed, primary domain tensorseed.dev.
+9. ~~Second, chain-free catalog backend?~~ Resolved: yes, signed static files (6.8) next to Chia.
+10. Publisher key rotation and revocation: a signed `ts/v1/keys` entry with successor keys, a threshold of maintainer keys, or both? Where does the offline key live?
+11. Should both backends run in parallel from launch (Chia canonical, file as a live mirror), or should the file backend start as export-only?
+12. Accept ssh-sig as a second signature type later (6.9), or stay minisign only?
+13. Head expiry (`file.head_ttl_secs`, default 7 days): shorter is safer against freeze attacks but needs a reliable re-signing job.

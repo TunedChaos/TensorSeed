@@ -24,6 +24,8 @@ pub struct Config {
     pub catalog: Catalog,
     /// Chia DataLayer backend settings.
     pub chia: Chia,
+    /// Signed static-file backend settings.
+    pub file: FileBackend,
     /// Hugging Face settings.
     pub huggingface: HuggingFace,
     /// Torrent settings.
@@ -72,14 +74,55 @@ impl Default for General {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Catalog {
-    /// Backend name; see `tensorseed_catalog::KNOWN_BACKENDS`.
+    /// Backend name: `chia` or `file`; see `tensorseed_catalog::KNOWN_BACKENDS`.
     pub backend: String,
+    /// Logical catalog name bound into every entry signature (same in every backend).
+    pub name: String,
+    /// Pinned publisher public key (minisign base64, `RW...`). Every entry in
+    /// every backend must verify against it.
+    pub publisher_pubkey: String,
+    /// Publisher secret key file (minisign format). Only needed to publish.
+    pub publisher_seckey_file: Option<String>,
 }
 
 impl Default for Catalog {
     fn default() -> Self {
         Self {
             backend: "chia".into(),
+            name: "tensorseed".into(),
+            publisher_pubkey: String::new(),
+            publisher_seckey_file: None,
+        }
+    }
+}
+
+/// `[file]`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FileBackend {
+    /// HTTPS base for head, deltas, and snapshots.
+    pub base_url: String,
+    /// Extra read mirrors (any static host) tried after `base_url`.
+    pub mirror_urls: Vec<String>,
+    /// Local verified state and trust anchor.
+    pub state_dir: String,
+    /// Write a full snapshot every N revisions.
+    pub snapshot_every: u64,
+    /// Head validity; publishers re-sign before it lapses.
+    pub head_ttl_secs: u64,
+    /// Also publish each snapshot as a torrent.
+    pub torrent: bool,
+}
+
+impl Default for FileBackend {
+    fn default() -> Self {
+        Self {
+            base_url: "https://catalog.tensorseed.dev/".into(),
+            mirror_urls: Vec::new(),
+            state_dir: "~/.local/share/tensorseed/catalog".into(),
+            snapshot_every: 64,
+            head_ttl_secs: 7 * 24 * 3600,
+            torrent: true,
         }
     }
 }
@@ -389,6 +432,10 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
             tensorseed_catalog::KNOWN_BACKENDS
         );
     }
+    tensorseed_catalog::signed::check_catalog_name(&cfg.catalog.name)?;
+    if !cfg.catalog.publisher_pubkey.is_empty() {
+        tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
+    }
     Ok(cfg)
 }
 
@@ -406,6 +453,7 @@ mod tests {
             jail.create_file("tensorseed.toml", EXAMPLE)?;
             let cfg = load(Path::new("tensorseed.toml")).map_err(|e| e.to_string())?;
             assert_eq!(cfg.catalog.backend, "chia");
+            assert_eq!(cfg.file.base_url, "https://catalog.tensorseed.dev/");
             assert_eq!(
                 cfg.webseed.r2.public_base_url,
                 "https://models.tensorseed.dev/t/"
@@ -422,6 +470,21 @@ mod tests {
             let cfg = load(Path::new("does-not-exist.toml")).map_err(|e| e.to_string())?;
             assert_eq!(cfg.chia.fee_mojos, 1000);
             assert_eq!(cfg.general.max_concurrent_downloads, 2);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn file_backend_and_pinned_key() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "c.toml",
+                "[catalog]\nbackend = \"file\"\nname = \"main\"\npublisher_pubkey = \"RWSSA0NfLXhfVAteHxL9PPhshHfwrMfYyxUF2VhGZIzNWARaJdwDR5TY\"\n",
+            )?;
+            let cfg = load(Path::new("c.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.catalog.backend, "file");
+            jail.create_file("bad.toml", "[catalog]\npublisher_pubkey = \"nope\"\n")?;
+            assert!(load(Path::new("bad.toml")).is_err());
             Ok(())
         });
     }

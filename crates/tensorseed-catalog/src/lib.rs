@@ -4,12 +4,22 @@
 //! Pluggable catalog backends for Tensorseed (spec section 6.0).
 //!
 //! The catalog format (keys and canonical JSON) lives in `tensorseed-core` and
-//! is chain agnostic. Every chain specific operation goes through
-//! [`CatalogBackend`]. The first implementation is [`chia::ChiaDataLayer`].
+//! is chain agnostic. Every backend specific operation goes through
+//! [`CatalogBackend`]. Two backends ship: [`chia::ChiaDataLayer`] (first, on
+//! chain) and [`file::FileCatalog`] (signed static files, no chain). Every
+//! entry in every backend is a [`signed::SignedEntry`] signed by the same
+//! publisher key, so catalogs can move between backends with
+//! [`export::export`] and import.
 
 use async_trait::async_trait;
 
 pub mod chia;
+pub mod export;
+pub mod file;
+pub mod minisign;
+pub mod signed;
+
+use signed::SignedEntry;
 
 /// Errors from catalog backends.
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +39,32 @@ pub enum CatalogError {
     /// Invalid configuration.
     #[error("config error: {0}")]
     Config(String),
+    /// Core type or canonical JSON failure.
+    #[error("core error: {0}")]
+    Core(#[from] tensorseed_core::Error),
+    /// Signature missing, malformed, from the wrong key, or for the wrong context.
+    #[error("signature error: {0}")]
+    Signature(String),
+    /// Hash chain is broken (gap, bad root, wrong catalog, stale head).
+    #[error("catalog chain error: {0}")]
+    Chain(String),
+    /// Offered state is older than state already accepted.
+    #[error("rollback detected: already accepted revision {seen}, offered {offered}")]
+    Rollback {
+        /// Highest accepted revision.
+        seen: u64,
+        /// Revision offered by the source.
+        offered: u64,
+    },
+    /// Two different states claim the same revision.
+    #[error("fork detected at revision {revision}")]
+    Fork {
+        /// Revision with conflicting roots.
+        revision: u64,
+    },
+    /// Operation does not exist for this backend.
+    #[error("not supported by this backend: {0}")]
+    Unsupported(&'static str),
     /// Feature not implemented yet.
     #[error("not implemented yet: {0}")]
     NotImplemented(&'static str),
@@ -37,7 +73,8 @@ pub enum CatalogError {
 /// Result alias for catalog operations.
 pub type Result<T, E = CatalogError> = std::result::Result<T, E>;
 
-/// Backend specific catalog identifier (Chia: 64 hex store ID).
+/// Backend specific catalog identifier (Chia: 64 hex store ID; file: the
+/// logical catalog name).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CatalogId(pub String);
 
@@ -109,6 +146,9 @@ pub trait CatalogBackend: Send + Sync {
     async fn create_catalog(&self) -> Result<CatalogId>;
     /// Read one value by key from the latest synced generation.
     async fn get(&self, catalog: &CatalogId, key: &str) -> Result<Option<Vec<u8>>>;
+    /// Read the signed envelope for a key (used by export). Callers verify
+    /// it against the pinned publisher key.
+    async fn get_signed(&self, catalog: &CatalogId, key: &str) -> Result<Option<SignedEntry>>;
     /// List keys that start with `prefix`.
     async fn keys(&self, catalog: &CatalogId, prefix: &str) -> Result<Vec<String>>;
     /// Stage a batch of changes without publishing.
@@ -126,7 +166,7 @@ pub trait CatalogBackend: Send + Sync {
 }
 
 /// Backends known to this build, as accepted by `catalog.backend` in config.
-pub const KNOWN_BACKENDS: &[&str] = &["chia"];
+pub const KNOWN_BACKENDS: &[&str] = &["chia", "file"];
 
 #[cfg(test)]
 mod tests {
