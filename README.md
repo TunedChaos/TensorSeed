@@ -5,10 +5,12 @@
 Website: [tensorseed.dev](https://tensorseed.dev)
 
 > **Status: pre-alpha, milestone M0.** Downloading and verifying works today
-> (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`) and the
-> signed-file catalog commands. BitTorrent is pending the M0 spike, the Chia backend
-> has only been tested against mocked RPC responses, and `publish`, `seed`,
-> `takedown`, and `doctor` still print "not implemented yet". Expect breaking changes.
+> (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
+> signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
+> v1+v2 torrents, `seed` serves them, and `pull --swarm` / `--seed-after` use the
+> swarm. The Chia backend has only been tested against mocked RPC responses, and
+> `publish`, `takedown`, and `doctor` still print "not implemented yet". Expect
+> breaking changes.
 
 ## What it is
 
@@ -23,9 +25,11 @@ original host goes away, and lets anyone check that a copy is genuine.
   chain) and a chain-free **signed static-file catalog** served over HTTPS and as a
   torrent. Every entry is signed with the same publisher key in both, so the catalog
   can be exported from one backend and imported into another with signatures intact.
-- **Bytes over BitTorrent v2.** Model files travel as BEP 52 torrents, which verify
-  every block with SHA-256, plus optional BEP 19 HTTP webseeds so downloads work
-  even with zero peers. Storage is local disk by default; add any number of named
+- **Bytes over BitTorrent v2.** Model files travel as hybrid v1+v2 (BEP 52)
+  torrents that Tensorseed builds itself in pure Rust, plus optional BEP 19 HTTP
+  webseeds so downloads work even with zero peers. The built-in swarm engine is
+  librqbit; see [docs/M0-TORRENT-SPIKE.md](docs/M0-TORRENT-SPIKE.md) for why.
+  Storage is local disk by default; add any number of named
   `[[storage.target]]` blocks (R2, B2, Vultr, Wasabi, MinIO, AWS, any S3, another
   directory, or a plain HTTP host), and mirrors in `mirrors.toml`. Pull tries
   them by priority and falls back to the Hub.
@@ -48,6 +52,7 @@ tensorseed verify --hf hf-internal-testing/tiny-random-gpt2     # re-checks agai
 tensorseed list
 tensorseed pull org/name            # webseeds first, the Hub as fallback
 tensorseed verify org/name          # against the signed manifest; exit 3 on mismatch
+tensorseed pull org/name --swarm --seed-after 2h   # peers first, HTTP fills gaps, then seed
 
 # Publisher side:
 tensorseed catalog keygen           # minisign compatible, password protected
@@ -56,6 +61,7 @@ tensorseed harvest --dry-run        # plan from the [harvest] watchlist
 tensorseed harvest --watch          # keep mirroring new revisions
 tensorseed mirror add https://mirror.example.org/ts/ --name eu-1 --priority 10
 tensorseed mirror list              # merged mirror ranking
+tensorseed seed                     # seed everything under storage.local_dir (Ctrl-C to stop)
 ```
 
 Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and
@@ -70,8 +76,9 @@ interruption; `tensorseed jobs` shows their state.
 | `crates/tensorseed-hf` | Hugging Face Hub API client (repo info, tree, listings, backoff) and license policy |
 | `crates/tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback |
 | `crates/tensorseed-catalog` | `CatalogBackend` trait, signed entries and keys (minisign format), signed-file backend, Chia DataLayer backend, storage sinks |
-| `crates/tensorseed-torrent` | BitTorrent v2 + webseed content layer (stub, pending M0) |
+| `crates/tensorseed-torrent` | BEP 52 v2 and hybrid torrent builder and parser (pure Rust), Merkle checks, librqbit seeding and swarm downloads |
 | `crates/tensorseed-cli` | The `tensorseed` binary |
+| `spikes/` | M0 spike programs (not built by CI), see [spikes/README.md](spikes/README.md) |
 
 ## Build
 

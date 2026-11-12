@@ -42,19 +42,27 @@ mirror_urls = []                 # static hosts carrying the same files (also se
 state_dir = "~/.local/share/tensorseed/catalog"
 snapshot_every = 64              # full snapshot every N revisions
 head_ttl_secs = 604800           # head expires after 7 days unless re-signed
-torrent = true                   # also publish each snapshot as a torrent (pending M0)
+torrent = true                   # also publish each snapshot as a torrent (not implemented yet)
 
 [huggingface]
 endpoint = "https://huggingface.co"
 token_env = "HF_TOKEN"
 
+# BitTorrent (spec section 7.1; results in docs/M0-TORRENT-SPIKE.md).
+# harvest writes t/<name>.torrent next to each revision; `tensorseed seed`
+# serves them; `pull --swarm` and `--seed-after` use the swarm.
 [torrent]
-hybrid = true
-piece_length = 4194304           # placeholder, tune in M0
-trackers = []
-listen_port = 6881
+create = true                    # build a torrent for every harvested revision
+hybrid = true                    # v1+v2; the built-in engine (librqbit) needs hybrids
+piece_length = 0                 # 0 = auto: 4 MiB, doubled to at most 16384 pieces, max 64 MiB
+trackers = []                    # e.g. "udp://tracker.example.org:1337/announce"
+listen_addr = "0.0.0.0"
+listen_port = 6881               # open this TCP port to seed to the internet
 upload_limit_kbps = 0            # 0 = unlimited
 dht = true
+lsd = false                      # BEP 14 local service discovery on the LAN
+peers = []                       # "host:port" peers to dial, e.g. your seed boxes
+swarm_timeout_secs = 600         # pull --swarm waits this long, then HTTP fills the rest
 
 # Where published objects go: signed catalog files under "<catalog name>/" and,
 # for webseeds, model files under "t/". Default is local disk only: no account
@@ -89,7 +97,7 @@ local_priority = 100             # webseed order of local_public_base_url (lower
 #   s3      endpoint (required): any other S3 compatible service, path style unless set
 #   local   dir: a second directory (another disk, an NFS mount)
 #   http    public_base_url only: a host something else fills (advertised, never uploaded)
-#   torrent reserved; seeding is not implemented yet (list magnets in mirrors.toml)
+#   torrent dir (default storage.local_dir): a seeding root for `tensorseed seed`
 #
 # Cost notes (check current pricing and terms yourself): R2 charges no egress;
 # B2 has low storage prices with free egress up to 3x stored data and through

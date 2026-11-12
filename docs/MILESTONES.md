@@ -1,7 +1,7 @@
 # Tensorseed milestones
 
-Derived from [SPEC.md](SPEC.md) section 16. Current milestone: **M0** (the
-BitTorrent spike and a Chia testnet run are the open items); much of the HTTP
+Derived from [SPEC.md](SPEC.md) section 16. Current milestone: **M0** (a Chia
+testnet run is the open item; the BitTorrent spike is done); much of the HTTP
 side of M1 and M2 is already done.
 
 ## Done
@@ -26,16 +26,21 @@ side of M1 and M2 is already done.
 - [x] Tombstone handling, pickle formats skipped by default, gated repos refused by default, NOTICE output
 - [x] `harvest` one shot and `--watch` daemon mode with watchlist rules, takedown list, size cap, disk budget, Hub backoff, idempotent SQLite state (spec 13)
 - [x] End to end CLI tests against local mock servers; real smoke test pulling `hf-internal-testing/tiny-random-gpt2`
+- [x] M0 BitTorrent spike: librqbit 9.1.0 and libtorrent 2.0.11 compared on loopback ([M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md))
+- [x] Pure Rust BEP 52 v2 and hybrid torrent builder and parser, info hashes identical to libtorrent; Merkle file verification; hybrid magnets
+- [x] librqbit swarm engine: seed in place (refuses missing or corrupt files), download with peers and file subsets
+- [x] `harvest` writes `t/<name>.torrent`, per file `bt_v2_pieces_root`, the manifest `torrent` block, and uploads the torrent to every storage target
+- [x] `seed` (published trees, `provider = "torrent"` targets, pulled directories), `pull --swarm`, `--peer`, `--seed-after`
 
 ## M0: Spikes
 
-### BitTorrent (librqbit)
-- [ ] BEP 52 v2 download works
-- [ ] v2 seeding works
-- [ ] v2 torrent creation works
-- [ ] Hybrid v1+v2 torrent creation works
-- [ ] BEP 19 webseeds (`url-list`) work against an HTTP host with range requests
-- [ ] If any check fails: prototype the fallback (libtorrent-rasterbar 2.x via FFI or sidecar, or own BEP 52 builder)
+### BitTorrent (done, see [M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md))
+- [x] BEP 52 v2 download works: librqbit no (v2 only torrents fail to load), libtorrent yes
+- [x] v2 seeding works: librqbit no, libtorrent yes; librqbit seeds the v1 side of hybrids and interoperates with libtorrent
+- [x] v2 torrent creation works: librqbit no; Tensorseed's own pure Rust builder yes (matches libtorrent)
+- [x] Hybrid v1+v2 torrent creation works: own builder yes
+- [x] BEP 19 webseeds (`url-list`): librqbit no (never requests them); libtorrent yes; Tensorseed clients use `tensorseed-fetch`
+- [x] Fallback chosen: own BEP 52 builder plus librqbit on hybrid torrents; libtorrent-rasterbar kept as a later sidecar option
 
 ### Chia DataLayer on testnet
 - [ ] Run the implemented calls against a real node and confirm response fields (`get_root`, `get_keys` paging, missing key errors)
@@ -46,27 +51,32 @@ side of M1 and M2 is already done.
 - [ ] Confirm value size overhead of the `SignedEntry` envelope against the 1 MiB target (spec 6.5)
 
 ### Decisions
-- [ ] Pick default `piece_length`
-- [ ] Hybrid torrents on or off by default
+- [x] Pick default `piece_length`: auto, 4 MiB doubled up to 64 MiB to keep at most 16,384 pieces
+- [x] Hybrid torrents on or off by default: on (the built-in engine needs them)
 
 ## M1: Publish
 - [ ] `doctor`
 - [ ] `publish` state machine with torrents (spec section 8.1)
 - [ ] `sync`
-- [ ] Torrent creation and `.torrent` upload to storage
+- [x] Torrent creation and `.torrent` upload to storage (in `harvest`; `publish` still to come)
 - [ ] File backend: catalog snapshot torrent
 - [ ] Atomic catalog writes through a single write queue
 - [ ] `takedown` (tombstone plus webseed deletion on every storage target)
-- [ ] `torrent` storage targets and torrent mirrors (needs the BitTorrent spike)
+- [x] `torrent` storage targets (seeding roots)
+- [ ] Torrent mirrors in `mirrors.toml` (catalog snapshot torrents)
 - [ ] Testnet end to end, then mainnet
 
 ## M2: Pull
-- [ ] Torrent fetching alongside webseeds
-- [ ] `--seed-after`
+- [x] Torrent fetching alongside webseeds (`--swarm`, then HTTP fills gaps)
+- [x] `--seed-after`
+- [ ] Resume HTTP at the first missing piece of a file the swarm left partial (today it is fetched again in full)
 
 ## M3: Seeding daemon
-- [ ] `seed` with selection rules (including seeding harvested revisions from local disk)
-- [ ] Disk budget and bandwidth caps
+- [x] `seed` for harvested revisions on local disk, torrent targets, and pulled directories
+- [ ] Selection rules and the catalog driven loop
+- [x] Upload cap (`torrent.upload_limit_kbps`)
+- [ ] Disk budget
+- [ ] Measure throughput between two real hosts; uTP and UPnP
 - [ ] Honor tombstones
 - [ ] Optional `--serve-catalog`
 - [ ] Catalog `.dat` torrent (Chia) and snapshot torrent seeding (file)

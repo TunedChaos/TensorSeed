@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 6)
+# Tensorseed: Project Specification (Revision 7)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; the Chia backend is implemented against mocked RPC responses only; BitTorrent is pending the M0 librqbit spike.
+> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend is implemented against mocked RPC responses only.
+
+Revision 7 changes: M0 BitTorrent spike done (results in [M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md)). librqbit 9.1 cannot create v2 torrents, open v2 only torrents, resolve `btmh` only magnets, or use BEP 19 webseeds, but it seeds and downloads the v1 side of hybrid torrents and interoperates with libtorrent 2.x in the same swarm. Decisions: Tensorseed builds BEP 52 v2 and hybrid torrents itself in pure Rust (byte identical to libtorrent), hybrid is the default, librqbit is the swarm engine, webseed bytes come from Tensorseed's own HTTP fetcher while torrents still list webseeds for other clients, and the default piece length is automatic (4 MiB up to 64 MiB, at most 16,384 pieces). `harvest` writes torrents and manifest `torrent` blocks; `seed`, `pull --swarm`, `pull --seed-after`, and `provider = "torrent"` storage targets work (7.1, 8.2, 8.3, 9, 10, 10.1, 12).
 
 Revision 6 changes: storage targets and mirrors are named, repeatable provider blocks (`[[storage.target]]` with `provider = "r2" | "b2" | "vultr" | "wasabi" | "minio" | "aws" | "s3" | "http" | "torrent" | "local"` and derived endpoints; `[[mirror]]` in `mirrors.toml`), several per provider; publish writes to every enabled target and pull tries sources by priority (10.1); publishers can sign and serve a mirror list for the file backend (6.12).
 
@@ -105,7 +107,7 @@ Key property: the catalog says *what* the correct bytes are (hashes) and *where*
 
 | Threat | Impact | Mitigation |
 |---|---|---|
-| Malicious or buggy webseed / peer serves wrong bytes | Corrupt or poisoned weights | BitTorrent v2 per-16 KiB-block Merkle verification during transfer, plus full-file SHA-256 check against the manifest before a file is moved out of the temp dir. Failing sources are dropped. |
+| Malicious or buggy webseed / peer serves wrong bytes | Corrupt or poisoned weights | Piece checks in transit (SHA-1 pieces in the built-in librqbit engine, which uses the v1 side of hybrid torrents; v2 clients such as libtorrent check 16 KiB blocks with SHA-256 Merkle proofs), plus a full-file SHA-256 check against the signed manifest before a file counts as present. HTTP downloads go through a temp file and an atomic rename. Failing sources are dropped. |
 | Malicious DataLayer mirror serves forged catalog `.dat` | Fake manifests | Chia DataLayer validates downloaded data against the on-chain root before accepting it. Clients pin the catalog store ID. Every entry is also verified against the pinned publisher key (6.9). |
 | Malicious file-catalog host or mirror forges, rolls back, or forks the catalog | Fake or outdated manifests | Head, deltas, and snapshots are minisign-signed with the pinned publisher key; every entry is verified again; the revision and `prev_root` hash chain plus the local trust anchor reject rollback, replay, gaps, and forks (6.8). |
 | File-catalog host freezes the catalog (serves an old, validly signed head forever) | Users miss new revisions and tombstones | `head.json` carries `expires_unix`; clients refuse expired heads. Publisher re-signs the head before `file.head_ttl_secs` lapses. |
@@ -287,10 +289,10 @@ All JSON is UTF-8, keys sorted, no insignificant whitespace (canonical form) so 
 Field rules:
 - `sha256` is the plain SHA-256 of the whole file and is always present. `hf_lfs_oid` must equal it when present; a mismatch aborts publish.
 - `bt_v2_pieces_root` is the BEP 52 per-file Merkle root (empty files have none).
-- `piece_length` is a power of two, at least 16 KiB (BEP 52). The 4 MiB example is a placeholder default to tune in M0.
+- `piece_length` is a power of two, at least 16 KiB (BEP 52). The default is automatic (`torrent.piece_length = 0`, section 10): 4 MiB, doubled until the revision has at most 16,384 pieces, capped at 64 MiB.
 - `pickle_risk` is true for `.bin`, `.pt`, `.pth`, `.pkl`, `.ckpt` and similar formats.
 - `files` is empty and `file_pages > 0` when paging is used (harvest pages above 2000 files, 1000 per page).
-- `torrent` is optional (`null`) until torrent creation lands after the M0 spike; when present, `torrent.name` must equal the content name `{org}__{name}@{commit[0:12]}`.
+- `torrent` is optional (`null` for revisions published before torrents existed or with `torrent.create = false`); when present, `torrent.name` must equal the content name `{org}__{name}@{commit[0:12]}`, `magnet` carries both `btih` and `btmh` for hybrids, and `torrent_file_urls` lists `<webseed base><content name>.torrent` for every webseed base.
 - Each `webseeds` entry is an http(s) base ending in `/`; a file's URL is `<base><content name>/<path>` with each path segment percent encoded (BEP 19 multi-file rule).
 
 **FilePage**: `{ "schema": "ts.filepage/1", "page": 0, "files": [ ...same objects as above... ] }`
@@ -411,7 +413,7 @@ Sia stays an optional cold store for *bytes* (7.3); it has no catalog or signatu
 
 ### 6.12 Mirror lists (`mirrors.toml`)
 
-Mirrors use the same named, repeatable block style as storage targets. A mirror list (`ts.mirrors/1`) is TOML with `[[mirror]]` blocks: `name` (unique), `provider` (`http`, `s3`, `r2`, `b2`, `vultr`, `wasabi`, `minio`, `aws`, informational for HTTPS hosts; or `torrent` with a `magnet`, reserved until the torrent layer lands), `url` (public base of a published tree: catalog files under `<url><catalog>/`, webseed objects under `<url>t/`), `priority` (default 100, lower first), `enabled` (default true), optional `label`, and optional `publisher_pubkey` (use this mirror only for catalogs signed by that key). Example: `config/mirrors.example.toml`.
+Mirrors use the same named, repeatable block style as storage targets. A mirror list (`ts.mirrors/1`) is TOML with `[[mirror]]` blocks: `name` (unique), `provider` (`http`, `s3`, `r2`, `b2`, `vultr`, `wasabi`, `minio`, `aws`, informational for HTTPS hosts; or `torrent` with a `magnet`, reserved for catalog snapshot torrents, not used yet), `url` (public base of a published tree: catalog files under `<url><catalog>/`, webseed objects under `<url>t/`), `priority` (default 100, lower first), `enabled` (default true), optional `label`, and optional `publisher_pubkey` (use this mirror only for catalogs signed by that key). Example: `config/mirrors.example.toml`.
 
 Two lists exist:
 
@@ -426,17 +428,22 @@ The effective ranking merges the local list, the published list, `file.mirror_ur
 
 ### 7.1 BitTorrent v2
 
+Decided in the M0 spike ([M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md)).
+
 - One torrent per (repo, commit). Multi-file torrent; `name` = `{org}__{name}@{commit[0:12]}`; files keep their HF relative paths.
-- **v2 required** for per-file SHA-256 Merkle trees and `btmh` magnets (BEP 52, https://www.bittorrent.org/beps/bep_0052.html).
-- **Hybrid v1+v2 (decision to confirm):** default to hybrid torrents so v1-only clients can still join, at the cost of v1 padding files and a second info hash. Config switch `torrent.hybrid = true|false`.
-- Trackers: a short configurable list plus DHT. Private trackers are not used.
-- The `.torrent` file itself is written next to the content in storage (section 10.1) and its URL stored in the manifest.
+- **v2 required** for per-file SHA-256 Merkle trees and `btmh` magnets (BEP 52, https://www.bittorrent.org/beps/bep_0052.html). Each manifest file records its `bt_v2_pieces_root`.
+- **Hybrid v1+v2 by default** (`torrent.hybrid = true`): v1 only clients can join, and the built-in engine needs the v1 side. Layout matches libtorrent 2.x: files in canonical path order, each followed by a BEP 47 pad file (`.pad/<n>`, attribute `p`) up to the next piece boundary, including the last file. Pads are never written to disk. `torrent.hybrid = false` builds v2 only torrents for other clients; the built-in engine refuses to seed those.
+- **Creation is ours, in pure Rust** (`tensorseed-torrent`: `bencode`, `merkle`, `metainfo`): one read per file yields the BEP 52 leaves, piece layer and root, the aligned v1 SHA-1 pieces, and the plain SHA-256 (compared with the verified download). Output is deterministic (no creation date), so anyone can rebuild the info hashes from the files. Tests pin info hashes computed by libtorrent 2.0.11.
+- **Engine: librqbit** (Apache-2.0) for seeding and swarm downloads. It joins the v1 side of a hybrid swarm (SHA-1 pieces) and interoperates with v2 capable peers. It cannot open v2 only torrents, resolve `btmh` only magnets, or use webseeds; Tensorseed works around all three (hybrid torrents, hybrid magnets, its own webseed fetcher). libtorrent-rasterbar 2.x stays a possible later engine (sidecar first); switching does not change torrents or manifests.
+- **Integrity does not depend on the engine.** Swarm bytes land in place, then every file is hashed with SHA-256 against the signed manifest before it counts as present; `Metainfo::verify_file` can also recheck the BEP 52 root.
+- Trackers: a short configurable list (`torrent.trackers`, http, https, or udp) plus DHT. Private trackers are not used. Static peers (`torrent.peers`, `pull --peer`) help reach known seed boxes.
+- The `.torrent` file sits next to the content in storage, at `t/<content name>.torrent` beside `t/<content name>/` (10.1), so every webseed base also serves it; its URLs are stored in the manifest.
 
 ### 7.2 Webseeds (BEP 19)
 
 - Webseeds are optional. A manifest's `webseeds` lists `<public_base_url>t/` for every storage location that has a public URL: `storage.local_public_base_url` when a web server exposes the local directory, and every enabled `[[storage.target]]` `public_base_url`, in priority order. Pull adds mirror list entries (6.12) by priority. Per BEP 19, when the URL ends in `/`, clients append the torrent name and file path, so objects live at `t/<content name>/<relative path>` (https://bittorrent.org/beps/bep_0019.html). The content name includes the commit, so every revision has its own immutable prefix.
 - Any host works as long as it serves those paths with HTTP range support: a static web server over the local directory, or a public bucket from any S3 compatible provider (custom endpoint, path style or virtual hosted). Uploads stream large files as S3 multipart uploads. Several targets can be written at once for redundancy across providers.
-- `pull` tries webseeds first and falls back to the Hub's resolve URL (unless `--no-hf-fallback`), dropping any source that serves wrong bytes.
+- `pull` tries webseeds first and falls back to the Hub's resolve URL (unless `--no-hf-fallback`), dropping any source that serves wrong bytes. Tensorseed's own fetcher is the BEP 19 client (librqbit has none); torrents still carry every base in `url-list`, so other clients (libtorrent, qBittorrent, Transmission) use the webseeds directly. Verified with libtorrent: a Tensorseed hybrid torrent downloads from the webseed alone with no peers.
 
 ### 7.3 Cold backups (optional)
 
@@ -486,8 +493,8 @@ START (args: <repo_id>[@commit] [--revision] | --manifest-file | --manifest-url 
  -> READ           get_value latest or rev/<commit>; read pages; check tombstone
                    tombstoned -> STOP with explanation unless --ignore-tombstone
  -> PLAN           compare with existing files in output dir (sha256); skip verified ones
- -> FETCH          torrent session with webseeds; v2 block verification in transit
- -> VERIFY         full-file sha256 vs manifest; also pieces root
+ -> FETCH          optional swarm pass (--swarm), then HTTP webseeds, mirrors, Hub
+ -> VERIFY         full-file sha256 vs manifest (torrent checked against the manifest first)
  -> FINALIZE       atomic rename into output dir; write license files + NOTICE
  -> optional SEED  keep seeding for --seed-after <duration>
  -> DONE
@@ -495,7 +502,7 @@ START (args: <repo_id>[@commit] [--revision] | --manifest-file | --manifest-url 
 
 `pull` also works without a local Chia node via `--manifest-file` or `--manifest-url` (a signed entry is verified against the pinned key; a plain manifest is accepted with a warning), or with `--from-hf`, which verifies against the Hub's own hashes and says the source was unsigned.
 
-Implemented today (without the torrent steps): the catalog is synced (`--no-wait` uses the local copy), revisions must be full commit SHAs (otherwise `latest` is followed), tombstones stop the pull unless `--ignore-tombstone`, pickle formats are skipped unless `--allow-pickle`, and files download through `tensorseed-fetch`: up to `--jobs` files at once, webseeds and mirrors in priority order (10.1, 6.12) then the Hub, streaming SHA-256 (or git blob SHA-1 for small Hub files), resume from `.tensorseed/partial/` with HTTP ranges, job records in the SQLite state DB, and an atomic rename into place. The output directory gets `.tensorseed/pull.json` (`ts.pull/1`, the full expected file list), `.tensorseed/manifest.json` (the signed entry, when there is one), and `.tensorseed/NOTICE` (license and attribution). `verify` re-hashes a directory against `pull.json` (re-checking the stored manifest signature), the catalog (`verify org/name` or `--repo`), a manifest file, or the Hub (`--hf`), prints a PASS or FAIL line per file, and exits with code 3 on any mismatch. Missing pickle files count as skipped unless `--strict`.
+Implemented today: the catalog is synced (`--no-wait` uses the local copy), revisions must be full commit SHAs (otherwise `latest` is followed), tombstones stop the pull unless `--ignore-tombstone`, pickle formats are skipped unless `--allow-pickle`, and files download through `tensorseed-fetch`: up to `--jobs` files at once, webseeds and mirrors in priority order (10.1, 6.12) then the Hub, streaming SHA-256 (or git blob SHA-1 for small Hub files), resume from `.tensorseed/partial/` with HTTP ranges, job records in the SQLite state DB, and an atomic rename into place. The output directory gets `.tensorseed/pull.json` (`ts.pull/1`, the full expected file list), `.tensorseed/manifest.json` (the signed entry, when there is one), and `.tensorseed/NOTICE` (license and attribution). With `--swarm` or `--seed-after`, pull first downloads the manifest's torrent (`torrent_file_urls`, then `<base><content name>.torrent` on every webseed and mirror base), parses it, and checks that its name, files, sizes, roots, and info hashes match the manifest. `--swarm` then lets librqbit download from peers (DHT, trackers, `torrent.peers`, `--peer`) for up to `torrent.swarm_timeout_secs`, into the output directory; the HTTP pass that follows hashes every file, keeps those that match, and downloads the rest (a partly fetched file is currently fetched again in full). The torrent is kept as `.tensorseed/torrent`. `--seed-after <duration>` (`30s`, `10m`, `2h`, `1d`, `forever`) seeds the verified result, leaving out skipped pickle files. `verify` re-hashes a directory against `pull.json` (re-checking the stored manifest signature), the catalog (`verify org/name` or `--repo`), a manifest file, or the Hub (`--hf`), prints a PASS or FAIL line per file, and exits with code 3 on any mismatch. Missing pickle files count as skipped unless `--strict`.
 
 ### 8.3 Seed daemon
 
@@ -508,7 +515,9 @@ LOOP every poll_interval:
   report status (local only: JSON status endpoint on localhost, optional)
 ```
 
-Selection rules: explicit repo list, glob patterns (`org/*`), "latest revision only" vs "all revisions", max bytes, license classes allowed. Bandwidth caps (upload/download), and connection limits. Optional `--serve-catalog` (section 6.7).
+Implemented today: `tensorseed seed` seeds every revision under `storage.local_dir` and every enabled `provider = "torrent"` storage target `dir` (each `t/<name>.torrent` with its `t/<name>/` directory), or the directories passed with `--dir` (pulled directories with `.tensorseed/torrent`, or published trees), in place without copying. librqbit checks every piece first and a revision with missing or corrupt files is refused. It listens on `torrent.listen_addr`:`torrent.listen_port`, honors `torrent.upload_limit_kbps`, `dht`, and `lsd`, reports uploaded bytes every 5 minutes, and runs until `--for <duration>` passes or Ctrl-C. Not yet: the catalog loop, selection rules, tombstones, disk budgets, `--serve-catalog`.
+
+Selection rules (planned): explicit repo list, glob patterns (`org/*`), "latest revision only" vs "all revisions", max bytes, license classes allowed. Bandwidth caps (upload/download), and connection limits. Optional `--serve-catalog` (section 6.7).
 
 ---
 
@@ -532,12 +541,12 @@ Single binary `tensorseed`.
 | `publish <repo_id> [--type] [--revision <commit>]` | Run the publish state machine for one repo (with torrents). | stub (M1; `harvest` covers the HTTP part) |
 | `sync` | Publish every target in config. | stub |
 | `harvest [--watch] [--dry-run] [--only ...] [--status]` | Watchlist driven mirroring from the Hub (section 13). | done |
-| `pull <repo_id>[@commit] [--out DIR] [--from-hf\|--manifest-file\|--manifest-url] [--jobs N] [--allow-pickle] [--allow-gated] [--no-hf-fallback] [--no-wait] [--ignore-tombstone]` | Download and verify (8.2). | done (no torrents) |
+| `pull <repo_id>[@commit] [--out DIR] [--from-hf\|--manifest-file\|--manifest-url] [--jobs N] [--allow-pickle] [--allow-gated] [--no-hf-fallback] [--no-wait] [--ignore-tombstone] [--swarm] [--peer HOST:PORT] [--seed-after DURATION]` | Download and verify (8.2). | done |
 | `verify <dir\|repo_id[@commit]> [--repo] [--dir] [--hf] [--manifest-file] [--strict] [--threads N]` | Re-hash a local copy; exit 3 on mismatch. | done |
 | `list [--filter] [--no-wait]` | List catalog entries (from `index` keys). | done |
 | `show <repo_id>[@commit] [--revision]` | Print a manifest. | done |
 | `jobs [--show ID] [--clear ID]` | Inspect resumable download jobs. | done |
-| `seed` | Run the seeding daemon. | stub (M3, pending M0) |
+| `seed [--dir DIR]... [--for DURATION] [--serve-catalog]` | Seed published revisions or pulled directories in place (8.3). | done (no catalog loop, selection rules, or `--serve-catalog` yet) |
 | `takedown <repo_id> --reason ... [--revisions ...] [--delete-webseed]` | Write a tombstone, optionally delete webseed objects on every storage target. | stub |
 
 Exit codes: 0 success, 1 error, 2 not implemented yet, 3 verification or download failure.
@@ -588,13 +597,18 @@ torrent = true                   # also publish each snapshot as a torrent
 endpoint = "https://huggingface.co"
 token_env = "HF_TOKEN"
 
-[torrent]
-hybrid = true
-piece_length = 4194304           # placeholder, tune in M0
-trackers = []
+[torrent]                        # section 7.1
+create = true                    # build a torrent for every harvested revision
+hybrid = true                    # v1+v2; the built-in engine needs hybrids
+piece_length = 0                 # 0 = auto: 4 MiB, doubled to at most 16384 pieces, max 64 MiB
+trackers = []                    # http(s):// or udp:// announce URLs
+listen_addr = "0.0.0.0"
 listen_port = 6881
 upload_limit_kbps = 0            # 0 = unlimited
 dht = true
+lsd = false                      # BEP 14 local discovery
+peers = []                       # "host:port" peers to dial (your seed boxes)
+swarm_timeout_secs = 600         # pull --swarm: then HTTP fills the rest
 
 [storage]
 local_dir = "~/.local/share/tensorseed/publish"   # always written; the seeder serves it
@@ -676,7 +690,7 @@ Provider fields and derived endpoints (checked against each provider's documente
 | `s3` | `endpoint` (required), `region` (default `us-east-1`) | as given, path style unless `path_style = false` | Any other S3 compatible service (Garage, Ceph, Storj gateway, ...). |
 | `local` | `dir` (required) | none | A second directory: another disk, an NFS or SMB mount. |
 | `http` | `public_base_url` (required) | none | A host something else fills (rsync, a CDN pull zone); advertised, never uploaded. |
-| `torrent` | none | none | Reserved; rejected until the BitTorrent layer lands. List magnets in `mirrors.toml` instead (6.12). |
+| `torrent` | none | none | A seeding root: `tensorseed seed` serves every revision under `<dir>/t/` (default `storage.local_dir`). Takes only `dir`, `enabled`, and `priority`. Publishing does not write to it; point `dir` at a copy kept by another target (for example a `local` target on a NAS). |
 
 **Publish** writes every object to `local_dir` and then to every target with `enabled = true` and `upload = true`; a write counts only when every target accepted it, so a failed target fails the publish and a rerun retries (writes are idempotent). **Pull** builds one source list per file: manifest webseeds, `local_public_base_url`, every enabled target's `public_base_url`, `file.mirror_urls`, and the mirror lists of 6.12, sorted by `priority` (stable, deduplicated by URL), with the Hub last unless `--no-hf-fallback`. A failing source moves on to the next one; every byte is still hash checked.
 
@@ -766,9 +780,9 @@ The S3 client is `object_store` (section 12): custom endpoints, path style or vi
 | S3 compatible upload (any provider) | `object_store` 0.14, `aws` feature (decided) | Apache Arrow project, MIT/Apache-2.0; custom endpoints, path style, multipart; shares `reqwest` 0.13. `aws-sdk-s3` rejected as much heavier; `rust-s3` pulls an older `reqwest` (0.12). |
 | Key encryption / prompts | `scrypt`, `getrandom`, `rpassword` | minisign compatible encrypted secret keys (libsodium scrypt parameters) |
 | Test HTTP mocks | `wiremock` (dev only) | every network test runs against local mock servers |
-| BitTorrent | `librqbit` | **Must verify in M0:** BEP 52 v2 download and seeding, v2/hybrid torrent creation, and BEP 19 webseed support. As of 2026-11-12, librqbit 9.1.0 has v2 metadata parsing, Merkle verification and `btmh` magnets, but the v2 tracking issue is still open (https://github.com/ikatson/rqbit/issues/546), and I found no confirmation of BEP 19 webseeds. |
-| BitTorrent fallback | libtorrent-rasterbar 2.x (supports v2 and hybrid) via FFI bindings or a sidecar process; or write our own BEP 52 torrent builder (bencode + hashing) and seed with a v2-capable client | Choose in M0 based on spike results. |
-| Bencode (if building torrents ourselves) | `serde_bencode` or `bendy` | |
+| BitTorrent engine | `librqbit` 9.1 (decided in M0), feature `engine` of `tensorseed-torrent` | Apache-2.0, passes `deny.toml`, about 110 extra crates. Seeds and downloads the v1 side of hybrid torrents; no v2 only torrents, `btmh` only magnets, or webseeds (spike results). One advisory ignored with a reason (RUSTSEC-2026-0293, `ringbuf` via `librqbit-utp`, unreachable for `u8`). Retest when https://github.com/ikatson/rqbit/issues/546 closes. |
+| Torrent creation and parsing | our own (`tensorseed-torrent`: `bencode`, `merkle`, `metainfo`) | BEP 52 v2 and hybrid, deterministic, byte identical to libtorrent 2.x; only `sha1`, `sha2`, `hex`. |
+| BitTorrent fallback engine | libtorrent-rasterbar 2.x (BSD-3-Clause) via a sidecar or bindings (`libtorrent-sys`, `lt-rs`, MIT) | Not used now: a native C++ and Boost dependency breaks the single static binary. Revisit if v2 only swarms or `btmh` only magnets matter. |
 | Chia (optional, direct chain work) | `chia-wallet-sdk` / `chia-sdk-driver` with `chip-0035` | For delegated writers or reading the store without a full Python node. M1 uses the official DataLayer RPC instead. |
 
 There is no official Rust DataLayer daemon; M1 talks to the Python `chia data` service over RPC.
@@ -781,8 +795,8 @@ There is no official Rust DataLayer daemon; M1 talks to the Python `chia data` s
 | `tensorseed-hf` | Hugging Face API client (repo info, paginated tree, listings, resolve URLs, backoff) and the license and gated policy. |
 | `tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback and SQLite job state. |
 | `tensorseed-catalog` | `CatalogBackend` trait and backends. `minisign` (signature format and key files), `signed` (`SignedEntry`), `chia` (DataLayer RPC over mTLS with `reqwest` + rustls), `file` (signed static files, hash chain, HTTPS sync), `sink` (local directory and S3 targets), `export` (bundles). |
-| `tensorseed-torrent` | BitTorrent v2 torrent creation, seeding, and fetching with BEP 19 webseeds (librqbit pending M0). |
-| `tensorseed-cli` | The `tensorseed` binary: clap commands, figment config, tracing setup, pull, verify, harvest. |
+| `tensorseed-torrent` | BEP 52 v2 and hybrid torrent creation and parsing in pure Rust (BEP 19 `url-list`, magnets, Merkle verification), and the librqbit swarm engine (seed in place, download with peers). |
+| `tensorseed-cli` | The `tensorseed` binary: clap commands, figment config, tracing setup, pull, verify, harvest, seed. |
 
 MSRV is Rust 1.87 (needed by a patched dependency for RUSTSEC-2026-0385).
 
@@ -848,22 +862,22 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 ## 16. Milestones
 
 **M0: Spikes (scaffold only, no product logic)**
-- Verify librqbit: v2 download, v2 seeding, v2 and hybrid torrent creation, BEP 19 webseeds against an HTTP host with range requests. If any fail, prototype the fallback (section 12).
+- Verify librqbit: v2 download, v2 seeding, v2 and hybrid torrent creation, BEP 19 webseeds against an HTTP host with range requests. If any fail, prototype the fallback (section 12). Done: see [M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md); own pure Rust builder plus librqbit on hybrid torrents.
 - DataLayer RPC from Rust over mTLS: `create_data_store` on testnet, `batch_update(submit_on_chain=false)`, `submit_pending_root`, confirmation polling, `get_value`, `subscribe` and `get_sync_status` from a second node, `add_mirror`.
 - Confirm HF API field names (tree `lfs.oid`, `gated`, license tag). Done (section 5); `hf-hub` dropped.
-- Pick sqlite crate and S3 crate (done: `rusqlite`, `object_store`). Pick default `piece_length`.
+- Pick sqlite crate and S3 crate (done: `rusqlite`, `object_store`). Pick default `piece_length` (done: automatic, 7.1).
 - Check the `CatalogBackend` trait (section 6.0) against the real DataLayer call sequence and adjust it before M1 depends on it.
 - Signed-file backend core (done): minisign compatible signing, `SignedEntry`, hash chain with rollback, fork, gap, and stale head checks, export bundles. Encrypted key files, `catalog keygen`, and trust anchor persistence are done too. The DataLayer calls are implemented and tested against mocked responses; the testnet run is still open.
 
 **M1: Publish**
-- `doctor`, `publish`, `sync`. Torrent creation, storage upload of torrents, atomic catalog writes through one queue. Testnet first, then mainnet. (`catalog create/info/add-mirror`, `jobs`, resumable state, and S3 upload are done.)
+- `doctor`, `publish`, `sync`. Storage upload of torrents is done in `harvest`; atomic catalog writes through one queue. Testnet first, then mainnet. (`catalog create/info/add-mirror`, `jobs`, resumable state, and S3 upload are done.)
 - File backend: snapshot torrent (HTTPS sync, publishing to storage, head re-signing, and export/import are done).
 
 **M2: Pull**
-- Done over HTTP: `pull`, `verify`, `list`, `show`, tombstones, NOTICE, `--manifest-file`/`--manifest-url`/`--from-hf`. Remaining: torrent fetching and `--seed-after`.
+- Done over HTTP: `pull`, `verify`, `list`, `show`, tombstones, NOTICE, `--manifest-file`/`--manifest-url`/`--from-hf`. Torrent fetching (`--swarm`) and `--seed-after` are done too. Remaining: HTTP resume of files the swarm left partial.
 
 **M3: Seeding daemon**
-- `seed` with selection rules, disk budget, bandwidth caps, tombstone honoring, optional `--serve-catalog` and catalog torrent.
+- `seed` with selection rules, disk budget, tombstone honoring, optional `--serve-catalog` and catalog torrent. (Seeding published trees and pulled directories in place, upload caps, and DHT, trackers, and LSD are done.)
 
 **M4: Catalog explorer**
 - Static site at tensorseed.dev (generated from the catalog) listing repos, licenses, sizes, magnets, webseeds, attribution text, and catalog generation history. Hosted on any static host; it has no privileged role.

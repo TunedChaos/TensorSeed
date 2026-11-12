@@ -43,4 +43,4 @@ enabled = false
 name = "snapshot-torrent"
 provider = "torrent"
 magnet = "magnet:?xt=urn:btmh:1220aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-label = "catalog snapshot (seeding pending, M0)"
+label = "catalog snapshot torrent (reserved, not used yet)"
