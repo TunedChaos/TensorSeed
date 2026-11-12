@@ -9,6 +9,13 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # ringbuf 0.4 (via librqbit-utp, pinned there): skip()/clear() can double
+    # drop when an element's Drop panics. librqbit-utp only stores u8, which
+    # has no Drop, so the bug is unreachable. Drop this once librqbit moves to
+    # ringbuf >= 0.5.2.
+    { id = "RUSTSEC-2026-0293", reason = "only ringbuf<u8> is used (no Drop); unreachable" },
+]
 
 [licenses]
 version = 2

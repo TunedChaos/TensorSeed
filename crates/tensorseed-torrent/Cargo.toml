@@ -1,6 +1,6 @@
 [package]
 name = "tensorseed-torrent"
-description = "Tensorseed BitTorrent v2 content layer with BEP 19 webseeds (stub, pending M0)."
+description = "Tensorseed BitTorrent v2 content layer: BEP 52 and hybrid torrent creation with BEP 19 webseeds, and a librqbit based seeder and downloader."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,25 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = ["engine"]
+# Swarm engine (seed and download) on top of librqbit.
+engine = ["dep:librqbit", "dep:tokio", "dep:tracing", "dep:bytes"]
+
 [dependencies]
 tensorseed-core.workspace = true
 thiserror.workspace = true
+hex.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+librqbit = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

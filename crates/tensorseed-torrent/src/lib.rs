@@ -3,16 +3,24 @@
 
 //! BitTorrent v2 content layer for Tensorseed (spec section 7).
 //!
-//! Status: stub. No torrent library is linked yet.
-//!
-//! **M0 must verify `librqbit` before this crate takes a dependency on it:**
-//! BEP 52 v2 download and seeding, v2 and hybrid torrent creation, and BEP 19
-//! webseeds (`url-list`) against any HTTP mirror with range requests. As of
-//! 2026-11-12 the librqbit v2 tracking issue is still open and BEP 19 support
-//! is unconfirmed. If any check fails, fall back to libtorrent-rasterbar 2.x
-//! (FFI or sidecar) or our own BEP 52 builder plus a v2 capable seeder.
+//! Decided in the M0 spike (`docs/M0-TORRENT-SPIKE.md`):
+//! - Torrent creation is ours, in pure Rust ([`metainfo`], [`merkle`],
+//!   [`bencode`]): BEP 52 v2 and hybrid v1+v2 torrents with BEP 19 `url-list`
+//!   webseeds, byte compatible with libtorrent 2.x.
+//! - The swarm engine is `librqbit` ([`engine`], feature `engine`, on by
+//!   default). librqbit 9.1 speaks the v1 side of hybrid torrents (it cannot
+//!   load v2 only torrents, resolve `btmh` only magnets, or use webseeds), so
+//!   Tensorseed publishes hybrid torrents, downloads webseeds with its own
+//!   verified HTTP fetcher, and checks every finished file against the signed
+//!   manifest (SHA-256) and the torrent's v2 Merkle root.
 
-use tensorseed_core::manifest::TorrentInfo;
+pub mod bencode;
+#[cfg(feature = "engine")]
+pub mod engine;
+pub mod merkle;
+pub mod metainfo;
+
+pub use metainfo::{InputFile, Metainfo, TorrentFile, build_torrent};
 
 /// Minimum BEP 52 piece length (16 KiB).
 pub const MIN_PIECE_LENGTH: u64 = 16 * 1024;
@@ -23,15 +31,19 @@ pub enum TorrentError {
     /// Invalid parameter.
     #[error("invalid: {0}")]
     Invalid(String),
-    /// Feature not implemented yet.
-    #[error("not implemented yet: {0}")]
-    NotImplemented(&'static str),
+    /// I/O error.
+    #[error("io: {0}")]
+    Io(String),
+    /// Swarm engine error.
+    #[error("engine: {0}")]
+    Engine(String),
 }
 
 /// Parameters for building a torrent for one (repo, commit).
 #[derive(Debug, Clone)]
 pub struct BuildParams {
-    /// Torrent name, see [`TorrentInfo::name_for`].
+    /// Torrent name, see
+    /// [`TorrentInfo::name_for`](tensorseed_core::manifest::TorrentInfo::name_for).
     pub name: String,
     /// Piece length; power of two, at least 16 KiB.
     pub piece_length: u64,
@@ -58,15 +70,6 @@ impl BuildParams {
         }
         Ok(())
     }
-}
-
-/// Build a BEP 52 torrent from a directory. TODO(M1): implement after M0.
-pub fn build_torrent(
-    _dir: &std::path::Path,
-    params: &BuildParams,
-) -> Result<TorrentInfo, TorrentError> {
-    params.validate()?;
-    Err(TorrentError::NotImplemented("BEP 52 torrent creation"))
 }
 
 /// BEP 19 object path for a file: `<base><torrent name>/<relative path>`.
@@ -109,11 +112,5 @@ mod tests {
             ),
             "https://models.tensorseed.dev/t/abc/org__n@0123/a/b.gguf"
         );
-    }
-
-    #[test]
-    fn build_is_stubbed() {
-        let err = build_torrent(std::path::Path::new("."), &params()).unwrap_err();
-        assert!(matches!(err, TorrentError::NotImplemented(_)));
     }
 }
