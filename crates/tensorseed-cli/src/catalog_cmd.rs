@@ -190,7 +190,7 @@ async fn create(cfg: &Config) -> anyhow::Result<ExitCode> {
                 "created file catalog {:?}: revision {} root {}",
                 cfg.catalog.name, g.number, g.root
             );
-            println!("written to {}", crate::backend::sink(cfg)?.describe());
+            println!("written to {}", crate::backend::describe_storage(cfg));
             Ok(ExitCode::SUCCESS)
         }
         "chia" => {

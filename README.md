@@ -25,8 +25,10 @@ original host goes away, and lets anyone check that a copy is genuine.
   can be exported from one backend and imported into another with signatures intact.
 - **Bytes over BitTorrent v2.** Model files travel as BEP 52 torrents, which verify
   every block with SHA-256, plus optional BEP 19 HTTP webseeds so downloads work
-  even with zero peers. Storage is local disk by default; a webseed can be any
-  static web server or one or more S3 compatible buckets from any provider.
+  even with zero peers. Storage is local disk by default; add any number of named
+  `[[storage.target]]` blocks (R2, B2, Vultr, Wasabi, MinIO, AWS, any S3, another
+  directory, or a plain HTTP host), and mirrors in `mirrors.toml`. Pull tries
+  them by priority and falls back to the Hub.
 - **Trust the hashes, not the host.** Any peer, webseed, or mirror can serve bytes,
   because the client checks them against the catalog before accepting them.
 
@@ -52,6 +54,8 @@ tensorseed catalog keygen           # minisign compatible, password protected
 tensorseed catalog create
 tensorseed harvest --dry-run        # plan from the [harvest] watchlist
 tensorseed harvest --watch          # keep mirroring new revisions
+tensorseed mirror add https://mirror.example.org/ts/ --name eu-1 --priority 10
+tensorseed mirror list              # merged mirror ranking
 ```
 
 Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and

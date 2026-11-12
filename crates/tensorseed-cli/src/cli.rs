@@ -136,9 +136,60 @@ pub enum Command {
         #[arg(long)]
         clear: Option<String>,
     },
+    /// Manage mirror lists (local mirrors.toml and the signed published list).
+    #[command(subcommand)]
+    Mirror(MirrorCmd),
     /// Inspect configuration.
     #[command(subcommand)]
     Config(ConfigCmd),
+}
+
+/// `mirror` subcommands.
+#[derive(Debug, Clone, Subcommand)]
+pub enum MirrorCmd {
+    /// Add or replace (by name or URL) a mirror in the local mirrors.toml.
+    Add {
+        /// Public base URL of the mirrored tree.
+        url: Option<String>,
+        /// Unique name.
+        #[arg(long)]
+        name: Option<String>,
+        /// http | s3 | r2 | b2 | vultr | wasabi | minio | aws | torrent.
+        #[arg(long, default_value = "http")]
+        provider: String,
+        /// Lower is tried first.
+        #[arg(long, default_value_t = 100)]
+        priority: i64,
+        /// Magnet link (torrent mirrors).
+        #[arg(long)]
+        magnet: Option<String>,
+        /// Free text label.
+        #[arg(long)]
+        label: Option<String>,
+        /// Only use for catalogs signed by this minisign public key.
+        #[arg(long)]
+        pubkey: Option<String>,
+        /// Keep the entry but do not use it.
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Remove a mirror by name or URL.
+    Remove {
+        /// Name or URL.
+        name_or_url: String,
+    },
+    /// Show the merged mirror ranking.
+    List {
+        /// Do not fetch the published list; use the cached copy.
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Sign a mirror list and publish it as <catalog>/mirrors.toml.
+    Publish {
+        /// List to publish (default: the local mirrors.toml).
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+    },
 }
 
 /// `catalog` subcommands.
@@ -361,6 +412,7 @@ impl Command {
             Self::Show { .. } => "show",
             Self::Takedown { .. } => "takedown",
             Self::Jobs { .. } => "jobs",
+            Self::Mirror(_) => "mirror",
             Self::Config(ConfigCmd::Show) => "config show",
             Self::Config(ConfigCmd::Path) => "config path",
         }

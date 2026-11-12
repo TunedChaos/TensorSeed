@@ -35,7 +35,7 @@ use tensorseed_fetch::{FetchOptions, Fetcher, FileJob, JobSpec, Source, SourceKi
 use tensorseed_hf::policy::Policy as HfPolicy;
 use tensorseed_hf::{HfClient, HfError, TreeEntry};
 
-use crate::backend::{Backend, chia, file_catalog, sink};
+use crate::backend::{Backend, chia, file_catalog, remote_sink};
 use crate::cli::HarvestArgs;
 use crate::config::{Config, expand};
 use crate::keys::load_secret;
@@ -289,12 +289,11 @@ async fn pass(
     } else {
         None
     };
-    let upload_sink: Option<Arc<dyn ObjectSink>> =
-        if h.upload && !args.dry_run && cfg.storage.backend == "s3" {
-            Some(sink(cfg)?)
-        } else {
-            None
-        };
+    let upload_sink: Option<Arc<dyn ObjectSink>> = if h.upload && !args.dry_run {
+        remote_sink(cfg)?
+    } else {
+        None
+    };
     let mut policy = HfPolicy {
         license_allowlist: cfg.policy.license_allowlist.clone(),
         attribution_licenses: cfg.policy.attribution_licenses.clone(),

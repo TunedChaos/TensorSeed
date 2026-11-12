@@ -474,12 +474,16 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         if let Some(a) = &m.license.attribution {
             notice = Some(format!("{} {} at {commit}\n{a}\n", repo.repo_type, repo.id));
         }
+        // Publisher webseeds plus configured and published mirrors, by
+        // priority; the Hub stays the last resort.
+        let mut seeds = m.clone();
+        seeds.webseeds = crate::mirrors::webseed_bases(cfg, &m.webseeds);
         for f in &m.files {
             let ef = ExpectedFile::from_manifest(f);
             if ef.pickle_risk && !args.allow_pickle {
                 skipped.push(ef.path.clone());
             } else {
-                let mut sources: Vec<Source> = m
+                let mut sources: Vec<Source> = seeds
                     .webseed_file_urls(&f.path)
                     .into_iter()
                     .map(|url| Source {

@@ -1,0 +1,46 @@
+# Example mirror list (tensorseed ts.mirrors/1). Copy to
+# ~/.config/tensorseed/mirrors.toml, or manage it with
+#   tensorseed mirror add https://mirror.example.org/tensorseed/ --name eu-1 --priority 10
+# A publisher signs the same format with `tensorseed mirror publish`; it is then
+# served as <catalog>/mirrors.toml plus mirrors.toml.minisig.
+#
+# Each url is the public base of a published tree: catalog files under
+# "<url><catalog>/" and webseed objects under "<url>t/". Mirrors are untrusted:
+# every catalog file is signature checked and every byte hash checked, so a bad
+# mirror can only be slow or missing. Lower priority is tried first (default
+# 100); manifest webseeds count as 100 and the Hub is always last.
+
+schema = "ts.mirrors/1"
+
+[[mirror]]
+name = "eu-1"
+provider = "http"
+url = "https://mirror.example.org/tensorseed/"
+priority = 10
+
+[[mirror]]
+name = "r2-community"
+provider = "r2"
+url = "https://models.example.net/"
+priority = 20
+# Only used for catalogs signed by this key:
+# publisher_pubkey = "RWQ..."
+
+[[mirror]]
+name = "b2-us"
+provider = "b2"
+url = "https://f004.backblazeb2.com/file/tensorseed/"
+priority = 30
+
+[[mirror]]
+name = "lan-minio"
+provider = "minio"
+url = "http://minio.lan:9000/tensorseed/"
+priority = 5
+enabled = false
+
+[[mirror]]
+name = "snapshot-torrent"
+provider = "torrent"
+magnet = "magnet:?xt=urn:btmh:1220aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+label = "catalog snapshot (seeding pending, M0)"

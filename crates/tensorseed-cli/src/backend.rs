@@ -25,38 +25,69 @@ pub fn pinned_key(cfg: &Config) -> anyhow::Result<PublicKey> {
     Ok(PublicKey::parse(&cfg.catalog.publisher_pubkey)?)
 }
 
-/// Publish destination from `[storage]`: the local directory, or every S3
-/// target.
-pub fn sink(cfg: &Config) -> anyhow::Result<Arc<dyn ObjectSink>> {
-    let st = &cfg.storage;
-    Ok(match st.backend.as_str() {
-        "local" => Arc::new(DirSink::new(expand(&st.local_dir))),
-        "s3" => {
-            let mut sinks: Vec<Arc<dyn ObjectSink>> = Vec::new();
-            for t in &st.targets {
-                let s3 = S3Config::from_env(&S3Settings {
-                    endpoint: t.endpoint.clone(),
-                    region: t.region.clone(),
-                    bucket: t.bucket.clone(),
-                    prefix: t.prefix.clone(),
-                    path_style: t.path_style,
-                    access_key_env: t.access_key_env.clone(),
-                    secret_key_env: t.secret_key_env.clone(),
-                })
-                .with_context(|| format!("storage target {:?}", t.name))?;
-                sinks.push(Arc::new(S3Sink::new(s3)?));
-            }
-            Arc::new(MultiSink::new(sinks)?)
-        }
-        other => bail!("unknown storage.backend {other:?} (use local or s3)"),
+/// Every enabled `[[storage.target]]` with `upload = true`, as sinks.
+pub fn upload_sinks(cfg: &Config) -> anyhow::Result<Vec<(String, Arc<dyn ObjectSink>)>> {
+    let mut out: Vec<(String, Arc<dyn ObjectSink>)> = Vec::new();
+    for t in cfg.storage.upload_targets() {
+        let sink: Arc<dyn ObjectSink> = if t.provider == "local" {
+            Arc::new(DirSink::new(expand(&t.dir)))
+        } else {
+            let r = t.resolve_s3()?;
+            let s3 = S3Config::from_env(&S3Settings {
+                endpoint: r.endpoint,
+                region: r.region,
+                bucket: t.bucket.clone(),
+                prefix: t.prefix.clone(),
+                path_style: r.path_style,
+                access_key_env: t.access_key_env.clone(),
+                secret_key_env: t.secret_key_env.clone(),
+            })
+            .with_context(|| format!("storage target {:?} ({})", t.name, t.provider))?;
+            Arc::new(S3Sink::new(s3)?)
+        };
+        out.push((t.name.clone(), sink));
+    }
+    Ok(out)
+}
+
+/// Remote upload targets only, fanned out; `None` when there are none.
+pub fn remote_sink(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ObjectSink>>> {
+    let sinks: Vec<_> = upload_sinks(cfg)?.into_iter().map(|(_, s)| s).collect();
+    Ok(match sinks.len() {
+        0 => None,
+        1 => sinks.into_iter().next(),
+        _ => Some(Arc::new(MultiSink::new(sinks)?)),
     })
+}
+
+/// Publish destination: the local directory plus every upload target.
+pub fn sink(cfg: &Config) -> anyhow::Result<Arc<dyn ObjectSink>> {
+    let local: Arc<dyn ObjectSink> = Arc::new(DirSink::new(expand(&cfg.storage.local_dir)));
+    Ok(match remote_sink(cfg)? {
+        None => local,
+        Some(remote) => Arc::new(MultiSink::new(vec![local, remote])?),
+    })
+}
+
+/// One line per destination, for `catalog create` and logs.
+pub fn describe_storage(cfg: &Config) -> String {
+    let mut parts = vec![format!(
+        "local {}",
+        expand(&cfg.storage.local_dir).display()
+    )];
+    for t in cfg.storage.upload_targets() {
+        parts.push(format!("{} ({})", t.name, t.provider));
+    }
+    parts.join(", ")
 }
 
 /// Build the file backend from config. With a signer, the upload sink is
 /// attached as well.
 pub fn file_catalog(cfg: &Config, signer: Option<SecretKey>) -> anyhow::Result<FileCatalog> {
     let mut fc = FileCatalogConfig::new(&cfg.catalog.name, &cfg.file.base_url, pinned_key(cfg)?);
-    fc.mirror_urls = cfg.file.mirror_urls.clone();
+    // Signed mirror lists, file.mirror_urls and storage public URLs, by
+    // priority (spec 6.12). Mirrors are untrusted; everything is verified.
+    fc.mirror_urls = crate::mirrors::catalog_bases(cfg);
     fc.state_dir = Some(expand(&cfg.file.state_dir));
     fc.snapshot_every = cfg.file.snapshot_every;
     fc.head_ttl_secs = cfg.file.head_ttl_secs;
@@ -111,6 +142,7 @@ pub async fn open_reader(
 ) -> anyhow::Result<(Backend, CatalogId)> {
     match name.unwrap_or(&cfg.catalog.backend) {
         "file" => {
+            crate::mirrors::refresh(cfg, no_wait).await;
             let cat = file_catalog(cfg, None)?;
             if !no_wait {
                 let r = cat

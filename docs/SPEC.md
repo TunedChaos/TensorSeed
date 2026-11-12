@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 5)
+# Tensorseed: Project Specification (Revision 6)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, and the `catalog` commands on the file backend; the Chia backend is implemented against mocked RPC responses only; BitTorrent is pending the M0 librqbit spike.
+> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; the Chia backend is implemented against mocked RPC responses only; BitTorrent is pending the M0 librqbit spike.
+
+Revision 6 changes: storage targets and mirrors are named, repeatable provider blocks (`[[storage.target]]` with `provider = "r2" | "b2" | "vultr" | "wasabi" | "minio" | "aws" | "s3" | "http" | "torrent" | "local"` and derived endpoints; `[[mirror]]` in `mirrors.toml`), several per provider; publish writes to every enabled target and pull tries sources by priority (10.1); publishers can sign and serve a mirror list for the file backend (6.12).
 
 Revision 5 changes: object storage is optional and provider neutral (local disk by default; any S3 compatible service, several at once; section 10.1); torrents are optional in manifests until the BitTorrent spike lands, so HTTP webseeds and the Hub are the byte sources for now; Hugging Face API facts confirmed against live responses (section 5); crate decisions made (`reqwest` instead of `hf-hub`, `rusqlite`, `object_store`; section 12); consumer side (`pull`, `verify`), publisher keys (`catalog keygen`), file backend transport, and the Chia RPC calls implemented; new automatic harvest mode (section 13).
 
@@ -331,7 +333,7 @@ A second backend with zero chain dependence. It carries the same keys (6.3) and 
 <base_url>/<catalog>/snapshots/<revision:010>.json   (+ .minisig)             full state, every file.snapshot_every revisions
 ```
 
-Everything except `head.json` is append-only: a published delta or snapshot is never modified or deleted, so any static host, mirror, or archive can carry the full history. Each snapshot is also published as a small BitTorrent v2 torrent (magnet listed in `head.json` in M1), so the catalog survives if every HTTPS host vanishes. Extra read mirrors go in `file.mirror_urls`.
+Everything except `head.json` is append-only: a published delta or snapshot is never modified or deleted, so any static host, mirror, or archive can carry the full history. Each snapshot is also published as a small BitTorrent v2 torrent (magnet listed in `head.json` in M1), so the catalog survives if every HTTPS host vanishes. Extra read mirrors come from mirror lists (6.12) and `file.mirror_urls`.
 
 **Documents** (canonical JSON, schemas `ts.filehead/1`, `ts.filedelta/1`, `ts.filesnapshot/1`):
 
@@ -399,12 +401,24 @@ tensorseed catalog import catalog.ts-export.json [--backend chia|file] [--dry-ru
 |---|---|---|
 | Entry authenticity | publisher signature (6.9) plus store owner key | publisher signature (6.9) |
 | History | public, tamper-evident, on-chain root per generation; split views are impossible | hash chain; rollback and forks detected for clients that saw a newer state; split views detectable only by cross-checking mirrors |
-| Mirror discovery | permissionless, on-chain `add_mirror` coins | static list in config (`file.mirror_urls`) plus any host copying the files |
+| Mirror discovery | permissionless, on-chain `add_mirror` coins | publisher signed `mirrors.toml` served with the catalog, plus local `[[mirror]]` blocks and `file.mirror_urls` (6.12) |
 | Dependencies | Chia full node, wallet, XCH for fees | none beyond HTTPS or BitTorrent |
 | Cost per update | one transaction fee (often 0) | a few object writes (local disk or any S3 provider) |
 | Best for | the canonical, publicly auditable catalog | offline use, simple mirrors, and insurance against Chia becoming unavailable |
 
 Sia stays an optional cold store for *bytes* (7.3); it has no catalog or signature features and is not a catalog backend. Other chains (for example an EVM layer 2) can be added later as further `CatalogBackend` implementations only if users ask for them; the entry format and export bundles already make that a migration, not a redesign.
+
+
+### 6.12 Mirror lists (`mirrors.toml`)
+
+Mirrors use the same named, repeatable block style as storage targets. A mirror list (`ts.mirrors/1`) is TOML with `[[mirror]]` blocks: `name` (unique), `provider` (`http`, `s3`, `r2`, `b2`, `vultr`, `wasabi`, `minio`, `aws`, informational for HTTPS hosts; or `torrent` with a `magnet`, reserved until the torrent layer lands), `url` (public base of a published tree: catalog files under `<url><catalog>/`, webseed objects under `<url>t/`), `priority` (default 100, lower first), `enabled` (default true), optional `label`, and optional `publisher_pubkey` (use this mirror only for catalogs signed by that key). Example: `config/mirrors.example.toml`.
+
+Two lists exist:
+
+- **Local** (`mirrors.file`, default `~/.config/tensorseed/mirrors.toml`): the user's own list, edited by hand or with `tensorseed mirror add|remove`.
+- **Published**: the publisher signs a list with `tensorseed mirror publish` and it is written through storage (6.8 layout) as `<catalog>/mirrors.toml` plus `mirrors.toml.minisig`. The signature's trusted comment is `ts.mirrors/1 catalog=<name> sha256=<hex of the body>`, so a list cannot be replayed for another catalog. With `mirrors.fetch_published = true` (default), sync and pull fetch it from `file.base_url` or any known mirror, verify it against `catalog.publisher_pubkey`, and cache it under `file.state_dir`; a missing, tampered, or unreachable list falls back to the last verified copy. This gives the file backend the mirror discovery that Chia gets from `add_mirror` coins.
+
+The effective ranking merges the local list, the published list, `file.mirror_urls` (priority 100), and storage targets' public URLs, keeps enabled HTTP mirrors whose pin (if any) matches, deduplicates by URL keeping the lowest priority, and sorts by priority. Catalog reads try `file.base_url` first and then this ranking; pulls use it for webseeds (10.1). `tensorseed mirror list` prints it. Mirrors are untrusted by design: catalog files are signature and hash chain checked and every downloaded byte is hash checked, so a hostile mirror can only be slow, stale (detected by the head expiry and rollback checks), or absent.
 
 ---
 
@@ -420,7 +434,7 @@ Sia stays an optional cold store for *bytes* (7.3); it has no catalog or signatu
 
 ### 7.2 Webseeds (BEP 19)
 
-- Webseeds are optional. A manifest's `webseeds` lists `<public_base_url>t/` for every storage location that has a public URL: `storage.local_public_base_url` when a web server exposes the local directory, or each `[[storage.targets]]` `public_base_url`. Per BEP 19, when the URL ends in `/`, clients append the torrent name and file path, so objects live at `t/<content name>/<relative path>` (https://bittorrent.org/beps/bep_0019.html). The content name includes the commit, so every revision has its own immutable prefix.
+- Webseeds are optional. A manifest's `webseeds` lists `<public_base_url>t/` for every storage location that has a public URL: `storage.local_public_base_url` when a web server exposes the local directory, and every enabled `[[storage.target]]` `public_base_url`, in priority order. Pull adds mirror list entries (6.12) by priority. Per BEP 19, when the URL ends in `/`, clients append the torrent name and file path, so objects live at `t/<content name>/<relative path>` (https://bittorrent.org/beps/bep_0019.html). The content name includes the commit, so every revision has its own immutable prefix.
 - Any host works as long as it serves those paths with HTTP range support: a static web server over the local directory, or a public bucket from any S3 compatible provider (custom endpoint, path style or virtual hosted). Uploads stream large files as S3 multipart uploads. Several targets can be written at once for redundancy across providers.
 - `pull` tries webseeds first and falls back to the Hub's resolve URL (unless `--no-hf-fallback`), dropping any source that serves wrong bytes.
 
@@ -447,7 +461,7 @@ START
  -> VERIFY         sha256 every file; compare to hf lfs oid where present
                    mismatch -> FAILED(integrity)
  -> BUILD_TORRENT  compute BEP 52 piece layers (+v1 if hybrid); write .torrent
- -> UPLOAD         if storage.backend = "s3": multipart upload files + .torrent to every target
+ -> UPLOAD         to every enabled [[storage.target]] with upload = true (multipart for S3)
                    HEAD-check size; resumable via sqlite part tracking
  -> SEED_START     add torrent to local seeding session (data from staging or seed dir)
  -> STAGE_CATALOG  batch_update(submit_on_chain=false): manifest, pages, index, latest
@@ -481,7 +495,7 @@ START (args: <repo_id>[@commit] [--revision] | --manifest-file | --manifest-url 
 
 `pull` also works without a local Chia node via `--manifest-file` or `--manifest-url` (a signed entry is verified against the pinned key; a plain manifest is accepted with a warning), or with `--from-hf`, which verifies against the Hub's own hashes and says the source was unsigned.
 
-Implemented today (without the torrent steps): the catalog is synced (`--no-wait` uses the local copy), revisions must be full commit SHAs (otherwise `latest` is followed), tombstones stop the pull unless `--ignore-tombstone`, pickle formats are skipped unless `--allow-pickle`, and files download through `tensorseed-fetch`: up to `--jobs` files at once, webseeds then the Hub, streaming SHA-256 (or git blob SHA-1 for small Hub files), resume from `.tensorseed/partial/` with HTTP ranges, job records in the SQLite state DB, and an atomic rename into place. The output directory gets `.tensorseed/pull.json` (`ts.pull/1`, the full expected file list), `.tensorseed/manifest.json` (the signed entry, when there is one), and `.tensorseed/NOTICE` (license and attribution). `verify` re-hashes a directory against `pull.json` (re-checking the stored manifest signature), the catalog (`verify org/name` or `--repo`), a manifest file, or the Hub (`--hf`), prints a PASS or FAIL line per file, and exits with code 3 on any mismatch. Missing pickle files count as skipped unless `--strict`.
+Implemented today (without the torrent steps): the catalog is synced (`--no-wait` uses the local copy), revisions must be full commit SHAs (otherwise `latest` is followed), tombstones stop the pull unless `--ignore-tombstone`, pickle formats are skipped unless `--allow-pickle`, and files download through `tensorseed-fetch`: up to `--jobs` files at once, webseeds and mirrors in priority order (10.1, 6.12) then the Hub, streaming SHA-256 (or git blob SHA-1 for small Hub files), resume from `.tensorseed/partial/` with HTTP ranges, job records in the SQLite state DB, and an atomic rename into place. The output directory gets `.tensorseed/pull.json` (`ts.pull/1`, the full expected file list), `.tensorseed/manifest.json` (the signed entry, when there is one), and `.tensorseed/NOTICE` (license and attribution). `verify` re-hashes a directory against `pull.json` (re-checking the stored manifest signature), the catalog (`verify org/name` or `--repo`), a manifest file, or the Hub (`--hf`), prints a PASS or FAIL line per file, and exits with code 3 on any mismatch. Missing pickle files count as skipped unless `--strict`.
 
 ### 8.3 Seed daemon
 
@@ -508,7 +522,10 @@ Single binary `tensorseed`.
 | `catalog keygen [--out-dir] [--name] [--no-password] [--force]` | Write a minisign compatible key pair; the secret key is scrypt encrypted with a password from `TENSORSEED_KEY_PASSWORD` or a prompt. | done |
 | `catalog create` | File: write `ts/v1/catalog` as revision 1. Chia: `create_data_store` and print the store id. | done |
 | `catalog info [--no-wait]` | Revision or generation, root, entries, sources, publisher. | done |
-| `catalog add-mirror --url ... [--amount] [--fee]` | Advertise a DataLayer mirror (Chia only; the file backend lists mirrors in config). | done (mocked RPC) |
+| `catalog add-mirror --url ... [--amount] [--fee]` | Advertise a DataLayer mirror (Chia only; the file backend uses `mirror publish`). | done (mocked RPC) |
+| `mirror add [URL] [--name] [--provider] [--priority] [--magnet] [--label] [--pubkey] [--disabled]`, `mirror remove NAME\|URL` | Edit the local `mirrors.toml` (6.12). | done |
+| `mirror list [--offline]` | Refresh the published list and print the merged mirror ranking. | done |
+| `mirror publish [--file]` | Sign a mirror list and write `<catalog>/mirrors.toml` (+ `.minisig`) to every storage target. | done |
 | `catalog export --out FILE [--backend chia\|file]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10). | done |
 | `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). | done |
 | `catalog resign-head`, `catalog snapshot` | File backend: re-sign `head.json` with a fresh expiry; write a snapshot now. | done |
@@ -580,10 +597,14 @@ upload_limit_kbps = 0            # 0 = unlimited
 dht = true
 
 [storage]
-backend = "local"                # "local" (default) | "s3"
-local_dir = "~/.local/share/tensorseed/publish"
+local_dir = "~/.local/share/tensorseed/publish"   # always written; the seeder serves it
 local_public_base_url = ""       # set if a web server exposes local_dir (makes it a webseed)
-# [[storage.targets]]            # for backend = "s3"; repeat for several providers (10.1)
+local_priority = 100
+# [[storage.target]]             # optional, repeatable: name + provider + fields (10.1)
+
+[mirrors]                        # 6.12
+file = "~/.config/tensorseed/mirrors.toml"
+fetch_published = true
 
 [backup.sia]
 enabled = false
@@ -627,20 +648,92 @@ Secrets are only read from environment variables or a file outside the repo; nev
 
 ### 10.1 Storage
 
-Object storage is optional. With `storage.backend = "local"` (the default), everything the publisher writes (signed catalog files under `<catalog name>/`, harvested model files under `t/<content name>/`, signed manifests under `manifests/`) goes to `storage.local_dir`, seeding works from those local files, and nothing needs an account anywhere. Exposing that directory with any static web server and setting `local_public_base_url` turns it into a webseed and a catalog source.
+Object storage is optional. Everything the publisher writes (signed catalog files under `<catalog name>/`, harvested model files under `t/<content name>/`, signed manifests under `manifests/`, the published mirror list) always goes to `storage.local_dir`, seeding works from those local files, and nothing needs an account anywhere. Exposing that directory with any static web server and setting `local_public_base_url` turns it into a webseed and a catalog source.
 
-With `storage.backend = "s3"`, every object is written to each `[[storage.targets]]` entry in order, so a publisher can push to more than one provider; a write counts only when every target accepted it. Each target is generic S3: `endpoint` (empty means AWS S3 itself), `region`, `bucket`, `prefix`, `path_style` (default true; every provider below accepts it), `public_base_url` (the public URL serving the bucket; empty for upload only cold copies), and `access_key_env` / `secret_key_env`, the names of the environment variables holding the credentials (defaults `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). Credentials are never read from the file.
+Remote copies are named, repeatable `[[storage.target]]` blocks. Each has a unique `name` and a `provider`, one of `r2`, `b2`, `vultr`, `wasabi`, `minio`, `aws`, `s3`, `http`, `torrent`, `local`. Several blocks may use the same provider, so one operator can run several buckets, regions, or accounts. Common fields, with defaults:
 
-Presets (checked against each provider's documented S3 endpoint format; full blocks in `config/tensorseed.example.toml`). Prices change; the notes are qualitative on purpose, check current terms:
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Disabled blocks are ignored entirely (kept for later). |
+| `priority` | `100` | Webseed and mirror order; lower is tried first. Manifest webseeds count as 100, `local_public_base_url` uses `local_priority`. |
+| `upload` | `true` | Publish writes to this target. `false`: only advertise `public_base_url` (a bucket filled by replication or another process). |
+| `public_base_url` | empty | Public URL serving the target's root: `<url>t/` becomes a webseed, `<url>` a catalog mirror. Empty: upload only (cold copy). |
+| `bucket`, `prefix` | empty | S3 family: bucket (required) and key prefix. |
+| `path_style` | per provider | `true` for everything except `aws`. |
+| `access_key_env`, `secret_key_env` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | The names of the environment variables holding credentials, e.g. `access_key_env = "TS_R2_KEY"`. Secrets never go in the file; a value that does not look like a variable name is rejected at load time. |
+| `endpoint` | derived | Overrides the derived endpoint for any S3 provider. |
 
-| Provider | `endpoint` | `region` | Notes |
+Provider fields and derived endpoints (checked against each provider's documented S3 endpoint format). Prices change; the notes are qualitative on purpose, check current terms:
+
+| `provider` | Fields | Derived endpoint and region | Notes |
 |---|---|---|---|
-| Cloudflare R2 | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` | `auto` | No egress fees. |
-| Backblaze B2 | `https://s3.<region>.backblazeb2.com` | e.g. `us-west-004` | Low storage price; free egress up to 3x average stored data, unlimited through partner CDNs such as Cloudflare (Bandwidth Alliance). https://www.backblaze.com/cloud-storage/pricing |
-| Vultr Object Storage | `https://<location>.vultrobjects.com` (e.g. `ewr1`) | the location id | Flat monthly plans that bundle storage and transfer. https://docs.vultr.com/products/storage/object-storage/faq.md |
-| Wasabi | `https://s3.<region>.wasabisys.com` | e.g. `us-east-1` | No egress fees while monthly egress stays at or below stored volume; 90 day minimum storage duration on pay as you go. https://wasabi.com/product-terms |
-| MinIO (self hosted) | e.g. `http://localhost:9000` | `us-east-1` | Your own hardware; plain HTTP allowed for local endpoints. |
-| AWS S3 | empty | the bucket's region | Egress is billed; set `path_style = false` for virtual hosted addressing. |
+| `r2` | `account_id` or `account_id_env` | `https://<account>.r2.cloudflarestorage.com`, region `auto` | No egress fees. |
+| `b2` | `region` (required, e.g. `us-west-004`) | `https://s3.<region>.backblazeb2.com` | Low storage price; free egress up to 3x average stored data, unlimited through partner CDNs such as Cloudflare (Bandwidth Alliance). https://www.backblaze.com/cloud-storage/pricing |
+| `vultr` | `region` (location id, default `ewr1`) or `hostname` | `https://<region>.vultrobjects.com` | Flat monthly plans that bundle storage and transfer. https://docs.vultr.com/products/storage/object-storage/faq.md |
+| `wasabi` | `region` (default `us-east-1`) | `https://s3.<region>.wasabisys.com` | No egress fees while monthly egress stays at or below stored volume; 90 day minimum storage duration on pay as you go. https://wasabi.com/product-terms |
+| `minio` | `endpoint` (default `http://localhost:9000`) | as given, region `us-east-1` | Your own hardware; plain HTTP allowed. |
+| `aws` | `region` (required) | AWS default endpoint, virtual hosted addressing | Egress is billed. |
+| `s3` | `endpoint` (required), `region` (default `us-east-1`) | as given, path style unless `path_style = false` | Any other S3 compatible service (Garage, Ceph, Storj gateway, ...). |
+| `local` | `dir` (required) | none | A second directory: another disk, an NFS or SMB mount. |
+| `http` | `public_base_url` (required) | none | A host something else fills (rsync, a CDN pull zone); advertised, never uploaded. |
+| `torrent` | none | none | Reserved; rejected until the BitTorrent layer lands. List magnets in `mirrors.toml` instead (6.12). |
+
+**Publish** writes every object to `local_dir` and then to every target with `enabled = true` and `upload = true`; a write counts only when every target accepted it, so a failed target fails the publish and a rerun retries (writes are idempotent). **Pull** builds one source list per file: manifest webseeds, `local_public_base_url`, every enabled target's `public_base_url`, `file.mirror_urls`, and the mirror lists of 6.12, sorted by `priority` (stable, deduplicated by URL), with the Hub last unless `--no-hf-fallback`. A failing source moves on to the next one; every byte is still hash checked.
+
+Multi-provider example (the full commented version, with every block disabled so the default stays local only, is in `config/tensorseed.example.toml`):
+
+```toml
+[storage]
+local_dir = "/srv/tensorseed"
+local_public_base_url = "https://seed.example.org/"
+local_priority = 50
+
+[[storage.target]]                 # primary: R2, zero egress
+name = "r2-primary"
+provider = "r2"
+account_id_env = "TS_R2_ACCOUNT_ID"
+bucket = "tensorseed"
+priority = 10
+public_base_url = "https://models.example.org/"
+access_key_env = "TS_R2_KEY"
+secret_key_env = "TS_R2_SECRET"
+
+[[storage.target]]                 # second R2 account, cold copy (no public URL)
+name = "r2-backup"
+provider = "r2"
+account_id = "0123456789abcdef0123456789abcdef"
+bucket = "tensorseed-backup"
+access_key_env = "TS_R2B_KEY"
+secret_key_env = "TS_R2B_SECRET"
+
+[[storage.target]]                 # B2 in the US
+name = "b2-us"
+provider = "b2"
+region = "us-west-004"
+bucket = "tensorseed"
+priority = 20
+public_base_url = "https://f004.backblazeb2.com/file/tensorseed/"
+access_key_env = "TS_B2_KEY_ID"
+secret_key_env = "TS_B2_APP_KEY"
+
+[[storage.target]]                 # B2 in the EU, filled by bucket replication
+name = "b2-eu"
+provider = "b2"
+region = "eu-central-003"
+bucket = "tensorseed-eu"
+upload = false
+priority = 30
+public_base_url = "https://f003.backblazeb2.com/file/tensorseed-eu/"
+
+[[storage.target]]
+name = "vultr-sjc"
+provider = "vultr"
+region = "sjc1"
+bucket = "tensorseed"
+public_base_url = "https://tensorseed.sjc1.vultrobjects.com/"
+access_key_env = "TS_VULTR_KEY"
+secret_key_env = "TS_VULTR_SECRET"
+```
 
 The S3 client is `object_store` (section 12): custom endpoints, path style or virtual hosted addressing, and multipart uploads (files of 32 MiB and up go in 16 MiB parts).
 
@@ -710,7 +803,7 @@ MSRV is Rust 1.87 (needed by a patched dependency for RUSTSEC-2026-0385).
 5. License: the policy (section 11) with `harvest.license_allowlist` (or `[policy] license_allowlist` when empty); refusals skip the repo. Pickle formats are excluded unless `[policy] allow_pickle_formats`.
 6. Size cap (`max_repo_bytes`) and disk budget (`disk_budget_bytes`, counting finished harvests).
 7. Download through `tensorseed-fetch` into `<storage.local_dir>/t/<content name>/` with hash verification, HTTP resume, and job records; files stay there for seeding.
-8. Build the manifest (SHA-256 for every file, `hf_lfs_oid` for LFS files, license, file pages above 2000 files, `torrent: null`, `webseeds` from storage), upload files to every S3 target first (when `storage.backend = "s3"` and `upload = true`), then stage and commit `rev/<commit>` (plus pages), `latest`, and `index` as one catalog revision (file backend, or Chia), and write the signed manifest to `manifests/<type>/<org>/<name>/<commit>.json` in storage. With `publish = false`, an unsigned manifest is written there instead and the catalog is untouched.
+8. Build the manifest (SHA-256 for every file, `hf_lfs_oid` for LFS files, license, file pages above 2000 files, `torrent: null`, `webseeds` from storage), upload files to every enabled `[[storage.target]]` with `upload = true` first (when `harvest.upload = true`), then stage and commit `rev/<commit>` (plus pages), `latest`, and `index` as one catalog revision (file backend, or Chia), and write the signed manifest to `manifests/<type>/<org>/<name>/<commit>.json` in storage. With `publish = false`, an unsigned manifest is written there instead and the catalog is untouched.
 9. Record the outcome (`done` with bytes, or `failed` with the error and attempt count) in `harvest_revisions` in the state DB. Failed revisions are retried on the next pass.
 
 **Politeness:** Hub API calls are spaced by `request_delay_ms`; 429 and 5xx responses back off (`max_retries`, `retry_base_ms`, `Retry-After` honored); repos are processed one at a time with `general.max_concurrent_downloads` files in flight. `HF_TOKEN` is optional.

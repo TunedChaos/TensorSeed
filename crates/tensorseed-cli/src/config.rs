@@ -32,6 +32,8 @@ pub struct Config {
     pub torrent: Torrent,
     /// Where published objects go (`[storage]`).
     pub storage: Storage,
+    /// Mirror lists (`[mirrors]`).
+    pub mirrors: Mirrors,
     /// Cold backups.
     pub backup: Backups,
     /// Publishing policy.
@@ -88,7 +90,7 @@ pub struct Harvest {
     pub retry_base_ms: u64,
     /// Sign and commit catalog entries for each harvested revision.
     pub publish: bool,
-    /// With `storage.backend = "s3"`, upload model files to every target.
+    /// Upload model files to every `[[storage.target]]` with `upload = true`.
     pub upload: bool,
 }
 
@@ -308,92 +310,341 @@ impl Default for Torrent {
     }
 }
 
-/// `[storage]`: where published objects go. Local disk by default; S3
-/// compatible object storage (any provider) is optional.
+/// `[storage]`: where published objects go.
+///
+/// The local directory is always written (it is what the seeder serves).
+/// Remote copies are optional: zero or more named, repeatable
+/// `[[storage.target]]` blocks, each with a `provider`. Publishing writes
+/// every object to the local directory and to every target with
+/// `enabled = true` and `upload = true`. Targets with a `public_base_url`
+/// become webseeds (`<public_base_url>t/`) and catalog mirrors, ordered by
+/// `priority`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Storage {
-    /// `local` (default) or `s3`.
-    pub backend: String,
-    /// Root directory for `local`: catalog files under `<catalog name>/`,
-    /// webseed copies of model files under `t/`.
+    /// Root directory: catalog files under `<catalog name>/`, webseed copies
+    /// of model files under `t/`.
     pub local_dir: String,
     /// Public URL of `local_dir` if a static web server exposes it (enables
-    /// it as a webseed and catalog base). Empty: local only, no webseed.
+    /// it as a webseed and catalog base). Empty: no webseed.
     pub local_public_base_url: String,
-    /// Targets for `s3`; every object is written to each of them.
-    pub targets: Vec<StorageTarget>,
+    /// Priority of `local_public_base_url` among webseeds (lower first).
+    pub local_priority: i64,
+    /// Remote targets.
+    pub target: Vec<StorageTarget>,
 }
 
 impl Default for Storage {
     fn default() -> Self {
         Self {
-            backend: "local".into(),
             local_dir: "~/.local/share/tensorseed/publish".into(),
             local_public_base_url: String::new(),
-            targets: Vec::new(),
+            local_priority: 100,
+            target: Vec::new(),
         }
     }
 }
 
-/// `[[storage.targets]]`: one S3 compatible bucket.
+/// Providers accepted in `[[storage.target]]`.
+pub const STORAGE_PROVIDERS: &[&str] = &[
+    "r2", "b2", "vultr", "wasabi", "minio", "aws", "s3", "http", "torrent", "local",
+];
+
+/// `[[storage.target]]`: one named destination. Several blocks may use the
+/// same provider (different buckets, regions, or accounts).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageTarget {
-    /// Label for logs.
+    /// Unique name (logs, `mirror list`).
     pub name: String,
-    /// S3 endpoint URL; empty means AWS S3 itself.
-    pub endpoint: String,
-    /// Signing region (`auto` for R2).
-    pub region: String,
-    /// Bucket.
+    /// `r2 | b2 | vultr | wasabi | minio | aws | s3 | http | torrent | local`.
+    pub provider: String,
+    /// Disabled targets are ignored entirely.
+    pub enabled: bool,
+    /// Webseed and mirror order, lower first.
+    pub priority: i64,
+    /// Upload on publish (`false`: only advertise `public_base_url`, e.g. a
+    /// bucket some other process fills).
+    pub upload: bool,
+    /// Public URL serving this target's root, used as webseed and catalog
+    /// mirror. Empty: upload only.
+    pub public_base_url: String,
+    /// Bucket (S3 family).
     pub bucket: String,
     /// Key prefix inside the bucket.
     pub prefix: String,
-    /// Path style addressing (`endpoint/bucket/key`).
-    pub path_style: bool,
-    /// Public URL that serves this bucket (and prefix), ending in `/`. Used
-    /// as a webseed base (`<public_base_url>t/`) and catalog mirror. Empty:
-    /// upload only.
-    pub public_base_url: String,
-    /// Env var holding the access key id.
+    /// Region. b2: e.g. `us-west-004`; vultr: e.g. `ewr1`; wasabi: e.g.
+    /// `us-east-1`; aws: required. Defaults per provider.
+    pub region: String,
+    /// r2: Cloudflare account id (derives the endpoint).
+    pub account_id: String,
+    /// r2: env var holding the account id instead of `account_id`.
+    pub account_id_env: String,
+    /// vultr: hostname override (e.g. `sjc1.vultrobjects.com`).
+    pub hostname: String,
+    /// Explicit endpoint; required for `s3` and `minio`, overrides the
+    /// derived endpoint for other providers.
+    pub endpoint: String,
+    /// Path style addressing; default per provider (false only for aws).
+    pub path_style: Option<bool>,
+    /// Env var holding the access key id (never the key itself).
     pub access_key_env: String,
     /// Env var holding the secret access key.
     pub secret_key_env: String,
+    /// local: directory (e.g. a second disk or NFS mount).
+    pub dir: String,
 }
 
 impl Default for StorageTarget {
     fn default() -> Self {
         Self {
             name: String::new(),
-            endpoint: String::new(),
-            region: "us-east-1".into(),
+            provider: String::new(),
+            enabled: true,
+            priority: 100,
+            upload: true,
+            public_base_url: String::new(),
             bucket: String::new(),
             prefix: String::new(),
-            path_style: true,
-            public_base_url: String::new(),
+            region: String::new(),
+            account_id: String::new(),
+            account_id_env: String::new(),
+            hostname: String::new(),
+            endpoint: String::new(),
+            path_style: None,
             access_key_env: "AWS_ACCESS_KEY_ID".into(),
             secret_key_env: "AWS_SECRET_ACCESS_KEY".into(),
+            dir: String::new(),
         }
     }
 }
 
-impl Storage {
-    /// Webseed bases (`.../t/`) for manifests, from every public URL.
-    pub fn webseed_bases(&self) -> Vec<String> {
-        let publics: Vec<&str> = match self.backend.as_str() {
-            "s3" => self
-                .targets
-                .iter()
-                .map(|t| t.public_base_url.as_str())
-                .collect(),
-            _ => vec![self.local_public_base_url.as_str()],
+/// Resolved, non secret S3 settings for a target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedS3 {
+    /// Endpoint URL (empty: AWS default endpoint for the region).
+    pub endpoint: String,
+    /// Signing region.
+    pub region: String,
+    /// Path style addressing.
+    pub path_style: bool,
+}
+
+impl StorageTarget {
+    /// True for the S3 API providers.
+    pub fn is_s3(&self) -> bool {
+        matches!(
+            self.provider.as_str(),
+            "r2" | "b2" | "vultr" | "wasabi" | "minio" | "aws" | "s3"
+        )
+    }
+
+    /// True if publishing writes to this target.
+    pub fn uploads(&self) -> bool {
+        self.enabled && self.upload && (self.is_s3() || self.provider == "local")
+    }
+
+    /// Endpoint, region and addressing derived from provider fields.
+    pub fn resolve_s3(&self) -> anyhow::Result<ResolvedS3> {
+        let n = &self.name;
+        let need = |v: &str, what: &str| -> anyhow::Result<String> {
+            if v.is_empty() {
+                anyhow::bail!("storage target {n:?} ({}) needs {what}", self.provider)
+            }
+            Ok(v.to_string())
         };
-        publics
-            .into_iter()
-            .filter(|u| !u.is_empty())
-            .map(|u| format!("{}/t/", u.trim_end_matches('/')))
+        let region_or = |d: &str| {
+            if self.region.is_empty() {
+                d.to_string()
+            } else {
+                self.region.clone()
+            }
+        };
+        let (endpoint, region, path_style) = match self.provider.as_str() {
+            "r2" => {
+                let acct = if !self.account_id.is_empty() {
+                    self.account_id.clone()
+                } else if !self.account_id_env.is_empty() {
+                    std::env::var(&self.account_id_env).map_err(|_| {
+                        anyhow::anyhow!(
+                            "storage target {n:?}: env var {} (account_id_env) is not set",
+                            self.account_id_env
+                        )
+                    })?
+                } else if self.endpoint.is_empty() {
+                    anyhow::bail!("storage target {n:?} (r2) needs account_id or account_id_env")
+                } else {
+                    String::new()
+                };
+                (
+                    format!("https://{acct}.r2.cloudflarestorage.com"),
+                    region_or("auto"),
+                    true,
+                )
+            }
+            "b2" => {
+                let r = need(&self.region, "region (e.g. us-west-004)")?;
+                (format!("https://s3.{r}.backblazeb2.com"), r, true)
+            }
+            "vultr" => {
+                let host = if !self.hostname.is_empty() {
+                    self.hostname.clone()
+                } else {
+                    format!("{}.vultrobjects.com", region_or("ewr1"))
+                };
+                let host = host.trim_start_matches("https://").to_string();
+                (format!("https://{host}"), region_or("ewr1"), true)
+            }
+            "wasabi" => {
+                let r = region_or("us-east-1");
+                (format!("https://s3.{r}.wasabisys.com"), r, true)
+            }
+            "minio" => (
+                if self.endpoint.is_empty() {
+                    "http://localhost:9000".into()
+                } else {
+                    self.endpoint.clone()
+                },
+                region_or("us-east-1"),
+                true,
+            ),
+            "aws" => (String::new(), need(&self.region, "region")?, false),
+            "s3" => (
+                need(&self.endpoint, "endpoint")?,
+                region_or("us-east-1"),
+                true,
+            ),
+            other => anyhow::bail!("storage target {n:?}: provider {other:?} is not S3"),
+        };
+        Ok(ResolvedS3 {
+            endpoint: if self.endpoint.is_empty() {
+                endpoint
+            } else {
+                self.endpoint.clone()
+            },
+            region,
+            path_style: self.path_style.unwrap_or(path_style),
+        })
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        let n = &self.name;
+        if n.is_empty() {
+            anyhow::bail!("every [[storage.target]] needs a name");
+        }
+        if !STORAGE_PROVIDERS.contains(&self.provider.as_str()) {
+            anyhow::bail!(
+                "storage target {n:?}: provider {:?} is not one of {STORAGE_PROVIDERS:?}",
+                self.provider
+            );
+        }
+        if !self.public_base_url.is_empty()
+            && !(self.public_base_url.starts_with("https://")
+                || self.public_base_url.starts_with("http://"))
+        {
+            anyhow::bail!("storage target {n:?}: public_base_url must be http(s)");
+        }
+        for (k, v) in [
+            ("access_key_env", &self.access_key_env),
+            ("secret_key_env", &self.secret_key_env),
+        ] {
+            // Catch the classic mistake of pasting the secret itself.
+            if !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                anyhow::bail!(
+                    "storage target {n:?}: {k} must name an environment variable, not hold a secret"
+                );
+            }
+        }
+        match self.provider.as_str() {
+            "local" => {
+                if self.dir.is_empty() {
+                    anyhow::bail!("storage target {n:?} (local) needs dir");
+                }
+            }
+            "http" => {
+                if self.public_base_url.is_empty() {
+                    anyhow::bail!("storage target {n:?} (http) needs public_base_url");
+                }
+            }
+            "torrent" => {
+                anyhow::bail!(
+                    "storage target {n:?}: torrent targets are not implemented yet (seeding is stubbed); list torrents as [[mirror]] in mirrors.toml"
+                )
+            }
+            _ => {
+                if self.bucket.is_empty() {
+                    anyhow::bail!("storage target {n:?} has no bucket");
+                }
+                if self.enabled {
+                    self.resolve_s3()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Storage {
+    /// Public bases (with trailing `/`) and priorities, lowest first:
+    /// `local_public_base_url` plus every enabled target's
+    /// `public_base_url`.
+    pub fn public_bases(&self) -> Vec<(i64, String)> {
+        let mut v: Vec<(i64, String)> = Vec::new();
+        if !self.local_public_base_url.is_empty() {
+            v.push((self.local_priority, self.local_public_base_url.clone()));
+        }
+        for t in self.target.iter().filter(|t| t.enabled) {
+            if !t.public_base_url.is_empty() {
+                v.push((t.priority, t.public_base_url.clone()));
+            }
+        }
+        v.sort_by_key(|(p, _)| *p);
+        v.into_iter()
+            .map(|(p, u)| (p, format!("{}/", u.trim_end_matches('/'))))
             .collect()
+    }
+
+    /// Webseed bases (`.../t/`) for manifests, in priority order.
+    pub fn webseed_bases(&self) -> Vec<String> {
+        self.public_bases()
+            .into_iter()
+            .map(|(_, u)| format!("{u}t/"))
+            .collect()
+    }
+
+    /// Targets publishing writes to.
+    pub fn upload_targets(&self) -> impl Iterator<Item = &StorageTarget> {
+        self.target.iter().filter(|t| t.uploads())
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        let mut names = std::collections::BTreeSet::new();
+        for t in &self.target {
+            t.validate()?;
+            if !names.insert(t.name.as_str()) {
+                anyhow::bail!("duplicate storage target name {:?}", t.name);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `[mirrors]`: mirror list handling (spec 6.12).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Mirrors {
+    /// Local mirror list (`[[mirror]]` blocks), edited by `tensorseed mirror`.
+    pub file: String,
+    /// Fetch the publisher signed `<catalog>/mirrors.toml` on sync and pull.
+    pub fetch_published: bool,
+}
+
+impl Default for Mirrors {
+    fn default() -> Self {
+        Self {
+            file: "~/.config/tensorseed/mirrors.toml".into(),
+            fetch_published: true,
+        }
     }
 }
 
@@ -555,20 +806,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
         );
     }
     tensorseed_catalog::signed::check_catalog_name(&cfg.catalog.name)?;
-    match cfg.storage.backend.as_str() {
-        "local" => {}
-        "s3" => {
-            if cfg.storage.targets.is_empty() {
-                anyhow::bail!("storage.backend = \"s3\" needs at least one [[storage.targets]]");
-            }
-            for t in &cfg.storage.targets {
-                if t.bucket.is_empty() {
-                    anyhow::bail!("storage target {:?} has no bucket", t.name);
-                }
-            }
-        }
-        other => anyhow::bail!("unknown storage.backend {other:?} (use local or s3)"),
-    }
+    cfg.storage.validate()?;
     if !cfg.catalog.publisher_pubkey.is_empty() {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }
@@ -590,11 +828,37 @@ mod tests {
             let cfg = load(Path::new("tensorseed.toml")).map_err(|e| e.to_string())?;
             assert_eq!(cfg.catalog.backend, "chia");
             assert_eq!(cfg.file.base_url, "https://catalog.tensorseed.dev/");
-            assert_eq!(cfg.storage.backend, "local");
+            // Multi-provider example, all disabled: default stays local only.
+            assert_eq!(cfg.storage.target.len(), 9);
+            assert!(cfg.storage.target.iter().all(|t| !t.enabled));
+            assert_eq!(cfg.storage.upload_targets().count(), 0);
             assert!(cfg.storage.webseed_bases().is_empty());
+            let mut enabled = cfg.clone();
+            for t in &mut enabled.storage.target {
+                t.enabled = true;
+            }
+            assert_eq!(
+                enabled.storage.target[1].resolve_s3().unwrap().endpoint,
+                "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com"
+            );
+            assert_eq!(enabled.storage.upload_targets().count(), 8);
+            assert_eq!(
+                enabled.storage.webseed_bases()[0],
+                "https://models.example.org/t/"
+            );
+            assert!(cfg.mirrors.fetch_published);
             assert!(!cfg.targets.is_empty());
             Ok(())
         });
+    }
+
+    #[test]
+    fn mirrors_example_parses() {
+        let l = tensorseed_catalog::mirrors::MirrorList::parse(include_str!(
+            "../../../config/mirrors.example.toml"
+        ))
+        .unwrap();
+        assert_eq!(l.mirrors.len(), 5);
     }
 
     #[test]
@@ -604,7 +868,7 @@ mod tests {
             let cfg = load(Path::new("does-not-exist.toml")).map_err(|e| e.to_string())?;
             assert_eq!(cfg.chia.fee_mojos, 1000);
             assert_eq!(cfg.general.max_concurrent_downloads, 2);
-            assert_eq!(cfg.storage.backend, "local");
+            assert!(cfg.storage.target.is_empty());
             Ok(())
         });
     }
@@ -627,19 +891,141 @@ mod tests {
     #[test]
     fn storage_targets() {
         Jail::expect_with(|jail| {
+            jail.set_env("TS_R2_ACCOUNT", "acct123");
             jail.create_file(
                 "s.toml",
-                "[storage]\nbackend = \"s3\"\n[[storage.targets]]\nname = \"a\"\nendpoint = \"https://s3.example.org\"\nbucket = \"x\"\npublic_base_url = \"https://a.example.org/\"\n[[storage.targets]]\nname = \"b\"\nbucket = \"y\"\n",
+                r#"
+[storage]
+local_public_base_url = "https://seed.example.org/pub"
+local_priority = 50
+
+[[storage.target]]
+name = "r2-main"
+provider = "r2"
+account_id_env = "TS_R2_ACCOUNT"
+bucket = "x"
+priority = 10
+public_base_url = "https://r2.example.org/"
+access_key_env = "TS_R2_KEY"
+secret_key_env = "TS_R2_SECRET"
+
+[[storage.target]]
+name = "b2-us"
+provider = "b2"
+region = "us-west-004"
+bucket = "y"
+
+[[storage.target]]
+name = "b2-eu"
+provider = "b2"
+region = "eu-central-003"
+bucket = "z"
+upload = false
+public_base_url = "https://eu.example.org"
+
+[[storage.target]]
+name = "vultr"
+provider = "vultr"
+region = "sjc1"
+bucket = "v"
+
+[[storage.target]]
+name = "wasabi"
+provider = "wasabi"
+bucket = "w"
+enabled = false
+public_base_url = "https://off.example.org/"
+
+[[storage.target]]
+name = "aws"
+provider = "aws"
+region = "eu-west-1"
+bucket = "a"
+
+[[storage.target]]
+name = "garage"
+provider = "s3"
+endpoint = "https://garage.example.org"
+path_style = false
+bucket = "g"
+
+[[storage.target]]
+name = "nas"
+provider = "local"
+dir = "/mnt/nas/tensorseed"
+"#,
             )?;
             let cfg = load(Path::new("s.toml")).map_err(|e| e.to_string())?;
-            assert_eq!(cfg.storage.targets.len(), 2);
-            assert!(cfg.storage.targets[1].path_style);
+            let t = &cfg.storage.target;
+            assert_eq!(t.len(), 8);
+            let r = |i: usize| t[i].resolve_s3().unwrap();
+            assert_eq!(r(0).endpoint, "https://acct123.r2.cloudflarestorage.com");
+            assert_eq!(r(0).region, "auto");
+            assert_eq!(r(1).endpoint, "https://s3.us-west-004.backblazeb2.com");
+            assert_eq!(r(2).endpoint, "https://s3.eu-central-003.backblazeb2.com");
+            assert_eq!(r(3).endpoint, "https://sjc1.vultrobjects.com");
+            assert_eq!(r(4).endpoint, "https://s3.us-east-1.wasabisys.com");
+            assert_eq!(r(5).endpoint, "");
+            assert!(!r(5).path_style);
+            assert!(!r(6).path_style);
+            assert!(r(1).path_style);
+            let up: Vec<&str> = cfg
+                .storage
+                .upload_targets()
+                .map(|t| t.name.as_str())
+                .collect();
+            assert_eq!(up, ["r2-main", "b2-us", "vultr", "aws", "garage", "nas"]);
             assert_eq!(
                 cfg.storage.webseed_bases(),
-                vec!["https://a.example.org/t/"]
+                vec![
+                    "https://r2.example.org/t/",
+                    "https://seed.example.org/pub/t/",
+                    "https://eu.example.org/t/",
+                ]
             );
-            jail.create_file("e.toml", "[storage]\nbackend = \"s3\"\n")?;
-            assert!(load(Path::new("e.toml")).is_err());
+            for (name, body) in [
+                (
+                    "noname",
+                    "[[storage.target]]\nprovider = \"b2\"\nregion=\"r\"\nbucket = \"y\"\n",
+                ),
+                (
+                    "badprov",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"ftp\"\n",
+                ),
+                (
+                    "b2noregion",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"b2\"\nbucket = \"y\"\n",
+                ),
+                (
+                    "r2noacct",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"r2\"\nbucket = \"y\"\n",
+                ),
+                (
+                    "s3noendpoint",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"s3\"\nbucket = \"y\"\n",
+                ),
+                (
+                    "nobucket",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"wasabi\"\n",
+                ),
+                (
+                    "inline",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"minio\"\nbucket=\"b\"\naccess_key_env = \"AKIA/abc+def\"\n",
+                ),
+                (
+                    "dup",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"minio\"\nbucket=\"b\"\n[[storage.target]]\nname=\"a\"\nprovider = \"minio\"\nbucket=\"c\"\n",
+                ),
+                (
+                    "torrent",
+                    "[[storage.target]]\nname=\"a\"\nprovider = \"torrent\"\n",
+                ),
+                ("oldbackend", "[storage]\nbackend = \"s3\"\n"),
+            ] {
+                let f = format!("{name}.toml");
+                jail.create_file(&f, body)?;
+                assert!(load(Path::new(&f)).is_err(), "{name} should be rejected");
+            }
             Ok(())
         });
     }

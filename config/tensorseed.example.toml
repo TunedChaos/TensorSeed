@@ -38,7 +38,7 @@ mirror_amount_mojos = 0
 [file]
 base_url = "https://catalog.tensorseed.dev/"   # example URL: whatever public URL serves your published
                                                # catalog files (head.json, deltas/, snapshots/, .minisig)
-mirror_urls = []                 # any static host carrying the same files
+mirror_urls = []                 # static hosts carrying the same files (also see [mirrors])
 state_dir = "~/.local/share/tensorseed/catalog"
 snapshot_every = 64              # full snapshot every N revisions
 head_ttl_secs = 604800           # head expires after 7 days unless re-signed
@@ -62,76 +62,138 @@ dht = true
 # be exposed by any static web server. Object storage is optional and works
 # with any S3 compatible provider. See docs/SPEC.md section 10.1.
 [storage]
-backend = "local"                # "local" | "s3"
-local_dir = "~/.local/share/tensorseed/publish"
+local_dir = "~/.local/share/tensorseed/publish"   # always written; this is what the seeder serves
 local_public_base_url = ""       # set if a web server exposes local_dir; enables it as a webseed
+local_priority = 100             # webseed order of local_public_base_url (lower first)
 
-# For backend = "s3", list one or more targets; every object is written to all
-# of them, so you can publish to several providers at once. Credentials come
-# only from the environment variables named here, never from this file.
-# public_base_url is the public URL serving the bucket (custom domain or
-# provider URL); "<public_base_url>t/" becomes a webseed base. Leave it empty
-# for upload only targets (cold copies). Presets, tested by config shape;
-# check each provider's current pricing and terms yourself:
+# Optional remote copies: named, repeatable [[storage.target]] blocks. Publish
+# (catalog files, and harvested model files) writes to local_dir plus every
+# target with enabled = true and upload = true. Pull tries webseeds and
+# mirrors by priority (lower first), then the Hub. Several blocks may use the
+# same provider (different buckets, regions, or accounts).
 #
-# Cloudflare R2: no egress fees.
-# [[storage.targets]]
-# name = "r2"
-# endpoint = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
-# region = "auto"
-# bucket = "tensorseed"
-# public_base_url = "https://models.example.org/"   # R2 custom domain or r2.dev URL
-# access_key_env = "R2_ACCESS_KEY_ID"
-# secret_key_env = "R2_SECRET_ACCESS_KEY"
+# Common fields: name (unique), provider, enabled (true), priority (100),
+# upload (true), public_base_url ("": upload only; else "<url>t/" becomes a
+# webseed and "<url>" a catalog mirror), bucket, prefix, path_style (default
+# per provider), and access_key_env / secret_key_env: the NAMES of the
+# environment variables holding the credentials. Secrets never go in this
+# file; values that do not look like variable names are rejected.
 #
-# Backblaze B2: low storage price; free egress up to 3x average stored data,
-# unlimited through partner CDNs such as Cloudflare (Bandwidth Alliance).
-# [[storage.targets]]
-# name = "b2"
-# endpoint = "https://s3.us-west-004.backblazeb2.com"
-# region = "us-west-004"
-# bucket = "tensorseed"
-# public_base_url = ""
-# access_key_env = "B2_KEY_ID"
-# secret_key_env = "B2_APP_KEY"
+# Provider fields and derived endpoints (endpoint = "..." overrides any of them):
+#   r2      account_id or account_id_env -> https://<account>.r2.cloudflarestorage.com, region auto
+#   b2      region (required)            -> https://s3.<region>.backblazeb2.com
+#   vultr   region (ewr1) or hostname    -> https://<region>.vultrobjects.com
+#   wasabi  region (us-east-1)           -> https://s3.<region>.wasabisys.com
+#   minio   endpoint (http://localhost:9000), path style
+#   aws     region (required), AWS default endpoint, virtual hosted style
+#   s3      endpoint (required): any other S3 compatible service, path style unless set
+#   local   dir: a second directory (another disk, an NFS mount)
+#   http    public_base_url only: a host something else fills (advertised, never uploaded)
+#   torrent reserved; seeding is not implemented yet (list magnets in mirrors.toml)
 #
-# Vultr Object Storage: flat monthly plans that bundle storage and transfer.
-# [[storage.targets]]
-# name = "vultr"
-# endpoint = "https://ewr1.vultrobjects.com"
-# region = "ewr1"
-# bucket = "tensorseed"
-# public_base_url = "https://tensorseed.ewr1.vultrobjects.com/"
-# access_key_env = "VULTR_S3_ACCESS_KEY"
-# secret_key_env = "VULTR_S3_SECRET_KEY"
+# Cost notes (check current pricing and terms yourself): R2 charges no egress;
+# B2 has low storage prices with free egress up to 3x stored data and through
+# Bandwidth Alliance CDNs such as Cloudflare; Vultr sells flat monthly plans
+# bundling storage and transfer; Wasabi charges no egress while egress stays
+# at or below stored volume, with a minimum storage duration; AWS bills egress.
 #
-# Wasabi: no egress fees while monthly egress stays at or below stored volume;
-# minimum storage duration applies (90 days on pay as you go).
-# [[storage.targets]]
-# name = "wasabi"
-# endpoint = "https://s3.us-east-1.wasabisys.com"
-# region = "us-east-1"
-# bucket = "tensorseed"
-# access_key_env = "WASABI_ACCESS_KEY"
-# secret_key_env = "WASABI_SECRET_KEY"
-#
-# MinIO (self hosted):
-# [[storage.targets]]
-# name = "minio"
-# endpoint = "http://localhost:9000"
-# region = "us-east-1"
-# bucket = "tensorseed"
-# path_style = true
-# public_base_url = "http://localhost:9000/tensorseed/"
-#
-# AWS S3: leave endpoint empty; egress is billed.
-# [[storage.targets]]
-# name = "aws"
-# region = "us-east-1"
-# bucket = "tensorseed"
-# path_style = false
-# access_key_env = "AWS_ACCESS_KEY_ID"
-# secret_key_env = "AWS_SECRET_ACCESS_KEY"
+# The example below is a multi-provider operator: two R2 buckets on different
+# accounts, B2 in two regions (one advertised only), Vultr, Wasabi, MinIO, AWS
+# and a NAS. All disabled here, so the default stays local disk only.
+
+[[storage.target]]
+name = "r2-primary"
+provider = "r2"
+enabled = false
+priority = 10
+account_id_env = "TS_R2_ACCOUNT_ID"
+bucket = "tensorseed"
+public_base_url = "https://models.example.org/"    # R2 custom domain or r2.dev URL
+access_key_env = "TS_R2_KEY"
+secret_key_env = "TS_R2_SECRET"
+
+[[storage.target]]
+name = "r2-backup"
+provider = "r2"
+enabled = false
+priority = 40
+account_id = "0123456789abcdef0123456789abcdef"
+bucket = "tensorseed-backup"
+access_key_env = "TS_R2B_KEY"
+secret_key_env = "TS_R2B_SECRET"
+
+[[storage.target]]
+name = "b2-us"
+provider = "b2"
+enabled = false
+priority = 20
+region = "us-west-004"
+bucket = "tensorseed"
+public_base_url = "https://f004.backblazeb2.com/file/tensorseed/"
+access_key_env = "TS_B2_KEY_ID"
+secret_key_env = "TS_B2_APP_KEY"
+
+[[storage.target]]
+name = "b2-eu"
+provider = "b2"
+enabled = false
+priority = 30
+upload = false                   # filled by a B2 replication rule; only advertised
+region = "eu-central-003"
+bucket = "tensorseed-eu"
+public_base_url = "https://f003.backblazeb2.com/file/tensorseed-eu/"
+
+[[storage.target]]
+name = "vultr-sjc"
+provider = "vultr"
+enabled = false
+region = "sjc1"
+bucket = "tensorseed"
+public_base_url = "https://tensorseed.sjc1.vultrobjects.com/"
+access_key_env = "TS_VULTR_KEY"
+secret_key_env = "TS_VULTR_SECRET"
+
+[[storage.target]]
+name = "wasabi"
+provider = "wasabi"
+enabled = false
+region = "eu-central-1"
+bucket = "tensorseed"
+access_key_env = "TS_WASABI_KEY"
+secret_key_env = "TS_WASABI_SECRET"
+
+[[storage.target]]
+name = "minio-lab"
+provider = "minio"
+enabled = false
+endpoint = "http://minio.lan:9000"
+bucket = "tensorseed"
+public_base_url = "http://minio.lan:9000/tensorseed/"
+access_key_env = "TS_MINIO_KEY"
+secret_key_env = "TS_MINIO_SECRET"
+
+[[storage.target]]
+name = "aws"
+provider = "aws"
+enabled = false
+priority = 90
+region = "us-east-1"
+bucket = "tensorseed"
+
+[[storage.target]]
+name = "nas"
+provider = "local"
+enabled = false
+dir = "/mnt/nas/tensorseed"
+
+# Mirror lists. `file` is your own list of [[mirror]] blocks (see
+# config/mirrors.example.toml; edit with `tensorseed mirror add|remove`).
+# With fetch_published, the publisher signed "<catalog>/mirrors.toml" is
+# fetched on sync and pull, verified against catalog.publisher_pubkey, and
+# cached. Publish yours with `tensorseed mirror publish`.
+[mirrors]
+file = "~/.config/tensorseed/mirrors.toml"
+fetch_published = true
 
 [backup.sia]
 enabled = false
@@ -153,8 +215,8 @@ exclude = []
 # Automatic harvest: `tensorseed harvest` (one pass) or `tensorseed harvest
 # --watch` (daemon). Each new revision is downloaded with hash verification
 # and resume into "<storage.local_dir>/t/<repo>@<commit12>/", gets a signed
-# manifest, is staged and committed to the catalog, and (with s3 storage) is
-# uploaded to every target. State lives in general.state_db, so reruns skip
+# manifest, is staged and committed to the catalog, and is uploaded to every
+# enabled [[storage.target]] with upload = true. State lives in general.state_db, so reruns skip
 # finished revisions and resume interrupted ones. See docs/SPEC.md section 13.
 [harvest]
 repos = []                       # explicit model ids, e.g. ["org/name"]
@@ -175,7 +237,7 @@ request_delay_ms = 500           # pause between Hub API calls
 max_retries = 5                  # on HTTP 429/5xx, honoring Retry-After
 retry_base_ms = 2000
 publish = true                   # sign and commit catalog entries (needs publisher_seckey_file)
-upload = true                    # with storage.backend = "s3": upload files to every target
+upload = true                    # upload files to every enabled [[storage.target]] (upload = true)
 
 [seed]
 poll_interval_secs = 600

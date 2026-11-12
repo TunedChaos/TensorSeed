@@ -17,7 +17,8 @@ side of M1 and M2 is already done.
 - [x] Decisions: `rusqlite` for state, `object_store` for S3 compatible storage
 - [x] Minisign encrypted secret keys (scrypt) and `catalog keygen`; keys made by Tensorseed sign with the `minisign` tool and vice versa
 - [x] File backend transport: HTTPS sync with mirror fallback, persisted trust anchor, publishing (delta, snapshot, head), head re-signing, on demand snapshots
-- [x] Storage: local disk by default; optional S3 compatible targets from any provider, several at once, multipart uploads (spec 10.1)
+- [x] Storage: local disk by default; optional named, repeatable `[[storage.target]]` blocks (`r2`, `b2`, `vultr`, `wasabi`, `minio`, `aws`, `s3`, `http`, `local`) with derived endpoints, per target `enabled`, `priority`, `upload`, `public_base_url`, credentials from named env vars only; publish writes to every enabled target, multipart uploads (spec 10.1)
+- [x] Mirror lists: local `mirrors.toml` and publisher signed `<catalog>/mirrors.toml` (`[[mirror]]` blocks), merged by priority for catalog reads and pull webseeds; `mirror add|remove|list|publish` (spec 6.12)
 - [x] Chia DataLayer calls: `create_data_store`, `get_value` with envelope verification, paginated `get_keys`, `batch_update` with `submit_on_chain=false`, `submit_pending_root`, confirmation polling, `subscribe`, `get_sync_status`, `add_mirror` (mocked RPC tests only)
 - [x] `catalog create`, `info`, `add-mirror`, `export`, `import` (full), `resign-head`, `snapshot`
 - [x] `tensorseed-fetch`: verified, resumable, parallel downloads with webseed then Hub fallback, SQLite job state, atomic rename
@@ -56,6 +57,7 @@ side of M1 and M2 is already done.
 - [ ] File backend: catalog snapshot torrent
 - [ ] Atomic catalog writes through a single write queue
 - [ ] `takedown` (tombstone plus webseed deletion on every storage target)
+- [ ] `torrent` storage targets and torrent mirrors (needs the BitTorrent spike)
 - [ ] Testnet end to end, then mainnet
 
 ## M2: Pull

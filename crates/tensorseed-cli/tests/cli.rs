@@ -229,6 +229,9 @@ state_dir = "{d}/catstate"
 endpoint = "{server}"
 token_env = "TS_TEST_NO_SUCH_TOKEN"
 
+[mirrors]
+file = "{d}/mirrors.toml"
+
 [storage]
 local_dir = "{d}/publish"
 "#
@@ -507,12 +510,46 @@ async fn keygen_create_export_import_on_local_storage() {
     );
     let a = tmp.path().join("a");
     std::fs::create_dir_all(&a).unwrap();
-    let cfg = write_config(&a, &server.uri(), &pk, &seck);
+    // Publish fans out to every enabled target; disabled ones are skipped.
+    let targets = format!(
+        "{seck}\n[[storage.target]]\nname = \"nas1\"\nprovider = \"local\"\ndir = \"{0}/nas1\"\n\
+         [[storage.target]]\nname = \"nas2\"\nprovider = \"local\"\ndir = \"{0}/nas2\"\n\
+         [[storage.target]]\nname = \"off\"\nprovider = \"local\"\nenabled = false\ndir = \"{0}/off\"\n",
+        a.display()
+    );
+    let cfg = write_config(&a, &server.uri(), &pk, &targets);
     let o = run(&cfg, &["catalog", "create"], &pw).await;
     assert_eq!(code(&o), 0);
+    assert!(stdout(&o).contains("nas1 (local), nas2 (local)"));
     assert!(a.join("publish/main/head.json").exists());
+    assert!(a.join("nas1/main/head.json").exists());
+    assert!(a.join("nas2/main/head.json").exists());
+    assert!(!a.join("off").exists());
     let o = run(&cfg, &["catalog", "create"], &pw).await;
     assert_ne!(code(&o), 0, "second create refuses");
+
+    // Mirror list: edit locally, then sign and publish next to the catalog.
+    let o = run(
+        &cfg,
+        &[
+            "mirror",
+            "add",
+            "https://m1.example.org/x",
+            "--name",
+            "m1",
+            "--priority",
+            "7",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0);
+    let o = run(&cfg, &["mirror", "add", "ftp://bad", "--name", "bad"], &[]).await;
+    assert_ne!(code(&o), 0, "non http mirror rejected");
+    let o = run(&cfg, &["mirror", "publish"], &pw).await;
+    assert_eq!(code(&o), 0);
+    assert!(stdout(&o).contains("published 1 mirrors"));
+    assert!(a.join("publish/main/mirrors.toml.minisig").exists());
 
     // Wrong password fails cleanly.
     let o = run(
@@ -532,6 +569,14 @@ async fn keygen_create_export_import_on_local_storage() {
     let o = run(&cfg_b, &["catalog", "info"], &[]).await;
     assert_eq!(code(&o), 0);
     assert!(stdout(&o).contains("revision:  1"));
+    // The subscriber fetched and verified the published mirror list.
+    let o = run(&cfg_b, &["mirror", "list", "--offline"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let s = stdout(&o);
+    assert!(
+        s.contains("published") && s.contains("https://m1.example.org/x/"),
+        "{s}"
+    );
     let bundle = b.join("bundle.json");
     let o = run(
         &cfg_b,
@@ -694,4 +739,103 @@ async fn harvest_discovers_mirrors_publishes_and_is_idempotent() {
     assert!(stdout(&o).contains("ok     model.safetensors (webseed)"));
     let o = run(&scfg, &["verify", "org/a"], &[]).await;
     assert_eq!(code(&o), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_tries_mirrors_by_priority_with_fallback() {
+    use tensorseed_catalog::mirrors::{Mirror, MirrorList, sign_list};
+    let tmp = tempfile::tempdir().unwrap();
+    let origin = MockServer::start().await; // catalog; manifest webseed is empty
+    let dead = MockServer::start().await; // priority 5: everything fails
+    let good = MockServer::start().await; // priority 20: has the files
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&dead)
+        .await;
+    let fx = Fixture::new();
+    let m = manifest(&fx, "org/tiny", C, &format!("{}/t/", origin.uri()));
+    let pubdir = tmp.path().join("srv");
+    publish_catalog(&pubdir, &tmp.path().join("pstate"), &m, false).await;
+    // Publisher signed list naming the good mirror (and a disabled one).
+    let mut good_m = Mirror::http("good", &good.uri());
+    good_m.priority = 20;
+    let mut off = Mirror::http("off", "https://off.invalid/");
+    off.enabled = false;
+    off.priority = 1;
+    let list = MirrorList {
+        mirrors: vec![good_m, off],
+        ..Default::default()
+    };
+    let (body, sig) = sign_list(&key(), "main", &list).unwrap();
+    std::fs::write(pubdir.join("main/mirrors.toml"), &body).unwrap();
+    std::fs::write(pubdir.join("main/mirrors.toml.minisig"), &sig).unwrap();
+    mount_dir(&origin, &pubdir).await;
+    let name = m.content_name();
+    for (f, b) in &fx.files {
+        serve(&good, &format!("/t/{name}/{f}"), b).await;
+    }
+
+    let cfg = write_config(
+        tmp.path(),
+        &origin.uri(),
+        &key().public_key().to_base64(),
+        "",
+    );
+    // The user's own list adds the dead mirror ahead of everything.
+    std::fs::write(
+        tmp.path().join("mirrors.toml"),
+        format!(
+            "[[mirror]]\nname = \"dead\"\nurl = \"{}\"\npriority = 5\n",
+            dead.uri()
+        ),
+    )
+    .unwrap();
+
+    let o = run(&cfg, &["mirror", "list"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let s = stdout(&o);
+    let (d, g) = (s.find(&dead.uri()).unwrap(), s.find(&good.uri()).unwrap());
+    assert!(d < g, "dead (5) listed before good (20): {s}");
+    assert!(!s.contains("off.invalid"), "disabled mirror hidden: {s}");
+
+    let o = run(&cfg, &["pull", "org/tiny", "--no-hf-fallback"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let s = stdout(&o);
+    assert!(s.contains("ok     model.safetensors (webseed)"), "{s}");
+    let dir = tmp.path().join("dl/org/tiny");
+    assert_eq!(
+        std::fs::read(dir.join("model.safetensors")).unwrap(),
+        fx.get("model.safetensors")
+    );
+    // The dead mirror was tried first for files, then the good one served them.
+    let dead_t = dead
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().starts_with("/t/"))
+        .count();
+    assert!(dead_t > 0, "dead mirror tried for files");
+    let good_t = good.received_requests().await.unwrap().len();
+    assert!(good_t >= 2, "good mirror served the files");
+    let origin_t = origin
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().starts_with("/t/"))
+        .count();
+    assert_eq!(origin_t, 0, "priority 100 manifest webseed not needed");
+
+    // A tampered published list is ignored; the cached verified copy stays.
+    std::fs::write(
+        pubdir.join("main/mirrors.toml"),
+        b"[[mirror]]\nurl = \"https://evil/\"\n",
+    )
+    .unwrap();
+    origin.reset().await;
+    mount_dir(&origin, &pubdir).await;
+    let o = run(&cfg, &["mirror", "list"], &[]).await;
+    let s = stdout(&o);
+    assert!(s.contains(&good.uri()) && !s.contains("evil"), "{s}");
 }

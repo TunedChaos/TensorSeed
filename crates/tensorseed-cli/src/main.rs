@@ -10,6 +10,7 @@ mod config;
 mod consumer;
 mod harvest;
 mod keys;
+mod mirrors;
 
 use std::process::ExitCode;
 
@@ -84,6 +85,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             )
             .await
         }
+        Command::Mirror(cmd) => mirrors::run(&load()?, cmd.clone()).await,
         Command::Jobs { show, clear } => {
             consumer::jobs(&load()?, show.as_deref(), clear.as_deref())
         }
