@@ -1,0 +1,14 @@
+[package]
+name = "spike-rqbit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+bytes = "1"
