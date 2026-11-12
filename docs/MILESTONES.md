@@ -1,6 +1,8 @@
 # Tensorseed milestones
 
-Derived from [SPEC.md](SPEC.md) section 15. Current milestone: **M0**.
+Derived from [SPEC.md](SPEC.md) section 16. Current milestone: **M0** (the
+BitTorrent spike and a Chia testnet run are the open items); much of the HTTP
+side of M1 and M2 is already done.
 
 ## Done
 
@@ -10,69 +12,58 @@ Derived from [SPEC.md](SPEC.md) section 15. Current milestone: **M0**.
 - [x] Minisign compatible signing and verification (checked both ways against the `minisign` tool)
 - [x] `SignedEntry` envelope: every entry signed by the publisher key, bound to catalog name and key
 - [x] Signed-file backend: hash chain, rollback, fork, gap, and stale head detection, with unit tests
-- [x] Export bundle (`ts.export/1`) build and verify; CLI `catalog export` / `catalog import` stubs (`import --dry-run` works)
+- [x] Export bundle (`ts.export/1`) build and verify
+- [x] Hugging Face API fields confirmed against live responses (spec 5); `hf-hub` dropped for plain `reqwest`
+- [x] Decisions: `rusqlite` for state, `object_store` for S3 compatible storage
+- [x] Minisign encrypted secret keys (scrypt) and `catalog keygen`; keys made by Tensorseed sign with the `minisign` tool and vice versa
+- [x] File backend transport: HTTPS sync with mirror fallback, persisted trust anchor, publishing (delta, snapshot, head), head re-signing, on demand snapshots
+- [x] Storage: local disk by default; optional S3 compatible targets from any provider, several at once, multipart uploads (spec 10.1)
+- [x] Chia DataLayer calls: `create_data_store`, `get_value` with envelope verification, paginated `get_keys`, `batch_update` with `submit_on_chain=false`, `submit_pending_root`, confirmation polling, `subscribe`, `get_sync_status`, `add_mirror` (mocked RPC tests only)
+- [x] `catalog create`, `info`, `add-mirror`, `export`, `import` (full), `resign-head`, `snapshot`
+- [x] `tensorseed-fetch`: verified, resumable, parallel downloads with webseed then Hub fallback, SQLite job state, atomic rename
+- [x] `pull` (catalog, `--manifest-file`, `--manifest-url`, `--from-hf`), `verify` (directory, catalog, manifest file, `--hf`), `list`, `show`, `jobs`
+- [x] Tombstone handling, pickle formats skipped by default, gated repos refused by default, NOTICE output
+- [x] `harvest` one shot and `--watch` daemon mode with watchlist rules, takedown list, size cap, disk budget, Hub backoff, idempotent SQLite state (spec 13)
+- [x] End to end CLI tests against local mock servers; real smoke test pulling `hf-internal-testing/tiny-random-gpt2`
 
-## M0: Spikes (scaffold only, no product logic)
+## M0: Spikes
 
 ### BitTorrent (librqbit)
 - [ ] BEP 52 v2 download works
 - [ ] v2 seeding works
 - [ ] v2 torrent creation works
 - [ ] Hybrid v1+v2 torrent creation works
-- [ ] BEP 19 webseeds (`url-list`) work against an R2 bucket with HTTP range requests
+- [ ] BEP 19 webseeds (`url-list`) work against an HTTP host with range requests
 - [ ] If any check fails: prototype the fallback (libtorrent-rasterbar 2.x via FFI or sidecar, or own BEP 52 builder)
 
-### Chia DataLayer RPC from Rust over mTLS (testnet)
-- [ ] `create_data_store`
-- [ ] `batch_update` with `submit_on_chain=false`
-- [ ] `submit_pending_root`
-- [ ] Confirmation polling (confirm exact `get_root` response fields)
-- [ ] `get_value` and `get_keys` (confirm behavior for missing keys)
+### Chia DataLayer on testnet
+- [ ] Run the implemented calls against a real node and confirm response fields (`get_root`, `get_keys` paging, missing key errors)
 - [ ] `subscribe` and `get_sync_status` from a second node
-- [ ] `add_mirror`
 - [ ] Check the `CatalogBackend` trait against the real call sequence and adjust it
 
-### Signed-file catalog (spec 6.8 to 6.10)
-- [ ] Load minisign encrypted secret key files (scrypt) and add `catalog keygen`
-- [ ] Persist the trust anchor `(revision, root)` in `file.state_dir`
+### Signed-file catalog
 - [ ] Confirm value size overhead of the `SignedEntry` envelope against the 1 MiB target (spec 6.5)
 
-### Hugging Face
-- [ ] Confirm API field names: tree `lfs.oid`, `gated`, `cardData.license`
-- [ ] Confirm `hf-hub` Xet downloads by commit SHA
-
 ### Decisions
-- [ ] Pick sqlite crate (`rusqlite` or `sqlx`)
-- [ ] Pick S3 crate (`aws-sdk-s3` or `object_store`)
 - [ ] Pick default `piece_length`
 - [ ] Hybrid torrents on or off by default
 
 ## M1: Publish
 - [ ] `doctor`
-- [ ] `catalog create`, `catalog info`, `catalog add-mirror`
-- [ ] Chia backend stores `SignedEntry` envelopes and verifies them on read
-- [ ] File backend: HTTPS fetch of head, deltas, snapshots with mirror fallback
-- [ ] File backend: upload to R2 (`catalog.tensorseed.dev`), snapshot every N revisions, head re-signing before expiry
-- [ ] File backend: catalog snapshot torrent
-- [ ] `catalog export` and `catalog import` end to end (Chia to file and file to Chia)
-- [ ] `publish` state machine (spec section 8.1)
+- [ ] `publish` state machine with torrents (spec section 8.1)
 - [ ] `sync`
-- [ ] `jobs`
-- [ ] Resumable state in sqlite
-- [ ] R2 multipart upload
-- [ ] Torrent creation
+- [ ] Torrent creation and `.torrent` upload to storage
+- [ ] File backend: catalog snapshot torrent
 - [ ] Atomic catalog writes through a single write queue
+- [ ] `takedown` (tombstone plus webseed deletion on every storage target)
 - [ ] Testnet end to end, then mainnet
 
 ## M2: Pull
-- [ ] `pull` state machine (spec section 8.2)
-- [ ] `verify`, `list`, `show`
-- [ ] Tombstone handling
-- [ ] License and NOTICE output
-- [ ] `--manifest-file` and `--manifest-url` modes
+- [ ] Torrent fetching alongside webseeds
+- [ ] `--seed-after`
 
 ## M3: Seeding daemon
-- [ ] `seed` with selection rules
+- [ ] `seed` with selection rules (including seeding harvested revisions from local disk)
 - [ ] Disk budget and bandwidth caps
 - [ ] Honor tombstones
 - [ ] Optional `--serve-catalog`
@@ -82,4 +73,4 @@ Derived from [SPEC.md](SPEC.md) section 15. Current milestone: **M0**.
 - [ ] Static site at tensorseed.dev generated from the catalog
 - [ ] Lists repos, licenses, sizes, magnets, webseeds, attribution text
 - [ ] Catalog generation history
-- [ ] Hosted on R2 or any static host, with no privileged role
+- [ ] Hosted on any static host, with no privileged role

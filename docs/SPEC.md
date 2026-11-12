@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 4)
+# Tensorseed: Project Specification (Revision 5)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Initial Rust workspace scaffold exists; no product logic yet.
+> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, and the `catalog` commands on the file backend; the Chia backend is implemented against mocked RPC responses only; BitTorrent is pending the M0 librqbit spike.
+
+Revision 5 changes: object storage is optional and provider neutral (local disk by default; any S3 compatible service, several at once; section 10.1); torrents are optional in manifests until the BitTorrent spike lands, so HTTP webseeds and the Hub are the byte sources for now; Hugging Face API facts confirmed against live responses (section 5); crate decisions made (`reqwest` instead of `hf-hub`, `rusqlite`, `object_store`; section 12); consumer side (`pull`, `verify`), publisher keys (`catalog keygen`), file backend transport, and the Chia RPC calls implemented; new automatic harvest mode (section 13).
 
 Revision 4 changes: added a second, chain-free catalog backend (signed static files, section 6.8) next to Chia DataLayer, made every catalog entry a publisher-signed envelope in every backend (6.9), and defined `catalog export` / `catalog import` for moving a catalog between backends with signatures intact (6.10).
 
@@ -16,7 +18,7 @@ Revision 3 changes: renamed the project to Tensorseed, switched key and schema p
 A Rust CLI and daemon that keeps open AI models and datasets from Hugging Face (HF) available even if HF goes away. It does this in two layers:
 
 1. **Catalog layer (pluggable; Chia DataLayer first, signed static files second):** a small, signed, versioned index behind a `CatalogBackend` trait so other chains can be added later without changing the manifest format. Every entry is signed with one publisher key in every backend, so the catalog can move between backends. The `file` backend (6.8) needs no chain at all. In the first backend, one DataLayer store maps each HF repository to its mirrored revisions. Each revision has a manifest: file list, sizes, SHA-256 hashes, license, the HF commit it came from, and how to fetch the bytes. Only the Merkle root of this store goes on chain. Values are kilobytes, not gigabytes.
-2. **Content layer (BitTorrent v2 plus HTTP webseeds):** the actual model bytes travel as BitTorrent v2 torrents (BEP 52) with BEP 19 webseeds. A Cloudflare R2 bucket is the primary always-on webseed. Backblaze B2 and/or Sia are optional cold backups. Volunteers seed whatever subset they choose.
+2. **Content layer (BitTorrent v2 plus HTTP webseeds):** the actual model bytes travel as BitTorrent v2 torrents (BEP 52) with BEP 19 webseeds. Publishers keep files on local disk by default and seed from there; an always-on HTTP webseed is optional and can be any static web server or one or more S3 compatible buckets from any provider (section 10.1). Sia is an optional cold backup. Volunteers seed whatever subset they choose.
 
 A user who knows only the catalog store ID (for the Chia backend) can find any mirrored model, download it from the swarm or the webseed, and verify every byte against hashes that are anchored on Chia and traceable to the original HF commit.
 
@@ -26,13 +28,13 @@ This directly answers the question in the tweet that started this project: model
 
 | Revision 1 idea | Revision 2 | Reason |
 |---|---|---|
-| Store model bytes as 4 to 8 MB hex chunks in DataLayer | Store only manifests in DataLayer; bytes go over BitTorrent v2 and HTTP | Subscribers reject any per-generation delta file over `max_delta_file_size: 250` MiB by default, so 1 TiB would need at least 4,195 sequential on-chain generations. Every subscriber also keeps roughly 3 copies (key/value blobs, all delta `.dat` files, latest full `.dat`), and new subscribers replay the whole history. Sources in section 13. |
+| Store model bytes as 4 to 8 MB hex chunks in DataLayer | Store only manifests in DataLayer; bytes go over BitTorrent v2 and HTTP | Subscribers reject any per-generation delta file over `max_delta_file_size: 250` MiB by default, so 1 TiB would need at least 4,195 sequential on-chain generations. Every subscriber also keeps roughly 3 copies (key/value blobs, all delta `.dat` files, latest full `.dat`), and new subscribers replay the whole history. Sources in section 14. |
 | "Mirrored across the chain and in multiple plots" | Plots are not involved at all | Chia plots contain no user data (https://www.chia.net/blog/why-chia-plots-dont-contain-real-user-data/). Only the root hash is on chain. |
 | One DataLayer store per model plus a master catalog | One catalog store (optionally sharded later) | Manifests are KB-sized, so per-repo stores add on-chain transactions and mirror coins without benefit. |
 | `https://huggingface.co<repo_id>` | `/api/models/{repo_id}`, `/api/datasets/{repo_id}`, tree endpoint | Original path was malformed. |
 | Poll `get_root` | `get_root` for owned stores; `get_local_root` / `get_sync_status` for subscribed stores | `get_root` returns an invalid hash for subscribed stores (DataLayer RPC reference). |
 | Each `batch_update` is visible immediately | Stage with `submit_on_chain=false`, publish with `submit_pending_root` | Gives one atomic generation per publish, so subscribers never see a half-written revision. |
-| Built-in DataLayer HTTP server fronted by Nginx/Caddy for model bytes | R2 webseed for bytes; DataLayer mirror only for the small catalog `.dat` files | Chia subscribers fetch whole `.dat` files from one server at a time; they do not use byte ranges or swarm. |
+| Built-in DataLayer HTTP server fronted by Nginx/Caddy for model bytes | HTTP webseeds (static host or object storage) for bytes; DataLayer mirror only for the small catalog `.dat` files | Chia subscribers fetch whole `.dat` files from one server at a time; they do not use byte ranges or swarm. |
 
 ---
 
@@ -52,7 +54,7 @@ This directly answers the question in the tweet that started this project: model
 ### 2.2 Non-goals
 
 - N1. Storing model bytes on chain or inside DataLayer values.
-- N2. Paying seeders or running an incentive token. (Possible future work, see DIG Network in section 14.)
+- N2. Paying seeders or running an incentive token. (Possible future work, see DIG Network in section 15.)
 - N3. Hosting gated or restricted-license weights without the license allowing it.
 - N4. Replacing HF features (model cards UI, inference, Spaces, discussions).
 - N5. Format conversion or quantization (no GGUF/MLX/NVFP4 conversion). We mirror what upstream publishes. Pre-quantized repos can be added as separate targets.
@@ -66,12 +68,12 @@ This directly answers the question in the tweet that started this project: model
               Hugging Face Hub
                     |
                     | (1) model info + tree (sha, sizes, LFS sha256, license)
-                    | (2) file download (hf-hub crate, Xet aware)
+                    | (2) file download (resolve URLs, streaming hash check)
                     v
  +-------------------------------------------------------------+
  | tensorseed publish (publisher node)                         |
  |  staging dir -> verify sha256 -> build BEP 52 torrent       |
- |   -> upload files to R2 (webseed)  [optional B2 / Sia copy] |
+ |   -> keep on local disk; optional upload to S3 targets      |
  |   -> start seeding                                          |
  |   -> write manifest + pointers to DataLayer (staged batch)  |
  |   -> submit_pending_root -> wait for confirmation           |
@@ -80,9 +82,9 @@ This directly answers the question in the tweet that started this project: model
         | DataLayer RPC (mTLS,    | HTTPS (BEP 19)      | BitTorrent v2 swarm
         | localhost:8562)         |                     | (DHT + trackers)
         v                         v                     v
-  Chia DataLayer             Cloudflare R2         Volunteer seeders
-  catalog store              public bucket         (tensorseed seed)
-  (root hash on chain;       (models.tensorseed.dev)
+  Chia DataLayer             HTTP webseeds         Volunteer seeders
+  catalog store              (local web server or  (tensorseed seed)
+  (root hash on chain;        any S3 provider)
    .dat files served on
    :8575 by any mirror)
         ^                         ^                     ^
@@ -106,10 +108,10 @@ Key property: the catalog says *what* the correct bytes are (hashes) and *where*
 | Malicious file-catalog host or mirror forges, rolls back, or forks the catalog | Fake or outdated manifests | Head, deltas, and snapshots are minisign-signed with the pinned publisher key; every entry is verified again; the revision and `prev_root` hash chain plus the local trust anchor reject rollback, replay, gaps, and forks (6.8). |
 | File-catalog host freezes the catalog (serves an old, validly signed head forever) | Users miss new revisions and tombstones | `head.json` carries `expires_unix`; clients refuse expired heads. Publisher re-signs the head before `file.head_ttl_secs` lapses. |
 | Publisher shows different file-catalog chains to different users (split view) | Targeted users get different manifests | Not preventable by the file backend alone. Detectable by comparing heads across mirrors; prevented by the Chia backend's on-chain root (6.11). |
-| Publisher signing key compromise (any backend) | Attacker signs valid looking entries | Keep the key offline; rotation and revocation design is an open question (section 16). Rollback and fork checks still stop rewriting history already seen by clients. |
+| Publisher signing key compromise (any backend) | Attacker signs valid looking entries | Keep the key offline; rotation and revocation design is an open question (section 17). Rollback and fork checks still stop rewriting history already seen by clients. |
 | Catalog owner key compromise | Attacker publishes manifests pointing to malicious weights (pickle `.bin`/`.pt` can execute code on load) | Keep the owner key in a cold or Vault-style setup; publish from a CHIP-0035 delegated writer key that the owner can revoke (optional, see 6.6). Manifests record `hf_commit` and HF-reported hashes so anyone can audit against HF while it exists. `pull` warns loudly on pickle-based formats and prefers `safetensors`/`gguf`. `pull` shows the publishing generation and timestamp and supports `--expect-sha256` / pinned revisions. |
 | Upstream HF repo itself is malicious or later altered | We mirror bad content, or a force-push rewrites history | We mirror by immutable commit SHA; new commits become new revisions and never overwrite old manifests. Record HF security-scan status if exposed by the API (unverified, M0). |
-| Publisher host compromise | Same as key compromise; also R2 credentials | Least-privilege R2 token (write to one bucket), DataLayer RPC never exposed beyond localhost (RPC reference warns port 8562 must not be public). |
+| Publisher host compromise | Same as key compromise; also object storage credentials | Least-privilege S3 keys (write to one bucket each, read from env only), DataLayer RPC never exposed beyond localhost (RPC reference warns port 8562 must not be public). |
 | Takedown request (license or legal) | Must stop distributing | See section 11. Honest limit: the DataLayer delta history is permanent for anyone who already synced, and the swarm cannot be recalled. We can tombstone the catalog entry and delete webseed objects. |
 | Catalog spam / bloat | Only relevant if write access is delegated | Single writer by default; delegated writers are explicit and revocable. |
 | Seeder privacy | Seeder IPs visible in swarm | Documented; seeders may use a VPN or seed only via webseed-style HTTP hosting. |
@@ -119,13 +121,17 @@ Key property: the catalog says *what* the correct bytes are (hashes) and *where*
 
 ## 5. Hugging Face integration
 
-- Model info: `GET https://huggingface.co/api/models/{repo_id}` (datasets: `/api/datasets/{repo_id}`), optionally `/revision/{rev}`. Provides commit `sha`, `gated` status, and `cardData.license` (to be confirmed in M0).
-- File tree with sizes and LFS hashes: `GET https://huggingface.co/api/models/{repo_id}/tree/{commit_sha}?recursive=true` (datasets analogous). LFS entries carry `lfs.oid` (SHA-256) and size. Non-LFS small files are hashed locally.
-- Downloads: the `hf-hub` crate (1.0.0 supports Xet transfers via `hf-xet`; https://crates.io/crates/hf-hub). Always download by commit SHA, never by branch name, to avoid races.
-- Auth: optional HF token from env `HF_TOKEN` for rate limits. Gated repos are refused unless the license allowlist permits redistribution (section 11).
-- Bounded concurrency for downloads (default 2 files), with HTTP resume of partial files.
+Confirmed against live responses on 2026-11-12 (code: `tensorseed-hf`):
 
-All endpoint field names above must be confirmed against live responses in M0 before M1 code depends on them.
+- Model info: `GET {endpoint}/api/models/{repo_id}` (datasets: `/api/datasets/{repo_id}`), optionally `/revision/{rev}`. Fields used: `sha` (40-hex commit), `gated` (`false`, `"auto"`, or `"manual"`), `private`, `disabled`, `lastModified`, `cardData.license` (a string or a list), and `tags` (which include `license:<id>`). A missing or private repo returns 401 without a token.
+- File tree: `GET {endpoint}/api/models/{repo_id}/tree/{commit}?recursive=true`. Every entry has `type`, `path`, `size`, and `oid` (the git blob SHA-1). LFS entries add `lfs.oid` (SHA-256) and `lfs.size`; Xet backed files also carry `xetHash`. Pages of 1000 entries, continued through a `Link: <...>; rel="next"` header, which is only followed on the endpoint's own origin.
+- Listing (harvest discovery): `GET {endpoint}/api/models?author=..&filter=<tag>&sort=downloads&direction=-1&limit=N`, same pagination; entries carry `id`, `downloads`, `tags`, `gated`.
+- Downloads: `GET {endpoint}/{repo_id}/resolve/{commit}/{path}` (datasets under `/datasets/`), usually redirected to a CDN; Xet stored files are served there too. Always by commit SHA, never by branch.
+- Verification: LFS files against `lfs.oid` (SHA-256); small non-LFS files against their git blob id (SHA-1 of `"blob <size>\0" || content`), then hashed with SHA-256 for the manifest.
+- Auth: optional token from the env var named by `huggingface.token_env` (default `HF_TOKEN`), sent only to the endpoint origin (the HTTP client drops it on cross-origin redirects). Gated repos are refused unless explicitly allowed (`--allow-gated` for personal pulls, `harvest.allow_gated` for mirroring).
+- Rate limits: HTTP 429 and 5xx are retried with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Downloads use bounded concurrency (default 2 files) and HTTP range resume.
+
+The `hf-hub` crate is not used: version 1.0 pulls in `hf-xet` (over 550 crates) and is built around the Hugging Face cache layout, while Tensorseed needs the raw tree hashes, its own output layout, streaming verification, and resumable jobs (section 12).
 
 ---
 
@@ -217,7 +223,7 @@ All JSON is UTF-8, keys sorted, no insignificant whitespace (canonical form) so 
   "schema": "ts.catalog/1",
   "name": "Tensorseed catalog",
   "publisher": { "display_name": "string", "contact": "string", "policy_url": "https://..." },
-  "webseed_bases": ["https://models.tensorseed.dev/t/"],
+  "webseed_bases": ["https://models.example.org/t/"],
   "trackers": ["udp://tracker.example:1337/announce"],
   "created_at": "2026-11-12T00:00:00Z"
 }
@@ -267,10 +273,10 @@ All JSON is UTF-8, keys sorted, no insignificant whitespace (canonical form) so 
     "magnet": "magnet:?xt=urn:btmh:1220<64-hex>&dn=...",
     "name": "org__name@<commit12>",
     "piece_length": 4194304,
-    "torrent_file_urls": ["https://models.tensorseed.dev/t/<infohash_v2>.torrent"]
+    "torrent_file_urls": ["https://models.example.org/t/org__name@<commit12>.torrent"]
   },
-  "webseeds": ["https://models.tensorseed.dev/t/<infohash_v2>/"],
-  "backups": [ { "kind": "b2", "locator": "b2://bucket/prefix/" } ],
+  "webseeds": ["https://models.example.org/t/"],
+  "backups": [ { "kind": "sia", "locator": "sia://bucket/prefix/" } ],
   "published_at": "2026-11-12T00:00:00Z",
   "publisher_tool": "tensorseed 0.1.0"
 }
@@ -281,7 +287,9 @@ Field rules:
 - `bt_v2_pieces_root` is the BEP 52 per-file Merkle root (empty files have none).
 - `piece_length` is a power of two, at least 16 KiB (BEP 52). The 4 MiB example is a placeholder default to tune in M0.
 - `pickle_risk` is true for `.bin`, `.pt`, `.pth`, `.pkl`, `.ckpt` and similar formats.
-- `files` is empty and `file_pages > 0` when paging is used.
+- `files` is empty and `file_pages > 0` when paging is used (harvest pages above 2000 files, 1000 per page).
+- `torrent` is optional (`null`) until torrent creation lands after the M0 spike; when present, `torrent.name` must equal the content name `{org}__{name}@{commit[0:12]}`.
+- Each `webseeds` entry is an http(s) base ending in `/`; a file's URL is `<base><content name>/<path>` with each path segment percent encoded (BEP 19 multi-file rule).
 
 **FilePage**: `{ "schema": "ts.filepage/1", "page": 0, "files": [ ...same objects as above... ] }`
 
@@ -315,7 +323,7 @@ Field rules:
 
 A second backend with zero chain dependence. It carries the same keys (6.3) and the same canonical JSON documents (6.4), wrapped in the same `SignedEntry` envelopes (6.9) as the Chia backend, but publishes them as plain files. Config: `catalog.backend = "file"` and the `[file]` table (section 10). Code: `tensorseed-catalog::file`.
 
-**Layout** under `file.base_url` (default `https://catalog.tensorseed.dev/`, an R2 bucket on a custom domain), one directory per logical catalog name:
+**Layout** under `file.base_url` (for example `https://catalog.tensorseed.dev/`; any static host, or the public URL of a storage target), one directory per logical catalog name:
 
 ```
 <base_url>/<catalog>/head.json                       (+ head.json.minisig)    rewritten each revision
@@ -352,7 +360,7 @@ Everything except `head.json` is append-only: a published delta or snapshot is n
 | `expires_unix` in the past | `Chain` error (stale head, freeze attack) |
 | Wrong key, tampered body, or wrong trusted comment | `Signature` error |
 
-Clients keep a trust anchor `(revision, root)` in `file.state_dir` (persistence is M1) and never go below it. A new client bootstraps from the newest snapshot, then applies later deltas. The publisher re-signs `head.json` (same revision, new `expires_unix`) before `file.head_ttl_secs` lapses.
+Clients keep a trust anchor `(revision, root)` and the verified entries in `file.state_dir/<catalog>/state.json` (re-verified on load) and never go below it. Sync tries `base_url`, then each mirror; rollback, stale, or tampered sources are skipped, while a fork aborts. The publisher writes to the configured storage (section 10.1) in the order delta, snapshot (at revision 1 and every `snapshot_every`), head, and advances its local state only after every upload succeeded; when no source serves a head yet (for example local only storage), it continues from its verified local state. A new client bootstraps from the newest snapshot, then applies later deltas. The publisher re-signs `head.json` (same revision, new `expires_unix`) before `file.head_ttl_secs` lapses.
 
 **What it does not give you:** the file backend proves *who* published each revision and that history was not rewritten for clients that already saw it. It cannot prove to a brand new client that the publisher never showed a different chain to someone else (a split view); only cross-checking with other mirrors or a public ledger can. That is what Chia adds (6.11).
 
@@ -393,7 +401,7 @@ tensorseed catalog import catalog.ts-export.json [--backend chia|file] [--dry-ru
 | History | public, tamper-evident, on-chain root per generation; split views are impossible | hash chain; rollback and forks detected for clients that saw a newer state; split views detectable only by cross-checking mirrors |
 | Mirror discovery | permissionless, on-chain `add_mirror` coins | static list in config (`file.mirror_urls`) plus any host copying the files |
 | Dependencies | Chia full node, wallet, XCH for fees | none beyond HTTPS or BitTorrent |
-| Cost per update | one transaction fee (often 0) | a few R2 writes |
+| Cost per update | one transaction fee (often 0) | a few object writes (local disk or any S3 provider) |
 | Best for | the canonical, publicly auditable catalog | offline use, simple mirrors, and insurance against Chia becoming unavailable |
 
 Sia stays an optional cold store for *bytes* (7.3); it has no catalog or signature features and is not a catalog backend. Other chains (for example an EVM layer 2) can be added later as further `CatalogBackend` implementations only if users ask for them; the entry format and export bundles already make that a migration, not a redesign.
@@ -408,18 +416,18 @@ Sia stays an optional cold store for *bytes* (7.3); it has no catalog or signatu
 - **v2 required** for per-file SHA-256 Merkle trees and `btmh` magnets (BEP 52, https://www.bittorrent.org/beps/bep_0052.html).
 - **Hybrid v1+v2 (decision to confirm):** default to hybrid torrents so v1-only clients can still join, at the cost of v1 padding files and a second info hash. Config switch `torrent.hybrid = true|false`.
 - Trackers: a short configurable list plus DHT. Private trackers are not used.
-- The `.torrent` file itself is uploaded to R2 next to the content and its URL stored in the manifest.
+- The `.torrent` file itself is written next to the content in storage (section 10.1) and its URL stored in the manifest.
 
 ### 7.2 Webseeds (BEP 19)
 
-- Each torrent's `url-list` contains the R2 base, for example `https://models.tensorseed.dev/t/<infohash_v2>/`. Per BEP 19, when the URL ends in `/`, clients append the torrent name and file path, so objects are stored at `t/<infohash_v2>/<name>/<relative path>` (https://bittorrent.org/beps/bep_0019.html).
-- R2 bucket is public via a custom domain, read-only, with HTTP range support. Upload uses S3 multipart for large files.
-- Optional second webseed on B2 (via its S3 API) for redundancy.
+- Webseeds are optional. A manifest's `webseeds` lists `<public_base_url>t/` for every storage location that has a public URL: `storage.local_public_base_url` when a web server exposes the local directory, or each `[[storage.targets]]` `public_base_url`. Per BEP 19, when the URL ends in `/`, clients append the torrent name and file path, so objects live at `t/<content name>/<relative path>` (https://bittorrent.org/beps/bep_0019.html). The content name includes the commit, so every revision has its own immutable prefix.
+- Any host works as long as it serves those paths with HTTP range support: a static web server over the local directory, or a public bucket from any S3 compatible provider (custom endpoint, path style or virtual hosted). Uploads stream large files as S3 multipart uploads. Several targets can be written at once for redundancy across providers.
+- `pull` tries webseeds first and falls back to the Hub's resolve URL (unless `--no-hf-fallback`), dropping any source that serves wrong bytes.
 
 ### 7.3 Cold backups (optional)
 
 - Sia stays optional cold storage for bytes only; it is not a catalog backend (6.11).
-- Backblaze B2 bucket and/or Sia (via `renterd`) holding the same object layout. Recorded under `backups` in the manifest so a future operator can restore the R2 webseed. Not used by `pull` unless `--allow-backup-sources` is set.
+- An S3 compatible target without a `public_base_url` is an upload only cold copy with the same object layout. Sia (via `renterd`) is recorded under `backups` in the manifest so a future operator can restore a webseed. Not used by `pull` unless `--allow-backup-sources` is set (not implemented).
 
 ---
 
@@ -434,18 +442,18 @@ START
                    fail -> SKIPPED(policy) [logged, no writes]
  -> DIFF           read ts/v1/repo/.../latest via get_value
                    latest.commit == remote commit -> DONE(up_to_date)
- -> DOWNLOAD       hf-hub download by commit into staging/<repo>/<commit>/
+ -> DOWNLOAD       resolve URLs by commit into <storage.local_dir>/t/<name>/
                    bounded concurrency; resumable; record per-file state in sqlite
  -> VERIFY         sha256 every file; compare to hf lfs oid where present
                    mismatch -> FAILED(integrity)
  -> BUILD_TORRENT  compute BEP 52 piece layers (+v1 if hybrid); write .torrent
- -> UPLOAD         multipart upload files + .torrent to R2 (and backups if enabled)
+ -> UPLOAD         if storage.backend = "s3": multipart upload files + .torrent to every target
                    HEAD-check size; resumable via sqlite part tracking
  -> SEED_START     add torrent to local seeding session (data from staging or seed dir)
  -> STAGE_CATALOG  batch_update(submit_on_chain=false): manifest, pages, index, latest
  -> SUBMIT         submit_pending_root (through the write queue)
  -> CONFIRM        poll until confirmed root == expected; timeout -> RETRY or FAILED(chain)
- -> CLEANUP        if keep_local_seed=false: delete staging after R2 upload confirmed
+ -> CLEANUP        if keep_local_seed=false: delete local files after every upload confirmed
                    else move to seed_dir
  -> DONE(published)
 ```
@@ -457,7 +465,7 @@ Failure after STAGE_CATALOG but before SUBMIT: use `clear_pending_roots` and res
 ### 8.2 Pull
 
 ```
-START (args: --catalog <store_id> <repo_id> [--revision <commit>] | --manifest-file)
+START (args: <repo_id>[@commit] [--revision] | --manifest-file | --manifest-url | --from-hf)
  -> ENSURE_SUB     subscribe(catalog, urls from config) if not subscribed
  -> WAIT_SYNC      get_sync_status / get_local_root until local generation == chain generation
                    (or --no-wait to use the current local copy)
@@ -471,7 +479,9 @@ START (args: --catalog <store_id> <repo_id> [--revision <commit>] | --manifest-f
  -> DONE
 ```
 
-`pull` also works without a local Chia node via `--manifest-file` or `--manifest-url` (verification against chain is then skipped and the CLI says so).
+`pull` also works without a local Chia node via `--manifest-file` or `--manifest-url` (a signed entry is verified against the pinned key; a plain manifest is accepted with a warning), or with `--from-hf`, which verifies against the Hub's own hashes and says the source was unsigned.
+
+Implemented today (without the torrent steps): the catalog is synced (`--no-wait` uses the local copy), revisions must be full commit SHAs (otherwise `latest` is followed), tombstones stop the pull unless `--ignore-tombstone`, pickle formats are skipped unless `--allow-pickle`, and files download through `tensorseed-fetch`: up to `--jobs` files at once, webseeds then the Hub, streaming SHA-256 (or git blob SHA-1 for small Hub files), resume from `.tensorseed/partial/` with HTTP ranges, job records in the SQLite state DB, and an atomic rename into place. The output directory gets `.tensorseed/pull.json` (`ts.pull/1`, the full expected file list), `.tensorseed/manifest.json` (the signed entry, when there is one), and `.tensorseed/NOTICE` (license and attribution). `verify` re-hashes a directory against `pull.json` (re-checking the stored manifest signature), the catalog (`verify org/name` or `--repo`), a manifest file, or the Hub (`--hf`), prints a PASS or FAIL line per file, and exits with code 3 on any mismatch. Missing pickle files count as skipped unless `--strict`.
 
 ### 8.3 Seed daemon
 
@@ -492,23 +502,28 @@ Selection rules: explicit repo list, glob patterns (`org/*`), "latest revision o
 
 Single binary `tensorseed`.
 
-| Command | Purpose |
-|---|---|
-| `doctor` | Check config, pinned publisher key, catalog backend (Chia: DataLayer RPC mTLS; file: head fetch and signature), wallet and node sync, R2 credentials, torrent ports, disk space. |
-| `catalog create` | Create the catalog through the configured backend (Chia: `create_data_store`), wait for confirmation, write `CatalogInfo`. |
-| `catalog info [--store]` | Show catalog info, generation, root, mirrors. |
-| `catalog add-mirror --url ... [--amount] [--fee]` | Advertise a DataLayer mirror for the catalog (Chia only; the file backend lists mirrors in config). |
-| `catalog export --out FILE [--backend chia\|file]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10). |
-| `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). |
-| `publish <repo_id> [--type model\|dataset] [--revision <commit>]` | Run the publish state machine for one repo. |
-| `sync` | Publish every target in config (sequential chain writes, bounded downloads). |
-| `pull <repo_id> --catalog <store_id> [--revision] [--out DIR] [--seed-after DUR]` | Download and verify. |
-| `seed` | Run the seeding daemon. |
-| `verify <dir> --catalog <store_id> <repo_id> [--revision]` | Re-hash a local copy against the manifest. |
-| `list [--catalog] [--filter]` | List catalog entries (from `index` keys). |
-| `show <repo_id> [--revision]` | Print a manifest. |
-| `takedown <repo_id> --reason ... [--revisions ...] [--delete-webseed]` | Write tombstone, optionally delete R2 objects. |
-| `jobs [--retry ID] [--clear ID]` | Inspect and manage resumable jobs. |
+| Command | Purpose | Status |
+|---|---|---|
+| `doctor` | Check config, pinned publisher key, catalog backend, storage credentials, torrent ports, disk space. | stub |
+| `catalog keygen [--out-dir] [--name] [--no-password] [--force]` | Write a minisign compatible key pair; the secret key is scrypt encrypted with a password from `TENSORSEED_KEY_PASSWORD` or a prompt. | done |
+| `catalog create` | File: write `ts/v1/catalog` as revision 1. Chia: `create_data_store` and print the store id. | done |
+| `catalog info [--no-wait]` | Revision or generation, root, entries, sources, publisher. | done |
+| `catalog add-mirror --url ... [--amount] [--fee]` | Advertise a DataLayer mirror (Chia only; the file backend lists mirrors in config). | done (mocked RPC) |
+| `catalog export --out FILE [--backend chia\|file]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10). | done |
+| `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). | done |
+| `catalog resign-head`, `catalog snapshot` | File backend: re-sign `head.json` with a fresh expiry; write a snapshot now. | done |
+| `publish <repo_id> [--type] [--revision <commit>]` | Run the publish state machine for one repo (with torrents). | stub (M1; `harvest` covers the HTTP part) |
+| `sync` | Publish every target in config. | stub |
+| `harvest [--watch] [--dry-run] [--only ...] [--status]` | Watchlist driven mirroring from the Hub (section 13). | done |
+| `pull <repo_id>[@commit] [--out DIR] [--from-hf\|--manifest-file\|--manifest-url] [--jobs N] [--allow-pickle] [--allow-gated] [--no-hf-fallback] [--no-wait] [--ignore-tombstone]` | Download and verify (8.2). | done (no torrents) |
+| `verify <dir\|repo_id[@commit]> [--repo] [--dir] [--hf] [--manifest-file] [--strict] [--threads N]` | Re-hash a local copy; exit 3 on mismatch. | done |
+| `list [--filter] [--no-wait]` | List catalog entries (from `index` keys). | done |
+| `show <repo_id>[@commit] [--revision]` | Print a manifest. | done |
+| `jobs [--show ID] [--clear ID]` | Inspect resumable download jobs. | done |
+| `seed` | Run the seeding daemon. | stub (M3, pending M0) |
+| `takedown <repo_id> --reason ... [--revisions ...] [--delete-webseed]` | Write a tombstone, optionally delete webseed objects on every storage target. | stub |
+
+Exit codes: 0 success, 1 error, 2 not implemented yet, 3 verification or download failure.
 
 Additional scaffold command: `config show` prints the effective merged configuration (secrets are never stored in it).
 
@@ -521,6 +536,7 @@ Global flags: `--config`, `--log-format json|pretty`, `-v`.
 ```toml
 [general]
 state_db = "~/.local/share/tensorseed/state.sqlite"
+download_dir = "."               # pull default: <download_dir>/<org>/<name>
 staging_dir = "/srv/tensorseed/staging"
 seed_dir = "/srv/tensorseed/seed"
 keep_local_seed = true
@@ -563,20 +579,11 @@ listen_port = 6881
 upload_limit_kbps = 0            # 0 = unlimited
 dht = true
 
-[webseed.r2]
-enabled = true
-account_id_env = "R2_ACCOUNT_ID"
-access_key_env = "R2_ACCESS_KEY_ID"
-secret_key_env = "R2_SECRET_ACCESS_KEY"
-bucket = "tensorseed"
-public_base_url = "https://models.tensorseed.dev/t/"
-
-[backup.b2]
-enabled = false
-endpoint = "https://s3.<region>.backblazeb2.com"
-bucket = "tensorseed-cold"
-key_id_env = "B2_KEY_ID"
-app_key_env = "B2_APP_KEY"
+[storage]
+backend = "local"                # "local" (default) | "s3"
+local_dir = "~/.local/share/tensorseed/publish"
+local_public_base_url = ""       # set if a web server exposes local_dir (makes it a webseed)
+# [[storage.targets]]            # for backend = "s3"; repeat for several providers (10.1)
 
 [backup.sia]
 enabled = false
@@ -602,9 +609,40 @@ select = ["org/*"]
 latest_only = true
 prune = true
 serve_catalog = false
+
+[harvest]                        # section 13
+repos = []
+authors = []
+tags = ["safetensors"]
+min_downloads = 1000
+max_repo_bytes = 0
+disk_budget_bytes = 0
+allow_gated = false
+takedown = []
 ```
 
-Secrets are only read from environment variables or a file outside the repo; never stored in the TOML. Default config path: `~/.config/tensorseed/tensorseed.toml` (override with `--config` or `TENSORSEED_CONFIG`). An example lives at `config/tensorseed.example.toml` in the repository.
+Secrets are only read from environment variables or a file outside the repo; never stored in the TOML. The publisher key password comes from `TENSORSEED_KEY_PASSWORD` or an interactive prompt. Default config path: `~/.config/tensorseed/tensorseed.toml` (override with `--config` or `TENSORSEED_CONFIG`). An example lives at `config/tensorseed.example.toml` in the repository.
+
+---
+
+### 10.1 Storage
+
+Object storage is optional. With `storage.backend = "local"` (the default), everything the publisher writes (signed catalog files under `<catalog name>/`, harvested model files under `t/<content name>/`, signed manifests under `manifests/`) goes to `storage.local_dir`, seeding works from those local files, and nothing needs an account anywhere. Exposing that directory with any static web server and setting `local_public_base_url` turns it into a webseed and a catalog source.
+
+With `storage.backend = "s3"`, every object is written to each `[[storage.targets]]` entry in order, so a publisher can push to more than one provider; a write counts only when every target accepted it. Each target is generic S3: `endpoint` (empty means AWS S3 itself), `region`, `bucket`, `prefix`, `path_style` (default true; every provider below accepts it), `public_base_url` (the public URL serving the bucket; empty for upload only cold copies), and `access_key_env` / `secret_key_env`, the names of the environment variables holding the credentials (defaults `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). Credentials are never read from the file.
+
+Presets (checked against each provider's documented S3 endpoint format; full blocks in `config/tensorseed.example.toml`). Prices change; the notes are qualitative on purpose, check current terms:
+
+| Provider | `endpoint` | `region` | Notes |
+|---|---|---|---|
+| Cloudflare R2 | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` | `auto` | No egress fees. |
+| Backblaze B2 | `https://s3.<region>.backblazeb2.com` | e.g. `us-west-004` | Low storage price; free egress up to 3x average stored data, unlimited through partner CDNs such as Cloudflare (Bandwidth Alliance). https://www.backblaze.com/cloud-storage/pricing |
+| Vultr Object Storage | `https://<location>.vultrobjects.com` (e.g. `ewr1`) | the location id | Flat monthly plans that bundle storage and transfer. https://docs.vultr.com/products/storage/object-storage/faq.md |
+| Wasabi | `https://s3.<region>.wasabisys.com` | e.g. `us-east-1` | No egress fees while monthly egress stays at or below stored volume; 90 day minimum storage duration on pay as you go. https://wasabi.com/product-terms |
+| MinIO (self hosted) | e.g. `http://localhost:9000` | `us-east-1` | Your own hardware; plain HTTP allowed for local endpoints. |
+| AWS S3 | empty | the bucket's region | Egress is billed; set `path_style = false` for virtual hosted addressing. |
+
+The S3 client is `object_store` (section 12): custom endpoints, path style or virtual hosted addressing, and multipart uploads (files of 32 MiB and up go in 16 MiB parts).
 
 ---
 
@@ -615,7 +653,7 @@ Secrets are only read from environment variables or a file outside the repo; nev
 3. **Attribution-style licenses (Llama-style):** the Llama 3.1 Community License allows redistribution if you include a copy of the agreement, keep the required "Notice" text file, and prominently display "Built with Llama" (https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/LICENSE). These are allowed only when listed in `attribution_licenses`; the publisher then (a) mirrors the license and notice files, (b) sets `license.attribution` in the manifest to the required text, and (c) `pull` writes the license and NOTICE into the output directory and prints the attribution. The catalog explorer displays "Built with Llama" for those entries.
 4. **Gated repos:** "gated" is an HF access setting, not a license term. Gated repos are skipped unless `allow_gated = true` and the license class is `open` or `attribution`. Prior art (LLM Torrents) chooses never to rehost gated weights; we default to the same.
 5. **Restricted / non-commercial / no-redistribution licenses:** never published.
-6. **Takedown process:** a published contact address in `CatalogInfo.publisher.contact` and a policy URL. On a valid request: write a `Tombstone` (one generation), delete webseed objects (R2/B2), stop seeding on publisher nodes. Seed daemons honor tombstones by default and stop seeding. Limits are stated publicly: past DataLayer history and existing swarm copies cannot be recalled.
+6. **Takedown process:** a published contact address in `CatalogInfo.publisher.contact` and a policy URL. On a valid request: write a `Tombstone` (one generation), delete webseed objects on every storage target, stop seeding on publisher nodes. `harvest` never fetches repos on its takedown list (`harvest.takedown`, `harvest.takedown_file`) or tombstoned in the catalog. Seed daemons honor tombstones by default and stop seeding. Limits are stated publicly: past DataLayer history and existing swarm copies cannot be recalled.
 
 ---
 
@@ -625,14 +663,16 @@ Secrets are only read from environment variables or a file outside the repo; nev
 |---|---|---|
 | Async runtime | `tokio` | multi-thread |
 | HTTP + DataLayer RPC | `reqwest` with `rustls-tls` | client cert (mTLS) for port 8562 |
-| HF Hub | `hf-hub` 1.x | Xet support via `hf-xet` |
+| HF Hub | plain `reqwest` (decided) | `hf-hub` 1.0 was rejected: it pulls `hf-xet` (over 550 crates) and is built around the HF cache layout; we need raw tree hashes, our own layout, streaming verification, and resumable jobs. Xet files still download through resolve URLs. |
 | Serialization | `serde`, `serde_json` | canonical JSON helper (sorted keys) |
 | Hashing / hex | `sha2`, `hex` | streaming SHA-256 |
 | Signatures | `ed25519-dalek` 2.x, `blake2`, `base64` | minisign compatible format (6.9); BSD-3-Clause and MIT/Apache-2.0, pass `deny.toml` |
 | CLI / config | `clap` (derive), `figment` + `toml` | |
 | Errors / logs | `thiserror`, `anyhow`, `tracing`, `tracing-subscriber` | |
-| State | `rusqlite` or `sqlx` (sqlite) | decision in M0 |
-| S3-compatible upload (R2, B2) | `aws-sdk-s3` or `object_store` | both speak S3 API; decision in M0 |
+| State | `rusqlite` with bundled SQLite (decided) | synchronous, small, no async pool needed for a CLI; jobs, files, and harvest records in `general.state_db` |
+| S3 compatible upload (any provider) | `object_store` 0.14, `aws` feature (decided) | Apache Arrow project, MIT/Apache-2.0; custom endpoints, path style, multipart; shares `reqwest` 0.13. `aws-sdk-s3` rejected as much heavier; `rust-s3` pulls an older `reqwest` (0.12). |
+| Key encryption / prompts | `scrypt`, `getrandom`, `rpassword` | minisign compatible encrypted secret keys (libsodium scrypt parameters) |
+| Test HTTP mocks | `wiremock` (dev only) | every network test runs against local mock servers |
 | BitTorrent | `librqbit` | **Must verify in M0:** BEP 52 v2 download and seeding, v2/hybrid torrent creation, and BEP 19 webseed support. As of 2026-11-12, librqbit 9.1.0 has v2 metadata parsing, Merkle verification and `btmh` magnets, but the v2 tracking issue is still open (https://github.com/ikatson/rqbit/issues/546), and I found no confirmation of BEP 19 webseeds. |
 | BitTorrent fallback | libtorrent-rasterbar 2.x (supports v2 and hybrid) via FFI bindings or a sidecar process; or write our own BEP 52 torrent builder (bencode + hashing) and seed with a v2-capable client | Choose in M0 based on spike results. |
 | Bencode (if building torrents ourselves) | `serde_bencode` or `bendy` | |
@@ -645,14 +685,41 @@ There is no official Rust DataLayer daemon; M1 talks to the Python `chia data` s
 | Crate | Role |
 |---|---|
 | `tensorseed-core` | Manifest and catalog JSON types, key builders (`ts/v1/...`), canonical JSON, streaming SHA-256, shared errors. No network code. |
-| `tensorseed-hf` | Hugging Face API client (model info, tree, downloads by commit). |
-| `tensorseed-catalog` | `CatalogBackend` trait and backends. `minisign` (signature format), `signed` (`SignedEntry`), `chia` (DataLayer RPC over mTLS with `reqwest` + rustls), `file` (signed static files and hash chain), `export` (bundles). |
+| `tensorseed-hf` | Hugging Face API client (repo info, paginated tree, listings, resolve URLs, backoff) and the license and gated policy. |
+| `tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback and SQLite job state. |
+| `tensorseed-catalog` | `CatalogBackend` trait and backends. `minisign` (signature format and key files), `signed` (`SignedEntry`), `chia` (DataLayer RPC over mTLS with `reqwest` + rustls), `file` (signed static files, hash chain, HTTPS sync), `sink` (local directory and S3 targets), `export` (bundles). |
 | `tensorseed-torrent` | BitTorrent v2 torrent creation, seeding, and fetching with BEP 19 webseeds (librqbit pending M0). |
-| `tensorseed-cli` | The `tensorseed` binary: clap commands, figment config, tracing setup. |
+| `tensorseed-cli` | The `tensorseed` binary: clap commands, figment config, tracing setup, pull, verify, harvest. |
+
+MSRV is Rust 1.87 (needed by a patched dependency for RUSTSEC-2026-0385).
 
 ---
 
-## 13. Cost notes (list prices as of 2026-11-12; recheck before committing)
+## 13. Harvest mode
+
+`tensorseed harvest` mirrors repos from the Hub automatically while it is available. One pass by default; `--watch` repeats every `harvest.poll_interval_secs` (daemon mode); `--dry-run` prints the plan without downloading; `--only <ids>` limits a run; `--status` lists finished and failed revisions.
+
+**Watchlist** (`[harvest]`): explicit `repos` (models) and `datasets` (with `include_datasets`), plus discovery rules: `authors` (users or orgs, listed by downloads, at most `max_per_author` each), `tags` (all required), and `min_downloads`. Explicit repos skip the discovery rules, but every candidate passes the same gates.
+
+**Per candidate, in order:**
+
+1. Takedown list (`takedown`, `takedown_file`): never fetched.
+2. Repo info at the default branch gives the current commit. Gated repos are skipped unless `allow_gated` (and a token with accepted terms); private or disabled repos are skipped.
+3. Already harvested (state DB says `done` for this commit): nothing to do. This makes passes idempotent and restart safe.
+4. Tombstoned in the catalog: skipped.
+5. License: the policy (section 11) with `harvest.license_allowlist` (or `[policy] license_allowlist` when empty); refusals skip the repo. Pickle formats are excluded unless `[policy] allow_pickle_formats`.
+6. Size cap (`max_repo_bytes`) and disk budget (`disk_budget_bytes`, counting finished harvests).
+7. Download through `tensorseed-fetch` into `<storage.local_dir>/t/<content name>/` with hash verification, HTTP resume, and job records; files stay there for seeding.
+8. Build the manifest (SHA-256 for every file, `hf_lfs_oid` for LFS files, license, file pages above 2000 files, `torrent: null`, `webseeds` from storage), upload files to every S3 target first (when `storage.backend = "s3"` and `upload = true`), then stage and commit `rev/<commit>` (plus pages), `latest`, and `index` as one catalog revision (file backend, or Chia), and write the signed manifest to `manifests/<type>/<org>/<name>/<commit>.json` in storage. With `publish = false`, an unsigned manifest is written there instead and the catalog is untouched.
+9. Record the outcome (`done` with bytes, or `failed` with the error and attempt count) in `harvest_revisions` in the state DB. Failed revisions are retried on the next pass.
+
+**Politeness:** Hub API calls are spaced by `request_delay_ms`; 429 and 5xx responses back off (`max_retries`, `retry_base_ms`, `Retry-After` honored); repos are processed one at a time with `general.max_concurrent_downloads` files in flight. `HF_TOKEN` is optional.
+
+**Not yet:** seeding of harvested revisions waits for the torrent layer (M0 spike), and watching specific branches other than the default is not supported. All harvest tests use local mock servers.
+
+---
+
+## 14. Cost notes (list prices as of 2026-11-12; recheck before committing)
 
 | Item | Figure | Source |
 |---|---|---|
@@ -660,7 +727,8 @@ There is no official Rust DataLayer daemon; M1 talks to the Python `chia data` s
 | R2 egress | $0 | same |
 | R2 Class A / Class B operations | $4.50 / $0.36 per million | same |
 | Cloudflare Project Alexandria | credits for qualifying open source projects | https://blog.cloudflare.com/expanding-our-support-for-oss-projects-with-project-alexandria/ |
-| Backblaze B2 | $6.95 per TB-month; egress free up to 3x stored, then $0.01/GB | https://www.backblaze.com/cloud-storage/pricing |
+| Backblaze B2 | $6.95 per TB-month; egress free up to 3x stored, then $0.01/GB; unlimited free egress through partner CDNs | https://www.backblaze.com/cloud-storage/pricing |
+| Wasabi | no egress fees while monthly egress is at most stored volume; 90 day minimum storage duration (pay as you go) | https://wasabi.com/product-terms |
 | Sia (renterd) | median about $1 per TB-month storage (market price, varies) | https://sia.tech/provide-storage |
 | DataLayer fee | config default 0.001 XCH per on-chain update if no fee is set | https://docs.chia.net/datalayer-rpc/ |
 | DataLayer mirror coin | `amount` minimum 0, refunded on delete | https://docs.chia.net/guides/datalayer-user-guide/ |
@@ -668,12 +736,12 @@ There is no official Rust DataLayer daemon; M1 talks to the Python `chia data` s
 
 Implications:
 - One publish is one catalog generation, so chain cost is at most one fee per published revision (or per `sync` run if several repos are batched into one pending root; decision below).
-- Storage cost is dominated by R2: for example, 1 TB (1,000 GB) is 990 billable GB x $0.015 = $14.85 per month with zero egress, matching Cloudflare's own worked example on the pricing page.
+- Object storage is optional (local disk costs nothing extra). If used, it dominates cost; for example on R2, 1 TB (1,000 GB) is 990 billable GB x $0.015 = $14.85 per month with zero egress, matching Cloudflare's own worked example on the pricing page. Other providers trade storage price against egress terms (10.1).
 - Rejected design for comparison: putting 1 TiB inside DataLayer needs at least 4,195 generations under the 250 MiB per-generation subscriber default (1 TiB / 250 MiB), with each subscriber storing roughly 3 copies (inferred from `chia/data_layer/data_store.py` and `download_data.py`; not measured).
 
 ---
 
-## 14. Prior art
+## 15. Prior art
 
 - **The Hugging Bay**: community index of magnet links for openly licensed models with per-file SHA-256 manifests, webseeds, and a catalog distributed as a torrent (https://thehuggingbay.io/llms.txt).
 - **LLM Torrents**: 119 models cataloged, SHA-256 checked against pinned HF revisions, signed manifests, HTTPS webseeds, no gated rehosting (https://llmtorrents.com/).
@@ -684,37 +752,37 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 
 ---
 
-## 15. Milestones
+## 16. Milestones
 
 **M0: Spikes (scaffold only, no product logic)**
-- Verify librqbit: v2 download, v2 seeding, v2 and hybrid torrent creation, BEP 19 webseeds against an R2 bucket with range requests. If any fail, prototype the fallback (section 12).
+- Verify librqbit: v2 download, v2 seeding, v2 and hybrid torrent creation, BEP 19 webseeds against an HTTP host with range requests. If any fail, prototype the fallback (section 12).
 - DataLayer RPC from Rust over mTLS: `create_data_store` on testnet, `batch_update(submit_on_chain=false)`, `submit_pending_root`, confirmation polling, `get_value`, `subscribe` and `get_sync_status` from a second node, `add_mirror`.
-- Confirm HF API field names (tree `lfs.oid`, `gated`, license tag) and hf-hub Xet downloads.
-- Pick sqlite crate and S3 crate. Pick default `piece_length`.
+- Confirm HF API field names (tree `lfs.oid`, `gated`, license tag). Done (section 5); `hf-hub` dropped.
+- Pick sqlite crate and S3 crate (done: `rusqlite`, `object_store`). Pick default `piece_length`.
 - Check the `CatalogBackend` trait (section 6.0) against the real DataLayer call sequence and adjust it before M1 depends on it.
-- Signed-file backend core (done): minisign compatible signing, `SignedEntry`, hash chain with rollback, fork, gap, and stale head checks, export bundles. Still in M0: encrypted key files and `catalog keygen`, trust anchor persistence.
+- Signed-file backend core (done): minisign compatible signing, `SignedEntry`, hash chain with rollback, fork, gap, and stale head checks, export bundles. Encrypted key files, `catalog keygen`, and trust anchor persistence are done too. The DataLayer calls are implemented and tested against mocked responses; the testnet run is still open.
 
 **M1: Publish**
-- `doctor`, `catalog create/info/add-mirror`, `publish`, `sync`, `jobs`. Resumable state, R2 upload, torrent creation, atomic catalog writes. Testnet first, then mainnet.
-- File backend transport: HTTPS fetch with mirror fallback, upload of deltas, snapshots, and head to `catalog.tensorseed.dev`, head re-signing, snapshot torrent. `catalog export` / `catalog import` end to end between both backends.
+- `doctor`, `publish`, `sync`. Torrent creation, storage upload of torrents, atomic catalog writes through one queue. Testnet first, then mainnet. (`catalog create/info/add-mirror`, `jobs`, resumable state, and S3 upload are done.)
+- File backend: snapshot torrent (HTTPS sync, publishing to storage, head re-signing, and export/import are done).
 
 **M2: Pull**
-- `pull`, `verify`, `list`, `show`; tombstone handling; license and NOTICE output; `--manifest-file` mode.
+- Done over HTTP: `pull`, `verify`, `list`, `show`, tombstones, NOTICE, `--manifest-file`/`--manifest-url`/`--from-hf`. Remaining: torrent fetching and `--seed-after`.
 
 **M3: Seeding daemon**
 - `seed` with selection rules, disk budget, bandwidth caps, tombstone honoring, optional `--serve-catalog` and catalog torrent.
 
 **M4: Catalog explorer**
-- Static site at tensorseed.dev (generated from the catalog) listing repos, licenses, sizes, magnets, webseeds, attribution text, and catalog generation history. Hosted on R2 or any static host; it has no privileged role.
+- Static site at tensorseed.dev (generated from the catalog) listing repos, licenses, sizes, magnets, webseeds, attribution text, and catalog generation history. Hosted on any static host; it has no privileged role.
 
 ---
 
-## 16. Open questions
+## 17. Open questions
 
 1. Which models and datasets first, and how many TB in year one (for example, widely used models in GGUF Q4 / MLX 4-bit / NVFP4 variants)?
 2. Do you already run a synced Chia full node and wallet? What XCH budget for fees and mirror coins?
 3. Hosting hardware, uplink speed, and whether you can open port 8575 (DataLayer) and a torrent port.
-4. R2 as primary webseed (zero egress, $0.015/GB-month) vs B2 ($6.95/TB-month, egress free up to 3x stored). Apply for Project Alexandria?
+4. ~~R2 as primary webseed?~~ Resolved: storage is optional and provider neutral (10.1). Still open: which provider(s), if any, for the public webseed, and whether to apply for Cloudflare Project Alexandria credits.
 5. Single owner key, or CHIP-0035 delegated writers for co-maintainers?
 6. License policy: open licenses only at launch, or also Llama-style attribution licenses?
 7. Build standalone, or build on / interoperate with The Hugging Bay or LLM Torrents?
@@ -724,3 +792,4 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 11. Should both backends run in parallel from launch (Chia canonical, file as a live mirror), or should the file backend start as export-only?
 12. Accept ssh-sig as a second signature type later (6.9), or stay minisign only?
 13. Head expiry (`file.head_ttl_secs`, default 7 days): shorter is safer against freeze attacks but needs a reliable re-signing job.
+14. Harvest watchlist for launch: which authors, tags, download floor, and disk budget?

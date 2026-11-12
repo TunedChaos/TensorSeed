@@ -4,9 +4,11 @@
 
 Website: [tensorseed.dev](https://tensorseed.dev)
 
-> **Status: pre-alpha, milestone M0 (spikes).** The workspace compiles and the core
-> manifest types and hashing are tested, but `publish`, `pull`, `seed`, and the other
-> commands print "not implemented yet". Do not use this for anything real yet.
+> **Status: pre-alpha, milestone M0.** Downloading and verifying works today
+> (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`) and the
+> signed-file catalog commands. BitTorrent is pending the M0 spike, the Chia backend
+> has only been tested against mocked RPC responses, and `publish`, `seed`,
+> `takedown`, and `doctor` still print "not implemented yet". Expect breaking changes.
 
 ## What it is
 
@@ -22,27 +24,54 @@ original host goes away, and lets anyone check that a copy is genuine.
   torrent. Every entry is signed with the same publisher key in both, so the catalog
   can be exported from one backend and imported into another with signatures intact.
 - **Bytes over BitTorrent v2.** Model files travel as BEP 52 torrents, which verify
-  every block with SHA-256, plus BEP 19 HTTP webseeds (Cloudflare R2 first) so
-  downloads work even with zero peers.
+  every block with SHA-256, plus optional BEP 19 HTTP webseeds so downloads work
+  even with zero peers. Storage is local disk by default; a webseed can be any
+  static web server or one or more S3 compatible buckets from any provider.
 - **Trust the hashes, not the host.** Any peer, webseed, or mirror can serve bytes,
   because the client checks them against the catalog before accepting them.
 
 Read the full design in [docs/SPEC.md](docs/SPEC.md) and the plan in
 [docs/MILESTONES.md](docs/MILESTONES.md).
 
+## Use it
+
+```sh
+# Download a repo straight from the Hub, verifying every file against the Hub's
+# own SHA-256 (LFS) and git blob ids, then check it again later:
+tensorseed pull --from-hf hf-internal-testing/tiny-random-gpt2
+tensorseed verify hf-internal-testing/tiny-random-gpt2          # uses .tensorseed/pull.json
+tensorseed verify --hf hf-internal-testing/tiny-random-gpt2     # re-checks against the Hub
+
+# With a signed catalog configured (catalog.publisher_pubkey, file.base_url):
+tensorseed list
+tensorseed pull org/name            # webseeds first, the Hub as fallback
+tensorseed verify org/name          # against the signed manifest; exit 3 on mismatch
+
+# Publisher side:
+tensorseed catalog keygen           # minisign compatible, password protected
+tensorseed catalog create
+tensorseed harvest --dry-run        # plan from the [harvest] watchlist
+tensorseed harvest --watch          # keep mirroring new revisions
+```
+
+Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and
+gated repos are refused unless `--allow-gated`. Downloads resume after
+interruption; `tensorseed jobs` shows their state.
+
 ## Workspace layout
 
 | Crate | Purpose |
 |---|---|
-| `crates/tensorseed-core` | Manifest and catalog JSON types, `ts/v1/` keys, canonical JSON, streaming SHA-256 |
-| `crates/tensorseed-hf` | Hugging Face Hub API client (stub) |
-| `crates/tensorseed-catalog` | `CatalogBackend` trait, signed entries (minisign format), Chia DataLayer backend (stub), signed-file backend (verification and hash chain done, transport stubbed) |
+| `crates/tensorseed-core` | Manifest and catalog JSON types, `ts/v1/` keys, canonical JSON, SHA-256 and git blob hashing, directory verification |
+| `crates/tensorseed-hf` | Hugging Face Hub API client (repo info, tree, listings, backoff) and license policy |
+| `crates/tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback |
+| `crates/tensorseed-catalog` | `CatalogBackend` trait, signed entries and keys (minisign format), signed-file backend, Chia DataLayer backend, storage sinks |
 | `crates/tensorseed-torrent` | BitTorrent v2 + webseed content layer (stub, pending M0) |
 | `crates/tensorseed-cli` | The `tensorseed` binary |
 
 ## Build
 
-Requires a stable Rust toolchain (pinned by `rust-toolchain.toml`; install with
+Requires Rust 1.87 or newer (pinned by `rust-toolchain.toml`; install with
 [rustup](https://rustup.rs)).
 
 ```sh
@@ -52,9 +81,9 @@ cargo test
 ```
 
 Configuration: copy `config/tensorseed.example.toml` to
-`~/.config/tensorseed/tensorseed.toml`. Secrets (HF token, R2 and B2 keys) are only
-read from environment variables, never from the file. Check the merged result with
-`tensorseed config show`.
+`~/.config/tensorseed/tensorseed.toml`. Secrets (HF token, storage keys, the
+publisher key password) are only read from environment variables, never from the
+file. Check the merged result with `tensorseed config show`.
 
 ## Contributing
 
