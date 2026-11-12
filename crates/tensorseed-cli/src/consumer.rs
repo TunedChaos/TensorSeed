@@ -536,9 +536,20 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
     for s in &skipped {
         println!("skip   {s} (pickle format; --allow-pickle to include)");
     }
+    // Files complete on disk before the swarm ran; anything else the HTTP
+    // pass finds already present was written by the swarm (and is verified
+    // by that pass like everything else).
+    let mut before_swarm: Option<std::collections::HashSet<String>> = None;
     if args.swarm
         && let Some(t) = &torrent
     {
+        before_swarm = Some(
+            files
+                .iter()
+                .filter(|f| std::fs::metadata(out.join(&f.path)).is_ok_and(|m| m.len() == f.size))
+                .map(|f| f.path.clone())
+                .collect(),
+        );
         swarm_download(cfg, args, t, &out, &files).await?;
     }
     let fetcher = Fetcher::new(Some(state_db(cfg)?))?;
@@ -552,17 +563,28 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             },
         )
         .await?;
+    let (mut swarm_files, mut swarm_bytes, mut http_bytes) = (0usize, 0u64, 0u64);
     for f in &report.files {
         match &f.outcome {
             Outcome::Downloaded {
                 kind, resumed_from, ..
             } => {
+                http_bytes += f.size.saturating_sub(*resumed_from);
                 let resumed = if *resumed_from > 0 {
                     format!(", resumed at {resumed_from}")
                 } else {
                     String::new()
                 };
                 println!("ok     {} ({}{resumed})", f.path, kind.label());
+            }
+            Outcome::AlreadyPresent
+                if before_swarm
+                    .as_ref()
+                    .is_some_and(|pre| !pre.contains(&f.path)) =>
+            {
+                swarm_files += 1;
+                swarm_bytes += f.size;
+                println!("ok     {} (swarm)", f.path);
             }
             Outcome::AlreadyPresent => println!("ok     {} (already present)", f.path),
             Outcome::Failed => {
@@ -595,7 +617,17 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         write_meta(&out, crate::torrents::PULLED_TORRENT, &t.bytes)?;
     }
     write_meta(&out, "pull.json", &serde_json::to_vec_pretty(&record)?)?;
-    println!("{down} downloaded, {present} already present, {failed} failed");
+    let present = present - swarm_files;
+    if before_swarm.is_some() {
+        println!(
+            "{swarm_files} from the swarm ({swarm_bytes} bytes), {down} downloaded over HTTP \
+             ({http_bytes} bytes), {present} already present, {failed} failed"
+        );
+    } else {
+        println!(
+            "{down} downloaded ({http_bytes} bytes), {present} already present, {failed} failed"
+        );
+    }
     if !report.ok() {
         eprintln!("pull incomplete; run the same command again to resume");
         return Ok(ExitCode::from(EXIT_VERIFY_FAILED));

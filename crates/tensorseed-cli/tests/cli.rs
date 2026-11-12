@@ -830,10 +830,8 @@ async fn harvest_discovers_mirrors_publishes_and_is_idempotent() {
     let s = stdout(&o);
     assert!(s.contains("swarm  "), "{s}");
     assert!(!s.contains("HTTP sources fill the rest"), "{s}");
-    assert!(
-        s.contains("ok     model.safetensors (already present)"),
-        "{s}"
-    );
+    assert!(s.contains("ok     model.safetensors (swarm)"), "{s}");
+    assert!(s.contains("downloaded over HTTP (0 bytes)"), "{s}");
     assert!(s.contains("seeding org__a@89abcdef0123"), "{s}");
     assert_eq!(
         std::fs::read(swarm_out.join("model.safetensors")).unwrap(),

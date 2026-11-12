@@ -994,6 +994,13 @@ impl FileCatalog {
                 }
                 Ok(())
             }
+            Err(CatalogError::Backend(m)) if m.starts_with("no usable catalog source") => {
+                Err(CatalogError::Backend(format!(
+                    "{m}. The publisher reads the current published head from file.base_url \
+                 (or file.mirror_urls) before writing, so it never forks the public catalog; \
+                 make sure that URL is reachable (serve storage.local_dir there) and try again"
+                )))
+            }
             Err(e) => Err(e),
         }
     }
