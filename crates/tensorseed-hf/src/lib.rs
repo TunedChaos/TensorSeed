@@ -15,6 +15,12 @@
 //!   `Link: <...>; rel="next"` header (1000 entries per page).
 //! - `GET /{repo_id}/resolve/{commit}/{path}` (datasets: `/datasets/...`):
 //!   file bytes, usually through a redirect to a CDN.
+//! - `GET /api/{models|datasets}?author=..&filter=..&sort=downloads`: repo
+//!   listings for harvest discovery (`id`, `downloads`, `tags`, `gated`),
+//!   paginated the same way.
+//!
+//! HTTP 429 and 5xx responses are retried with backoff, honoring
+//! `Retry-After`, so harvest stays polite under the Hub's rate limits.
 //!
 //! The token (env `HF_TOKEN` by default) is only ever sent to the configured
 //! endpoint's origin. Downloads are done by `tensorseed-fetch`, which applies
@@ -28,6 +34,8 @@
 //! are still served by the plain resolve endpoint.
 
 pub mod policy;
+
+use std::time::Duration;
 
 use serde::Deserialize;
 use tensorseed_core::hash::ExpectedDigest;
@@ -229,7 +237,37 @@ pub struct HfClient {
     endpoint: reqwest::Url,
     token: Option<String>,
     http: reqwest::Client,
+    retries: u32,
+    retry_base: Duration,
 }
+
+/// Longest wait honored from a `Retry-After` header.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
+
+/// One entry of a repo listing (`GET /api/models?author=...`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RepoSummary {
+    /// Repo id.
+    pub id: String,
+    /// Download count (recent window, as reported by the Hub).
+    #[serde(default)]
+    pub downloads: u64,
+    /// Tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Gated status.
+    #[serde(default)]
+    pub gated: Gated,
+    /// Private repo.
+    #[serde(default)]
+    pub private: bool,
+    /// Last modified time, if listed.
+    #[serde(rename = "lastModified", default)]
+    pub last_modified: Option<String>,
+}
+
+/// Hub listing page size limit.
+pub const LIST_PAGE_LIMIT: usize = 1000;
 
 fn status_error(url: &str, status: reqwest::StatusCode, body: &str) -> HfError {
     if matches!(status.as_u16(), 401 | 403 | 404) {
@@ -247,6 +285,14 @@ fn status_error(url: &str, status: reqwest::StatusCode, body: &str) -> HfError {
         status: status.as_u16(),
         message,
     }
+}
+
+/// Seconds from a `Retry-After` header (delta seconds form), capped.
+fn retry_after(h: &reqwest::header::HeaderMap) -> Option<Duration> {
+    h.get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|s| Duration::from_secs(s).min(MAX_RETRY_AFTER))
 }
 
 /// Parse the `rel="next"` target out of a `Link` header.
@@ -284,7 +330,18 @@ impl HfClient {
             endpoint,
             token: token.filter(|t| !t.is_empty()),
             http,
+            retries: 4,
+            retry_base: Duration::from_secs(1),
         })
+    }
+
+    /// Retry policy for rate limiting (HTTP 429) and server errors (5xx):
+    /// up to `retries` retries, waiting `Retry-After` when the Hub sends it
+    /// (capped at [`MAX_RETRY_AFTER`]) and `base * 2^attempt` otherwise.
+    pub fn with_retry(mut self, retries: u32, base: Duration) -> Self {
+        self.retries = retries;
+        self.retry_base = base;
+        self
     }
 
     /// Create a client reading the token from env var `token_env`.
@@ -364,18 +421,85 @@ impl HfClient {
                 "refusing to follow {url}: not the Hub endpoint origin"
             )));
         }
-        let mut req = self.http.get(url);
-        if let Some(t) = &self.token {
-            req = req.bearer_auth(t);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if status.is_success() {
-            Ok(resp)
-        } else {
+        let mut attempt = 0u32;
+        loop {
+            let mut req = self.http.get(url);
+            if let Some(t) = &self.token {
+                req = req.bearer_auth(t);
+            }
+            let resp = req.send().await;
+            let retry_wait = match &resp {
+                Ok(r) if r.status().as_u16() == 429 || r.status().is_server_error() => Some(
+                    retry_after(r.headers())
+                        .unwrap_or_else(|| self.retry_base.saturating_mul(1 << attempt.min(16))),
+                ),
+                Ok(_) => None,
+                Err(e) if e.is_timeout() || e.is_connect() => {
+                    Some(self.retry_base.saturating_mul(1 << attempt.min(16)))
+                }
+                Err(_) => None,
+            };
+            if let Some(wait) = retry_wait
+                && attempt < self.retries
+            {
+                attempt += 1;
+                tracing::warn!(url, attempt, ?wait, "Hub busy or rate limited; backing off");
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            let resp = resp?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp);
+            }
             let body = resp.text().await.unwrap_or_default();
-            Err(status_error(url, status, &body))
+            return Err(status_error(url, status, &body));
         }
+    }
+
+    /// List repos of a type by author, optionally requiring tags, sorted by
+    /// downloads (highest first), up to `limit` entries.
+    pub async fn list_repos(
+        &self,
+        repo_type: RepoType,
+        author: &str,
+        tags: &[String],
+        limit: usize,
+    ) -> Result<Vec<RepoSummary>> {
+        let kind = match repo_type {
+            RepoType::Model => "models",
+            RepoType::Dataset => "datasets",
+        };
+        let mut url = reqwest::Url::parse(&format!("{}/api/{kind}", self.base()))
+            .map_err(|e| HfError::Arg(e.to_string()))?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("author", author);
+            for t in tags {
+                q.append_pair("filter", t);
+            }
+            q.append_pair("sort", "downloads");
+            q.append_pair("direction", "-1");
+            q.append_pair("limit", &limit.clamp(1, LIST_PAGE_LIMIT).to_string());
+        }
+        let mut url = url.to_string();
+        let mut out: Vec<RepoSummary> = Vec::new();
+        for _ in 0..MAX_TREE_PAGES {
+            let resp = self.get(&url).await?;
+            let next = resp
+                .headers()
+                .get(reqwest::header::LINK)
+                .and_then(|v| v.to_str().ok())
+                .and_then(next_link);
+            let page: Vec<RepoSummary> = resp.json().await?;
+            out.extend(page);
+            match next {
+                Some(n) if out.len() < limit => url = n,
+                _ => break,
+            }
+        }
+        out.truncate(limit);
+        Ok(out)
     }
 
     /// Fetch repo info.
@@ -599,7 +723,9 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let c = HfClient::new(&server.uri(), Some("secret".into())).unwrap();
+        let c = HfClient::new(&server.uri(), Some("secret".into()))
+            .unwrap()
+            .with_retry(2, Duration::from_millis(1));
         let r = |id: &str| RepoRef::new(RepoType::Model, id).unwrap();
         let e = c.repo_info(&r("org/missing"), None).await.unwrap_err();
         assert!(
@@ -610,5 +736,89 @@ mod tests {
         assert!(e.to_string().contains("boom"), "{e}");
         let e = c.tree(&r("org/evil"), C).await.unwrap_err();
         assert!(e.to_string().contains("not the Hub endpoint origin"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn backs_off_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/models/org/busy"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/models/org/busy"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"id": "org/busy", "sha": C})),
+            )
+            .mount(&server)
+            .await;
+        let c = HfClient::new(&server.uri(), None)
+            .unwrap()
+            .with_retry(3, Duration::from_millis(1));
+        let r = RepoRef::new(RepoType::Model, "org/busy").unwrap();
+        assert_eq!(c.repo_info(&r, None).await.unwrap().sha, C);
+        let none = HfClient::new(&server.uri(), None)
+            .unwrap()
+            .with_retry(0, Duration::from_millis(1));
+        // The 429 mocks are used up; a fresh one shows retries=0 gives up at once.
+        Mock::given(method("GET"))
+            .and(path("/api/models/org/always"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        let e = none
+            .repo_info(&RepoRef::new(RepoType::Model, "org/always").unwrap(), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, HfError::Status { status: 429, .. }), "{e}");
+    }
+
+    #[tokio::test]
+    async fn lists_repos_by_author_with_pagination() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        let next = format!("{}/api/models?author=org&page=2", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .and(query_param("author", "org"))
+            .and(query_param("filter", "safetensors"))
+            .and(query_param("sort", "downloads"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", format!("<{next}>; rel=\"next\"").as_str())
+                    .set_body_json(serde_json::json!([
+                        {"id": "org/a", "downloads": 50, "tags": ["safetensors"], "gated": false},
+                        {"id": "org/b", "downloads": 10, "tags": ["safetensors"], "gated": "auto"}
+                    ])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .and(query_param("page", "2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"id": "org/c", "downloads": 1}])),
+            )
+            .mount(&server)
+            .await;
+        let c = HfClient::new(&server.uri(), None).unwrap();
+        let l = c
+            .list_repos(RepoType::Model, "org", &["safetensors".into()], 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            l.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["org/a", "org/b", "org/c"]
+        );
+        assert!(l[1].gated.is_gated());
+        let l = c
+            .list_repos(RepoType::Model, "org", &["safetensors".into()], 1)
+            .await
+            .unwrap();
+        assert_eq!(l.len(), 1);
     }
 }

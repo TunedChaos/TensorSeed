@@ -15,9 +15,10 @@ serde.workspace = true
 serde_json.workspace = true
 tensorseed-core.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 wiremock.workspace = true
 
 [lints]
