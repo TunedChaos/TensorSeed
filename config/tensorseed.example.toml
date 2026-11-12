@@ -258,10 +258,36 @@ retry_base_ms = 2000
 publish = true                   # sign and commit catalog entries (needs publisher_seckey_file)
 upload = true                    # upload files to every enabled [[storage.target]] (upload = true)
 
-[seed]
+[seed]                           # legacy keys, unused; `tensorseed serve` reads [serve] below
 poll_interval_secs = 600
 max_bytes = 2_000_000_000_000
 select = ["org/*"]
 latest_only = true
 prune = true
 serve_catalog = false
+
+[serve]                          # `tensorseed serve`, the long running seeder (spec 8.3)
+data_dir = "~/.local/share/tensorseed/serve"   # downloads (t/), catalog mirror, serve-state.json
+dirs = []                        # extra published trees (with t/) to seed from
+sync_interval_secs = 300         # catalog sync period; takedowns apply within one period
+select = ["*"]                   # repo id globs: "*", "org/*", "org/name"; [] seeds nothing
+exclude = []                     # repo id globs never seeded
+select_watchlist = false         # also select [harvest] repos and authors
+types = []                       # "model", "dataset"; [] = both
+license_classes = []             # "open", "attribution", "restricted", "unknown"; [] = any
+latest_only = true               # only each repo's latest revision
+max_bytes = 0                    # disk budget for everything seeded (0 = unlimited)
+max_revision_bytes = 0           # skip revisions larger than this (0 = no cap)
+fetch = false                    # download selected revisions that are not on disk yet
+fetch_swarm = true               # downloads try peers first, then webseeds, mirrors, the Hub
+prune = true                     # delete downloaded copies (under data_dir) on takedown or deselect
+upload_limit_kbps = 0            # 0 = torrent.upload_limit_kbps
+download_limit_kbps = 0          # swarm download cap (0 = unlimited)
+utp = true                       # uTP next to TCP (UDP on torrent.listen_port)
+port_mapping = false             # NAT-PMP / UPnP IGD forward of the torrent port; opens a router port
+port_mapping_lease_secs = 3600
+http_listen = ""                 # e.g. "0.0.0.0:8080": serve seeded revisions as a webseed (t/)
+http_upload_limit_kbps = 0
+serve_catalog = false            # mirror the signed catalog files and serve them at /<catalog>/
+health_listen = "127.0.0.1:6880" # JSON health endpoint; "" = off
+check_timeout_secs = 3600        # longest piece check per revision before seeding

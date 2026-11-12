@@ -101,6 +101,10 @@ pub enum Command {
         #[arg(long)]
         serve_catalog: bool,
     },
+    /// Run the long lived seeder: sync the catalog on a timer, seed the
+    /// selected revisions, drop takedowns, optionally fetch new revisions,
+    /// serve files over HTTP, and report health (spec 8.3).
+    Serve(ServeArgs),
     /// Re-hash a local copy against a signed manifest or the Hub's hashes.
     Verify(VerifyArgs),
     /// List catalog entries.
@@ -362,6 +366,36 @@ pub struct PullArgs {
     pub seed_after: Option<String>,
 }
 
+/// `serve` arguments (each overrides the matching `[serve]` key).
+#[derive(Debug, Clone, Default, Args)]
+pub struct ServeArgs {
+    /// Stop after this long (30s, 10m, 2h, 1d; default: until SIGTERM or Ctrl-C).
+    #[arg(long = "for")]
+    pub duration: Option<String>,
+    /// Mirror the signed catalog files and serve them over HTTP (needs an
+    /// HTTP address, `--http` or `serve.http_listen`).
+    #[arg(long)]
+    pub serve_catalog: bool,
+    /// Serve seeded revisions over HTTP on this address (webseed layout).
+    #[arg(long, value_name = "ADDR:PORT")]
+    pub http: Option<String>,
+    /// Health endpoint address (`off` to disable).
+    #[arg(long, value_name = "ADDR:PORT")]
+    pub health: Option<String>,
+    /// Download selected revisions that are not on disk yet.
+    #[arg(long, conflicts_with = "no_fetch")]
+    pub fetch: bool,
+    /// Only seed what is already on disk.
+    #[arg(long)]
+    pub no_fetch: bool,
+    /// Extra published tree (with `t/`) to seed from; repeatable.
+    #[arg(long)]
+    pub dir: Vec<PathBuf>,
+    /// Seconds between catalog syncs.
+    #[arg(long, value_name = "SECS")]
+    pub sync_interval: Option<u64>,
+}
+
 /// `verify` arguments.
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
@@ -439,6 +473,7 @@ impl Command {
             Self::Harvest(_) => "harvest",
             Self::Pull(_) => "pull",
             Self::Seed { .. } => "seed",
+            Self::Serve(_) => "serve",
             Self::Verify(_) => "verify",
             Self::List { .. } => "list",
             Self::Show { .. } => "show",

@@ -334,9 +334,12 @@ pub async fn seed(
     duration: Option<&str>,
     serve_catalog: bool,
 ) -> anyhow::Result<ExitCode> {
-    if serve_catalog {
-        bail!("--serve-catalog is not implemented yet (see docs/MILESTONES.md)");
-    }
+    // Serve the publisher's catalog files next to the swarm (spec 6.7).
+    let _catalog = if serve_catalog {
+        Some(crate::serve::serve_local_catalog(cfg).await?)
+    } else {
+        None
+    };
     let duration = duration.map(parse_duration).transpose()?.flatten();
     let mut items = Vec::new();
     if dirs.is_empty() {

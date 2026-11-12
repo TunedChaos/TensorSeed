@@ -11,6 +11,7 @@ mod consumer;
 mod harvest;
 mod keys;
 mod mirrors;
+mod serve;
 mod torrents;
 
 use std::process::ExitCode;
@@ -107,6 +108,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             duration,
             serve_catalog,
         } => torrents::seed(&load()?, dir, duration.as_deref(), *serve_catalog).await,
+        Command::Serve(args) => serve::run(load()?, args).await,
         Command::Jobs { show, clear } => {
             consumer::jobs(&load()?, show.as_deref(), clear.as_deref())
         }

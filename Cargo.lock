@@ -3467,6 +3467,7 @@ name = "tensorseed-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "figment",
  "hex",
@@ -3480,6 +3481,7 @@ dependencies = [
  "tensorseed-core",
  "tensorseed-fetch",
  "tensorseed-hf",
+ "tensorseed-serve",
  "tensorseed-torrent",
  "tokio",
  "tracing",

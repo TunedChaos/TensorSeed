@@ -42,6 +42,8 @@ pub struct Config {
     pub targets: Vec<Target>,
     /// Seeding daemon.
     pub seed: Seed,
+    /// Long running seeder (`[serve]`, spec 8.3).
+    pub serve: crate::serve::ServeConfig,
     /// Automatic harvest watchlist (`[harvest]`).
     pub harvest: Harvest,
 }
@@ -1020,6 +1022,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     cfg.huggingface.validate()?;
     cfg.storage.validate()?;
     cfg.torrent.validate()?;
+    cfg.serve.validate()?;
     if !cfg.catalog.publisher_pubkey.is_empty() {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }
@@ -1039,12 +1042,14 @@ mod tests {
         Jail::expect_with(|jail| {
             jail.create_file("tensorseed.toml", EXAMPLE)?;
             let cfg = load(Path::new("tensorseed.toml")).map_err(|e| e.to_string())?;
-            assert_eq!(cfg.catalog.backend, "chia");
+            assert_eq!(cfg.catalog.backend, "file");
             assert_eq!(cfg.file.base_url, "https://catalog.tensorseed.dev/");
             // Multi-provider example, all disabled: default stays local only.
             assert_eq!(cfg.storage.target.len(), 9);
             assert!(cfg.storage.target.iter().all(|t| !t.enabled));
             assert_eq!(cfg.storage.upload_targets().count(), 0);
+            // [serve] in the example matches the defaults.
+            assert_eq!(cfg.serve, crate::serve::ServeConfig::default());
             assert!(cfg.storage.webseed_bases().is_empty());
             let mut enabled = cfg.clone();
             for t in &mut enabled.storage.target {
