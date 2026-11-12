@@ -133,10 +133,7 @@ pub fn default_out(cfg: &Config, repo: &RepoRef) -> PathBuf {
 }
 
 fn hf_client(cfg: &Config) -> anyhow::Result<HfClient> {
-    Ok(HfClient::from_env(
-        &cfg.huggingface.endpoint,
-        &cfg.huggingface.token_env,
-    )?)
+    cfg.huggingface.client()
 }
 
 /// A manifest with its full file list and provenance.
@@ -331,12 +328,13 @@ fn write_meta(out: &Path, name: &str, data: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hf_policy(cfg: &Config, allow_gated: bool, allow_pickle: bool) -> HfPolicy {
+fn hf_policy(cfg: &Config, args: &PullArgs) -> HfPolicy {
     HfPolicy {
         license_allowlist: cfg.policy.license_allowlist.clone(),
         attribution_licenses: cfg.policy.attribution_licenses.clone(),
-        allow_gated: cfg.policy.allow_gated || allow_gated,
-        allow_pickle_formats: cfg.policy.allow_pickle_formats || allow_pickle,
+        allow_gated: cfg.policy.allow_gated || args.allow_gated,
+        allow_pickle_formats: cfg.policy.allow_pickle_formats || args.allow_pickle,
+        license_overrides: args.allow_license.clone(),
     }
 }
 
@@ -390,7 +388,7 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             bail!("{} is disabled on the Hub", repo.id);
         }
         let tree = hf.files(&repo, &info.sha).await?;
-        let policy = hf_policy(cfg, args.allow_gated, args.allow_pickle);
+        let policy = hf_policy(cfg, args);
         let report = policy.evaluate(&info, &tree);
         if report.gated && !policy.allow_gated {
             bail!(

@@ -74,6 +74,11 @@ pub enum Command {
         /// Commit SHA to publish (default: current main).
         #[arg(long)]
         revision: Option<String>,
+        /// Accept this license id for this run even though it is not on the
+        /// allowlist (repeatable), e.g. `--allow-license other` for your own
+        /// repo. Gated, private, and takedown rules still apply.
+        #[arg(long = "allow-license", value_name = "ID")]
+        allow_license: Vec<String>,
     },
     /// Publish every target in the config.
     Sync,
@@ -332,6 +337,10 @@ pub struct PullArgs {
     /// Allow gated repos with --from-hf (needs HF_TOKEN and accepted terms).
     #[arg(long)]
     pub allow_gated: bool,
+    /// Accept this license id without the "would not be published" warning
+    /// (repeatable). Personal downloads are never refused for license.
+    #[arg(long = "allow-license", value_name = "ID")]
+    pub allow_license: Vec<String>,
     /// Use the current local catalog copy without syncing.
     #[arg(long)]
     pub no_wait: bool,
@@ -405,6 +414,11 @@ pub struct HarvestArgs {
     /// Stop after this many watch cycles (0 = forever; for testing).
     #[arg(long, default_value_t = 0, hide = true)]
     pub max_cycles: u64,
+    /// Accept this license id for every repo in this run even though it is
+    /// not on the allowlist (repeatable). Prefer the per-repo
+    /// `allow_license` in the watchlist for anything long lived.
+    #[arg(long = "allow-license", value_name = "ID")]
+    pub allow_license: Vec<String>,
 }
 
 impl Command {

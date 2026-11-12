@@ -942,3 +942,81 @@ async fn pull_tries_mirrors_by_priority_with_fallback() {
     let s = stdout(&o);
     assert!(s.contains(&good.uri()) && !s.contains("evil"), "{s}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn other_license_needs_explicit_override() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hub = MockServer::start().await;
+    let fx = Fixture::new();
+    mount_hf_repo_lic(&hub, "me/mine", serde_json::json!(false), "other", &fx).await;
+    mount_hf_repo_lic(&hub, "org/else", serde_json::json!(false), "other", &fx).await;
+    let sk = key();
+    let keyfile = tmp.path().join("pub.key");
+    std::fs::write(
+        &keyfile,
+        sk.to_minisign_file(None, tensorseed_catalog::minisign::KdfLimits::INSECURE_TEST)
+            .unwrap(),
+    )
+    .unwrap();
+    let pk = sk.public_key().to_base64();
+    let base = format!(
+        "publisher_seckey_file = \"{}\"\n\n[harvest]\nrequest_delay_ms = 0\nretry_base_ms = 1\n",
+        keyfile.display()
+    );
+
+    // Plain watchlist entry: the strict default allowlist skips `other`.
+    let cfg = write_config(
+        tmp.path(),
+        &hub.uri(),
+        &pk,
+        &format!("{base}repos = [\"me/mine\", \"org/else\"]\n"),
+    );
+    let s = stdout(&run(&cfg, &["harvest", "--dry-run"], &[]).await);
+    assert!(s.contains("skip     model me/mine@"), "{s}");
+    assert!(s.contains("license other"), "{s}");
+    // A run-wide flag accepts it.
+    let s = stdout(
+        &run(
+            &cfg,
+            &["harvest", "--dry-run", "--allow-license", "other"],
+            &[],
+        )
+        .await,
+    );
+    assert!(s.contains("plan     model me/mine@"), "{s}");
+
+    // A per-repo override accepts only that repo.
+    let cfg = write_config(
+        tmp.path(),
+        &hub.uri(),
+        &pk,
+        &format!(
+            "{base}repos = [{{ id = \"me/mine\", allow_license = [\"other\"] }}, \"org/else\"]\n"
+        ),
+    );
+    let s = stdout(&run(&cfg, &["harvest", "--dry-run"], &[]).await);
+    assert!(s.contains("plan     model me/mine@"), "{s}");
+    assert!(s.contains("skip     model org/else@"), "{s}");
+
+    // `publish` without the override refuses; with it, publishes and keeps
+    // the honest license class.
+    let o = run(&cfg, &["publish", "org/else"], &[]).await;
+    assert_ne!(code(&o), 0, "{}", stdout(&o));
+    let o = run(
+        &cfg,
+        &["publish", "org/else", "--allow-license", "other"],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert!(stdout(&o).contains("allowed by explicit override"));
+    let m = std::fs::read_to_string(
+        tmp.path()
+            .join(format!("publish/manifests/model/org/else/{C2}.json")),
+    )
+    .unwrap();
+    let entry: serde_json::Value = serde_json::from_str(&m).unwrap();
+    let man: serde_json::Value = serde_json::from_str(entry["value"].as_str().unwrap()).unwrap();
+    assert_eq!(man["license"]["class"], "unknown", "{m}");
+    assert_eq!(man["license"]["hf_tag"], "other", "{m}");
+}

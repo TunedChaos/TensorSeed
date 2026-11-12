@@ -54,10 +54,10 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Harvest {
-    /// Model repo ids to mirror.
-    pub repos: Vec<String>,
-    /// Dataset repo ids to mirror (needs `include_datasets`).
-    pub datasets: Vec<String>,
+    /// Model repos to mirror: plain ids or `{ id, allow_license }` tables.
+    pub repos: Vec<WatchRepo>,
+    /// Dataset repos to mirror (needs `include_datasets`), same forms.
+    pub datasets: Vec<WatchRepo>,
     /// Users or orgs whose repos are discovered.
     pub authors: Vec<String>,
     /// Discovered repos must carry every one of these tags.
@@ -92,6 +92,50 @@ pub struct Harvest {
     pub publish: bool,
     /// Upload model files to every `[[storage.target]]` with `upload = true`.
     pub upload: bool,
+}
+
+/// One explicit watchlist entry: either `"org/name"` or
+/// `{ id = "org/name", allow_license = ["other"] }`.
+///
+/// `allow_license` lets a publisher mirror a repo whose license is not on
+/// the allowlist (typically their own `license: other` repo) without
+/// loosening the policy for anything else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WatchRepo {
+    /// Just the repo id.
+    Id(String),
+    /// Repo id with per-repo overrides.
+    Entry {
+        /// Repo id (org/name).
+        id: String,
+        /// License ids accepted for this repo only.
+        #[serde(default)]
+        allow_license: Vec<String>,
+    },
+}
+
+impl WatchRepo {
+    /// Repo id.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Id(id) | Self::Entry { id, .. } => id,
+        }
+    }
+
+    /// Per-repo license overrides.
+    pub fn allow_license(&self) -> &[String] {
+        match self {
+            Self::Id(_) => &[],
+            Self::Entry { allow_license, .. } => allow_license,
+        }
+    }
+}
+
+impl From<&str> for WatchRepo {
+    fn from(s: &str) -> Self {
+        Self::Id(s.to_string())
+    }
 }
 
 impl Default for Harvest {
@@ -261,13 +305,24 @@ impl Default for Chia {
 }
 
 /// `[huggingface]`
+///
+/// The token is never written in this file. It comes from the environment
+/// variable named by `token_env`, or else from `token_file`, a file only
+/// your account can read (mode 0600 or 0400).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HuggingFace {
     /// Hub endpoint.
     pub endpoint: String,
-    /// Env var holding the optional HF token.
+    /// Env var holding the optional HF token (checked first).
     pub token_env: String,
+    /// File holding the token, used when `token_env` is unset or empty.
+    /// Must not be readable by group or others.
+    pub token_file: String,
+    /// Never set. Present only so an inline `token = "hf_..."` gets a clear
+    /// error instead of being silently accepted or vaguely rejected.
+    #[serde(skip_serializing)]
+    pub token: Option<serde_json::Value>,
 }
 
 impl Default for HuggingFace {
@@ -275,7 +330,76 @@ impl Default for HuggingFace {
         Self {
             endpoint: "https://huggingface.co".into(),
             token_env: "HF_TOKEN".into(),
+            token_file: String::new(),
+            token: None,
         }
+    }
+}
+
+impl HuggingFace {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.token.is_some() {
+            anyhow::bail!(
+                "[huggingface] token is not allowed: never put the Hugging Face token in the \
+                 config file. Set token_env (default HF_TOKEN) to the name of an environment \
+                 variable that holds it, or token_file to a file only you can read (chmod 600)"
+            );
+        }
+        if self.token_env.is_empty()
+            || !self
+                .token_env
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            anyhow::bail!(
+                "huggingface.token_env must be an environment variable name like HF_TOKEN, \
+                 not the token itself"
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolve the token: `token_env` first, then `token_file`. A token file
+    /// readable by group or others is refused.
+    pub fn resolve_token(&self) -> anyhow::Result<Option<String>> {
+        if let Ok(t) = std::env::var(&self.token_env)
+            && !t.trim().is_empty()
+        {
+            return Ok(Some(t.trim().to_string()));
+        }
+        if self.token_file.is_empty() {
+            return Ok(None);
+        }
+        let p = expand(&self.token_file);
+        let meta = std::fs::metadata(&p)
+            .map_err(|e| anyhow::anyhow!("huggingface.token_file {}: {e}", p.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                anyhow::bail!(
+                    "huggingface.token_file {} has mode {mode:o}; it must not be readable by \
+                     group or others. Run: chmod 600 {}",
+                    p.display(),
+                    p.display()
+                );
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = meta;
+        let t = std::fs::read_to_string(&p)
+            .map_err(|e| anyhow::anyhow!("reading huggingface.token_file {}: {e}", p.display()))?;
+        let t = t.trim();
+        Ok((!t.is_empty()).then(|| t.to_string()))
+    }
+
+    /// Hub client with the resolved token.
+    pub fn client(&self) -> anyhow::Result<tensorseed_hf::HfClient> {
+        Ok(tensorseed_hf::HfClient::new(
+            &self.endpoint,
+            self.resolve_token()?,
+        )?)
     }
 }
 
@@ -893,6 +1017,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
         );
     }
     tensorseed_catalog::signed::check_catalog_name(&cfg.catalog.name)?;
+    cfg.huggingface.validate()?;
     cfg.storage.validate()?;
     cfg.torrent.validate()?;
     if !cfg.catalog.publisher_pubkey.is_empty() {
@@ -1117,6 +1242,74 @@ dir = "/mnt/nas/tensorseed"
                 jail.create_file(&f, body)?;
                 assert!(load(Path::new(&f)).is_err(), "{name} should be rejected");
             }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn inline_hf_token_rejected_with_clear_error() {
+        Jail::expect_with(|jail| {
+            jail.create_file("c.toml", "[huggingface]\ntoken = \"hf_abc\"\n")?;
+            let e = load(Path::new("c.toml")).unwrap_err().to_string();
+            assert!(e.contains("never put the Hugging Face token"), "{e}");
+            jail.create_file("d.toml", "[huggingface]\ntoken_env = \"hf_abc-def\"\n")?;
+            assert!(load(Path::new("d.toml")).is_err());
+            Ok(())
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hf_token_env_then_private_file() {
+        use std::os::unix::fs::PermissionsExt;
+        Jail::expect_with(|jail| {
+            let dir = jail.directory().to_path_buf();
+            let tf = dir.join("hf_token");
+            std::fs::write(&tf, "hf_from_file\n").unwrap();
+            std::fs::set_permissions(&tf, std::fs::Permissions::from_mode(0o600)).unwrap();
+            jail.create_file(
+                "c.toml",
+                &format!(
+                    "[huggingface]\ntoken_env = \"TS_TEST_HF_TOKEN\"\ntoken_file = \"{}\"\n",
+                    tf.display()
+                ),
+            )?;
+            let cfg = load(Path::new("c.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(
+                cfg.huggingface.resolve_token().unwrap().as_deref(),
+                Some("hf_from_file")
+            );
+            jail.set_env("TS_TEST_HF_TOKEN", "hf_from_env");
+            assert_eq!(
+                cfg.huggingface.resolve_token().unwrap().as_deref(),
+                Some("hf_from_env")
+            );
+            jail.set_env("TS_TEST_HF_TOKEN", "");
+            std::fs::set_permissions(&tf, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let e = cfg.huggingface.resolve_token().unwrap_err().to_string();
+            assert!(e.contains("chmod 600"), "{e}");
+            // `config show` never prints a token field.
+            let shown = serde_json::to_string(&cfg).unwrap();
+            assert!(!shown.contains("\"token\""), "{shown}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn watchlist_entries_take_ids_or_tables() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "c.toml",
+                "[harvest]\nrepos = [\"a/b\", { id = \"me/mine\", allow_license = [\"other\"] }]\n",
+            )?;
+            let cfg = load(Path::new("c.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.harvest.repos.len(), 2);
+            assert_eq!(cfg.harvest.repos[0], WatchRepo::from("a/b"));
+            assert_eq!(cfg.harvest.repos[1].id(), "me/mine");
+            assert_eq!(cfg.harvest.repos[1].allow_license(), ["other".to_string()]);
+            assert!(cfg.harvest.repos[0].allow_license().is_empty());
+            // The default allowlist stays strict.
+            assert!(!cfg.policy.license_allowlist.iter().any(|l| l == "other"));
             Ok(())
         });
     }

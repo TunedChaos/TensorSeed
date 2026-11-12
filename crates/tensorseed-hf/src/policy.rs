@@ -32,6 +32,11 @@ pub struct Policy {
     pub allow_gated: bool,
     /// Allow pickle based files (`.bin`, `.pt`, `.ckpt`, ...).
     pub allow_pickle_formats: bool,
+    /// License ids the publisher explicitly accepts for this run or repo
+    /// (`--allow-license`, watchlist `allow_license`). A matching repo is not
+    /// refused, but its recorded class stays what [`Policy::classify`] says,
+    /// so an `other` license is still published as `unknown`, never `open`.
+    pub license_overrides: Vec<String>,
 }
 
 impl Default for Policy {
@@ -41,6 +46,7 @@ impl Default for Policy {
             attribution_licenses: Vec::new(),
             allow_gated: false,
             allow_pickle_formats: false,
+            license_overrides: Vec::new(),
         }
     }
 }
@@ -56,6 +62,8 @@ pub struct PolicyReport {
     pub gated: bool,
     /// Reasons the repo must not be mirrored; empty means allowed.
     pub refusals: Vec<String>,
+    /// The license was allowed only by an explicit override.
+    pub license_overridden: bool,
     /// Pickle based files excluded by policy.
     pub excluded_pickle: Vec<String>,
 }
@@ -92,8 +100,15 @@ impl Policy {
         let class = self.classify(license.as_deref());
         let gated = info.gated.is_gated();
         let mut refusals = Vec::new();
+        let license_overridden = !matches!(class, LicenseClass::Open | LicenseClass::Attribution)
+            && license.as_deref().is_some_and(|l| {
+                self.license_overrides
+                    .iter()
+                    .any(|o| o.eq_ignore_ascii_case(l))
+            });
         match class {
             LicenseClass::Open | LicenseClass::Attribution => {}
+            _ if license_overridden => {}
             LicenseClass::Unknown => refusals.push(format!(
                 "license {} is missing or unrecognized; unknown licenses are skipped",
                 license.as_deref().unwrap_or("(none)")
@@ -126,6 +141,7 @@ impl Policy {
             class,
             gated,
             refusals,
+            license_overridden,
             excluded_pickle,
         }
     }
@@ -188,5 +204,31 @@ mod tests {
         assert!(r.allowed(), "{:?}", r.refusals);
         assert_eq!(r.class, LicenseClass::Attribution);
         assert!(r.excluded_pickle.is_empty());
+    }
+
+    #[test]
+    fn license_override_allows_but_keeps_class() {
+        let other = info(r#"{"id":"o/n","sha":"x","cardData":{"license":"other"}}"#);
+        let p = Policy {
+            license_overrides: vec!["OTHER".into()],
+            ..Policy::default()
+        };
+        let r = p.evaluate(&other, &[]);
+        assert!(r.allowed(), "{:?}", r.refusals);
+        assert!(r.license_overridden);
+        assert_eq!(r.class, LicenseClass::Unknown);
+        // The override names one license; others stay refused.
+        let llama = info(r#"{"id":"o/n","sha":"x","cardData":{"license":"llama3.2"}}"#);
+        assert!(!p.evaluate(&llama, &[]).allowed());
+        // No license at all is never overridden.
+        assert!(
+            !p.evaluate(&info(r#"{"id":"o/n","sha":"x"}"#), &[])
+                .allowed()
+        );
+        // An override never lifts the gated rule.
+        let gated = info(r#"{"id":"o/n","sha":"x","gated":"auto","cardData":{"license":"other"}}"#);
+        assert!(!p.evaluate(&gated, &[]).allowed());
+        // Default policy still refuses `other`.
+        assert!(!Policy::default().evaluate(&other, &[]).allowed());
     }
 }

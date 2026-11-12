@@ -55,6 +55,10 @@ struct Candidate {
     repo_type: RepoType,
     id: String,
     explicit: bool,
+    /// Per-repo license overrides from the watchlist entry.
+    allow_license: Vec<String>,
+    /// Pinned revision (`publish --revision`); `None` means the Hub's main.
+    revision: Option<String>,
 }
 
 /// Outcome counts of one pass.
@@ -170,21 +174,23 @@ async fn candidates(
 ) -> anyhow::Result<Vec<Candidate>> {
     let h = &cfg.harvest;
     let mut out: Vec<Candidate> = Vec::new();
-    let push = |out: &mut Vec<Candidate>, repo_type, id: &str, explicit| {
+    let push = |out: &mut Vec<Candidate>, repo_type, id: &str, explicit, allow: &[String]| {
         if !out.iter().any(|c| c.repo_type == repo_type && c.id == id) {
             out.push(Candidate {
                 repo_type,
                 id: id.to_string(),
                 explicit,
+                allow_license: allow.to_vec(),
+                revision: None,
             });
         }
     };
     for r in &h.repos {
-        push(&mut out, RepoType::Model, r, true);
+        push(&mut out, RepoType::Model, r.id(), true, r.allow_license());
     }
     if h.include_datasets {
         for r in &h.datasets {
-            push(&mut out, RepoType::Dataset, r, true);
+            push(&mut out, RepoType::Dataset, r.id(), true, r.allow_license());
         }
     } else if !h.datasets.is_empty() {
         tracing::warn!("harvest.datasets is set but include_datasets = false; skipping datasets");
@@ -207,7 +213,7 @@ async fn candidates(
                 if !h.tags.iter().all(|tag| r.tags.iter().any(|x| x == tag)) {
                     continue;
                 }
-                push(&mut out, *t, &r.id, false);
+                push(&mut out, *t, &r.id, false, &[]);
             }
         }
     }
@@ -243,17 +249,16 @@ pub async fn run(cfg: &Config, args: &HarvestArgs) -> anyhow::Result<ExitCode> {
         println!("{} bytes harvested in total", db.harvest_bytes_done()?);
         return Ok(ExitCode::SUCCESS);
     }
-    let hf = HfClient::from_env(&cfg.huggingface.endpoint, &cfg.huggingface.token_env)?
+    let hf = cfg
+        .huggingface
+        .client()?
         .with_retry(h.max_retries, Duration::from_millis(h.retry_base_ms));
-    let db = {
-        let p = expand(&cfg.general.state_db);
-        Arc::new(StateDb::open(&p).with_context(|| format!("opening {}", p.display()))?)
-    };
+    let db = open_db(cfg)?;
     let mut cycle = 0u64;
     let mut any_failed = false;
     loop {
         cycle += 1;
-        let report = pass(cfg, args, &hf, &db).await?;
+        let report = pass(cfg, args, &hf, &db, None).await?;
         any_failed |= report.failed > 0;
         println!(
             "harvest pass {cycle}: {} {}, {} up to date, {} skipped, {} failed",
@@ -275,16 +280,81 @@ pub async fn run(cfg: &Config, args: &HarvestArgs) -> anyhow::Result<ExitCode> {
     })
 }
 
+fn open_db(cfg: &Config) -> anyhow::Result<Arc<StateDb>> {
+    let p = expand(&cfg.general.state_db);
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    Ok(Arc::new(
+        StateDb::open(&p).with_context(|| format!("opening {}", p.display()))?,
+    ))
+}
+
+/// `tensorseed publish <repo>`: run the harvest pipeline (policy checks,
+/// verified download, torrent, signed catalog entry, uploads) for exactly
+/// one repo, whether or not it is on the watchlist. Always publishes.
+pub async fn publish(
+    cfg: &Config,
+    repo_id: &str,
+    repo_type: RepoType,
+    revision: Option<&str>,
+    allow_license: &[String],
+) -> anyhow::Result<ExitCode> {
+    let h = &cfg.harvest;
+    let hf = cfg
+        .huggingface
+        .client()?
+        .with_retry(h.max_retries, Duration::from_millis(h.retry_base_ms));
+    let db = open_db(cfg)?;
+    // A watchlist entry for the same repo contributes its overrides too.
+    let listed = if repo_type == RepoType::Model {
+        &h.repos
+    } else {
+        &h.datasets
+    };
+    let mut allow: Vec<String> = allow_license.to_vec();
+    for w in listed.iter().filter(|w| w.id() == repo_id) {
+        allow.extend(w.allow_license().iter().cloned());
+    }
+    let cand = Candidate {
+        repo_type,
+        id: repo_id.to_string(),
+        explicit: true,
+        allow_license: allow,
+        revision: revision.map(str::to_owned),
+    };
+    let args = HarvestArgs {
+        watch: false,
+        only: Vec::new(),
+        dry_run: false,
+        status: false,
+        max_cycles: 0,
+        allow_license: Vec::new(),
+    };
+    let report = pass(cfg, &args, &hf, &db, Some(vec![cand])).await?;
+    println!(
+        "publish: {} published, {} already up to date, {} skipped, {} failed",
+        report.harvested, report.up_to_date, report.skipped, report.failed
+    );
+    Ok(if report.failed > 0 || report.skipped > 0 {
+        ExitCode::from(crate::consumer::EXIT_VERIFY_FAILED)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
 async fn pass(
     cfg: &Config,
     args: &HarvestArgs,
     hf: &HfClient,
     db: &Arc<StateDb>,
+    fixed: Option<Vec<Candidate>>,
 ) -> anyhow::Result<PassReport> {
     let h = &cfg.harvest;
     let delay = Duration::from_millis(h.request_delay_ms);
     let takedown = load_takedown(cfg)?;
-    let publisher = if h.publish && !args.dry_run {
+    let force_publish = fixed.is_some();
+    let publisher = if (h.publish || force_publish) && !args.dry_run {
         Some(Publisher::open(cfg).await?)
     } else {
         None
@@ -299,6 +369,7 @@ async fn pass(
         attribution_licenses: cfg.policy.attribution_licenses.clone(),
         allow_gated: h.allow_gated,
         allow_pickle_formats: cfg.policy.allow_pickle_formats,
+        license_overrides: Vec::new(),
     };
     if !h.license_allowlist.is_empty() {
         policy.license_allowlist = h.license_allowlist.clone();
@@ -306,8 +377,18 @@ async fn pass(
     let store_root = expand(&cfg.storage.local_dir);
     let mut report = PassReport::default();
 
-    for c in candidates(cfg, hf, &args.only, delay).await? {
+    let cands = match fixed {
+        Some(v) => v,
+        None => candidates(cfg, hf, &args.only, delay).await?,
+    };
+    for c in cands {
         let label = format!("{} {}", c.repo_type, c.id);
+        policy.license_overrides = args
+            .allow_license
+            .iter()
+            .chain(c.allow_license.iter())
+            .cloned()
+            .collect();
         if takedown.contains(&c.id) {
             println!("skip     {label}: on the takedown list");
             report.skipped += 1;
@@ -321,7 +402,7 @@ async fn pass(
                 continue;
             }
         };
-        let info = match polite(delay, || hf.repo_info(&repo, None)).await {
+        let info = match polite(delay, || hf.repo_info(&repo, c.revision.as_deref())).await {
             Ok(i) => i,
             Err(e) => {
                 println!("FAILED   {label}: {e}");
@@ -376,6 +457,13 @@ async fn pass(
             );
             report.skipped += 1;
             continue;
+        }
+        if pr.license_overridden {
+            println!(
+                "note     {rlabel}: license {} allowed by explicit override (recorded as {:?})",
+                pr.license.as_deref().unwrap_or("(none)"),
+                pr.class
+            );
         }
         let kept: Vec<&TreeEntry> = tree
             .iter()

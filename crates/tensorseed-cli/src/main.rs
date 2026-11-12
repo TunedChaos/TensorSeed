@@ -66,6 +66,21 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Catalog(cmd) => catalog_cmd::run(cmd, load).await,
         Command::Harvest(args) => harvest::run(&load()?, args).await,
+        Command::Publish {
+            repo_id,
+            repo_type,
+            revision,
+            allow_license,
+        } => {
+            harvest::publish(
+                &load()?,
+                repo_id,
+                (*repo_type).into(),
+                revision.as_deref(),
+                allow_license,
+            )
+            .await
+        }
         Command::Pull(args) => consumer::pull(&load()?, args).await,
         Command::Verify(args) => consumer::verify(&load()?, args).await,
         Command::List { filter, no_wait } => {
