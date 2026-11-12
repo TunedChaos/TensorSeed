@@ -13,6 +13,7 @@ pub mod error;
 pub mod hash;
 pub mod keys;
 pub mod manifest;
+pub mod time;
 pub mod verify;
 
 pub use error::{Error, Result};
