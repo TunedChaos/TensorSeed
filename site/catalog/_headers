@@ -1,5 +1,6 @@
 # Catalog host headers for catalog.tensorseed.dev (SPEC 6.8, 6.12).
 # Cache-Control is set only on the paths that need it, so values are not joined.
+# Spaces, not tabs. Exact paths plus directory prefixes.
 
 /*
   X-Content-Type-Options: nosniff
@@ -24,6 +25,8 @@
 /tensorseed/deltas/0000000001.json.minisig
 /tensorseed/deltas/0000000002.json
 /tensorseed/deltas/0000000002.json.minisig
+/tensorseed/deltas/0000000003.json
+/tensorseed/deltas/0000000003.json.minisig
 /tensorseed/snapshots/0000000001.json
 /tensorseed/snapshots/0000000001.json.minisig
   Cache-Control: public, max-age=31536000, immutable
@@ -36,5 +39,6 @@
 /tensorseed/mirrors.toml.minisig
 /tensorseed/deltas/0000000001.json.minisig
 /tensorseed/deltas/0000000002.json.minisig
+/tensorseed/deltas/0000000003.json.minisig
 /tensorseed/snapshots/0000000001.json.minisig
   Content-Type: application/minisign; charset=utf-8

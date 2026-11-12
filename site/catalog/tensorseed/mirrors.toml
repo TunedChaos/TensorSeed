@@ -1,3 +1,9 @@
 schema = "ts.mirrors/1"
 catalog = "tensorseed"
-mirror = []
+
+[[mirror]]
+name = "r2-mirror"
+provider = "r2"
+url = "https://mirror.tensorseed.dev/"
+priority = 10
+enabled = true

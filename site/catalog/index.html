@@ -24,7 +24,7 @@
     <p>
       This is the public base URL for the signed static-file catalog
       (<code>file.base_url</code>). The catalog <code>tensorseed</code> is
-      live at revision 2.
+      live at revision 3.
     </p>
     <p>Pin this publisher public key (minisign, key id CE1E0E3D543DFFB8):</p>
     <pre class="key"><code>RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd</code></pre>
@@ -42,8 +42,9 @@
       <code>TunedChaos/ChaosNexus_Tuned_v1-GGUF</code>. The
       <code>.torrent</code> file is under
       <a href="/t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent"><code>/t/</code></a>.
-      Model weights themselves are not hosted on Pages; pull verifies the
-      signed manifest and fetches bytes from the Hub or a later HTTP mirror.
+      Model weights themselves are not hosted on Pages. Pull verifies the
+      signed manifest and fetches bytes from the HTTP mirror at
+      https://mirror.tensorseed.dev/ (R2), with the Hub as fallback.
     </p>
     <p>
       See <a href="/README.txt">README.txt</a> for the full layout,
