@@ -81,3 +81,10 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.sha2]
 opt-level = 3
+
+# Release archives (`just dist`): optimized, stripped, one codegen unit.
+[profile.dist]
+inherits = "release"
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

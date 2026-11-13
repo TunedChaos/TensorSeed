@@ -43,7 +43,7 @@ original host goes away, and lets anyone check that a copy is genuine.
 Read the full design in [docs/SPEC.md](docs/SPEC.md), the plan in
 [docs/MILESTONES.md](docs/MILESTONES.md), and the volunteer guide in
 [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md). API docs: `cargo doc
---workspace --no-deps --open`.
+--workspace --no-deps --open` (or `just doc-open`).
 
 ## Use it
 
@@ -173,6 +173,14 @@ cargo build --release
 cargo test
 ./target/release/tensorseed --help
 ```
+
+With [just](https://just.systems): `just check-all` runs formatting, clippy,
+tests, and docs; `just doc` builds the API docs. Release binaries for Linux
+(musl static and glibc 2.17+, x86_64 and ARM64) and Windows (x86_64 and
+ARM64) are cross compiled from one host with cargo-zigbuild: `just targets`
+then `just dist`. Windows contributors can build natively with
+`cargo build --release` (MSVC), or use the justfile from Git Bash or WSL.
+Details in [CONTRIBUTING.md](CONTRIBUTING.md#cross-platform-builds).
 
 Configuration: copy `config/tensorseed.example.toml` to
 `~/.config/tensorseed/tensorseed.toml`. Secrets (HF token, storage keys, the

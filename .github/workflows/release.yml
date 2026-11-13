@@ -1,0 +1,38 @@
+# Build release archives on version tags. This workflow only builds and
+# uploads workflow artifacts; publishing a release (and signing SHA256SUMS
+# with `just sign`, which needs the offline key) stays a manual step.
+name: Release build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dist:
+    name: just check-all and just dist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install just, cargo-zigbuild and zig
+        run: |
+          cargo install --locked just cargo-zigbuild
+          pip install ziglang
+      - name: Checks
+        run: just check-all
+      - name: Targets
+        run: just targets
+      - name: Build archives
+        run: just dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensorseed-dist
+          path: dist/
+          if-no-files-found: error

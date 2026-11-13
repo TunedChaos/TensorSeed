@@ -1,28 +1,64 @@
-# Rust build output
+# Rust build output and release archives (`just dist`)
 /target/
+/dist/
 **/*.rs.bk
 *.pdb
-
-# Local config and secrets (use config/tensorseed.example.toml as a template)
-/tensorseed.toml
-/config/tensorseed.toml
-.env
-.env.*
-
-# Local state
-*.sqlite
-*.sqlite-journal
-
-# Editors and OS
-.idea/
-.vscode/
-*.swp
-.DS_Store
 
 # Spike build output
 /spikes/*/target/
 /spikes/*/Cargo.lock
 
-# Publisher secret keys and passphrases (never commit)
+# Local config. Only the documented examples are tracked:
+# config/*.example.toml and contrib/systemd/tensorseed.toml.
+/tensorseed.toml
+/config/tensorseed.toml
+/config/mirrors.toml
+/mirrors.toml
+
+# Secrets: publisher keys, passphrases, credentials, wallets (never commit)
 *.key
+!/crates/tensorseed-catalog/tests/fixtures/minisign-*.key
 **/passphrase
+*passphrase*.txt
+*recovery-phrase*
+*mnemonic*
+keyring*.yaml
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+hf_token
+*.token
+
+# Local state: job databases, serve state, catalog state, downloads
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-journal
+serve-state.json
+chain-check.json
+.tensorseed/
+
+# Torrents built locally. The signed catalog tree under site/catalog/ is
+# published on purpose and stays tracked (including its .torrent and .minisig).
+*.torrent
+!/site/catalog/t/*.torrent
+
+# Site tooling (Cloudflare Pages, wrangler, pnpm)
+node_modules/
+.wrangler/
+.pnpm-store/
+wrangler-cache/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
