@@ -1,0 +1,62 @@
+# Tensorseed Desktop (Tauri 2). Deliberately outside the root Cargo
+# workspace (see the empty [workspace] table below and `exclude` in the root
+# Cargo.toml), so CLI, explorer, and release builds never pull in Tauri or
+# the system webview libraries. It has its own Cargo.lock and target/.
+[package]
+name = "tensorseed-desktop"
+description = "Tensorseed Desktop: browse, verify, pull, and seed Tensorseed catalogs."
+version = "0.3.0-dev"
+edition = "2024"
+rust-version = "1.90" # Tauri 2.12 needs 1.90; the CLI crates keep 1.87
+license = "AGPL-3.0-or-later"
+authors = ["Tuned Chaos"]
+repository = "https://tensorseed.dev"
+publish = false
+
+[workspace]
+
+[lib]
+name = "tensorseed_desktop_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "tensorseed-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
+tensorseed-app = { path = "../../crates/tensorseed-app" }
+tensorseed-catalog = { path = "../../crates/tensorseed-catalog" }
+tensorseed-core = { path = "../../crates/tensorseed-core" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# TODO(M3.6): tauri-plugin-updater lands with packaging, once the release
+# owner has generated the updater key on the release machine and its public
+# key is committed (docs/plans/0.3.0-desktop.md, section 5, Updater). Until
+# then the app has no updater and makes no update requests.
+
+# Deep links on Linux and Windows start a second process; single instance
+# forwards the URL to the running window instead. macOS delivers the URL to
+# the running app itself, so this stays desktop-target gated for later.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

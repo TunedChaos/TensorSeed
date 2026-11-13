@@ -40,6 +40,7 @@ export type ChainView =
       via: string;
       checkedUnix: number;
     }
+  | { kind: "datalayer"; storeId: string }
   | { kind: "unchecked"; reason: string };
 
 export type CatalogEntries = {
@@ -47,8 +48,9 @@ export type CatalogEntries = {
   revision: number;
   root: string;
   synced: boolean;
-  syncSource: string | null;
   syncError: string | null;
   chain: ChainView;
   entries: ListedEntry[];
+  /** Index values that did not parse; shown, never trusted. */
+  problems: string[];
 };

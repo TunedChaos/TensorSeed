@@ -12,6 +12,9 @@ members = [
     "crates/tensorseed-app",
     "crates/tensorseed-cli",
 ]
+# Tensorseed Desktop builds on its own (Tauri and webview libraries stay out
+# of CLI, explorer, and release builds).
+exclude = ["desktop/src-tauri"]
 
 [workspace.package]
 version = "0.2.0"

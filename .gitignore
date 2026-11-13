@@ -71,3 +71,9 @@ desktop.ini
 /explorer/playwright-report/
 /explorer/blob-report/
 /explorer/playwright/.cache
+
+# Desktop build output (Vite dist, the separate Cargo target, generated
+# Tauri schemas)
+/desktop/dist/
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/schemas/

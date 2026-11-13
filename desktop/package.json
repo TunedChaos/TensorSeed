@@ -1,0 +1,33 @@
+{
+  "name": "tensorseed-desktop",
+  "version": "0.3.0-dev",
+  "private": true,
+  "type": "module",
+  "description": "Tensorseed Desktop: browse, verify, pull, and seed Tensorseed catalogs (Tauri 2).",
+  "license": "AGPL-3.0-or-later",
+  "author": "Tuned Chaos",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri"
+  },
+  "engines": {
+    "pnpm": ">=9"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "@tauri-apps/cli": "^2",
+    "@tensorseed/ui": "link:../ui",
+    "daisyui": "^5.8.0",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^5",
+    "vite": "^8.3.8"
+  }
+}
