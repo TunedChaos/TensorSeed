@@ -8,6 +8,10 @@
   after `catalog create`. `--dry-run` shows the current and proposed values
   without signing.
 - mirror.tensorseed.dev landing and not found pages (`site/mirror/`).
+- New `tensorseed-app` library crate (groundwork for Tensorseed Desktop in
+  0.3.0): config, catalog access and chain check, mirror ranking, torrent
+  helpers, manifest resolution, and Hugging Face login state moved out of
+  the CLI. No change to CLI commands, flags, or output.
 
 ## 0.2.0
 
