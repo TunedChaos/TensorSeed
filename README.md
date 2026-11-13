@@ -4,12 +4,12 @@
 
 Website: [tensorseed.dev](https://tensorseed.dev)
 
-> **Status: pre-alpha, milestone M0.** Downloading and verifying works today
+> **Status: 0.1.0, an early release.** Downloading and verifying works today
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
 > v1+v2 torrents, `seed` serves them, `serve` keeps seeding what you already
-> pulled, and `pull` uses the BitTorrent swarm first (HTTP mirrors and the
-> Hub are failover). `--seed-after` still seeds after a verified pull. The
+> pulled, and `pull` uses the BitTorrent swarm first, then Hugging Face, then
+> HTTP mirrors. `--seed-after` still seeds after a verified pull. The
 > official catalog is anchored on Chia mainnet, and clients check the file
 > catalog against the Chia store by default (strict). `takedown` and `doctor`
 > still print "not implemented yet". Expect breaking changes.
@@ -37,8 +37,8 @@ original host goes away, and lets anyone check that a copy is genuine.
   librqbit; see [docs/M0-TORRENT-SPIKE.md](docs/M0-TORRENT-SPIKE.md) for why.
   Storage is local disk by default; add any number of named
   `[[storage.target]]` blocks (R2, B2, Vultr, Wasabi, MinIO, AWS, any S3, another
-  directory, or a plain HTTP host), and mirrors in `mirrors.toml`. Pull tries
-  them by priority and falls back to the Hub.
+  directory, or a plain HTTP host), and mirrors in `mirrors.toml`. Pull uses
+  the BitTorrent swarm first, then Hugging Face, then HTTP mirrors by priority.
 - **Trust the hashes, not the host.** Any peer, webseed, or mirror can serve bytes,
   because the client checks them against the catalog before accepting them.
 

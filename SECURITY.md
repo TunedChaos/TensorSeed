@@ -15,6 +15,15 @@ plan once the problem is reproduced, and credit in the advisory unless you
 prefer otherwise. Please give us a reasonable time to ship a fix before
 disclosing publicly; we aim to publish an advisory together with the fix.
 
+## Requesting a catalog takedown
+
+To ask that a mirrored Hugging Face model or dataset be removed from the
+official Tensorseed catalog, open a
+[Request a catalog takedown](https://github.com/TunedChaos/TensorSeed/issues/new?template=takedown.yml)
+issue. Only the official publisher can apply the takedown. Do not use that
+form for a software vulnerability; use private vulnerability reporting
+above instead.
+
 ## Scope
 
 In scope: the `tensorseed` binary and crates in this repository, the signed
@@ -28,9 +37,9 @@ vouch for; path traversal or writes outside the output directory; ways for
 a peer, mirror, or webseed to do more than be slow or missing; and secrets
 leaking into logs or files.
 
-Out of scope: content of mirrored models (report those through the
-takedown process in the catalog's `ts/v1/catalog` contact field), denial of
-service by simply not serving data, and issues in third party services.
+Out of scope: content of mirrored models and datasets (use the takedown
+form above), denial of service by simply not serving data, and issues in
+third party services.
 
 ## Keys
 

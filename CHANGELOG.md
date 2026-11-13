@@ -90,8 +90,10 @@ Prebuilt archives:
 - Windows ARM64 (`aarch64-pc-windows-gnullvm`); the file format is
   confirmed, but this build has not been run on ARM Windows hardware
 
-There is no macOS build. macOS users can build from source with
-`cargo install` or `cargo build --release` (Rust 1.87 or newer).
+There is no macOS build. macOS users can build from a checkout with
+`cargo build --release` or `cargo install --locked --path crates/tensorseed-cli`
+(Rust 1.87 or newer), or from GitHub with
+`cargo install --locked --git https://github.com/TunedChaos/TensorSeed`.
 
 Signed source archives (`tensorseed-0.1.0-src.tar.gz` and
 `tensorseed-0.1.0-src.zip`) were added to this release after the initial

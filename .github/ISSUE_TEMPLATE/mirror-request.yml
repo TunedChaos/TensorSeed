@@ -19,7 +19,7 @@ body:
     id: repo_id
     attributes:
       label: Hugging Face repo id
-      description: The org/name on Hugging Face, for example google/bert-base-uncased.
+      description: The org/name on Hugging Face, for example google-bert/bert-base-uncased.
       placeholder: org/name
     validations:
       required: true

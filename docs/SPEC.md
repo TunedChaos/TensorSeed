@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 12)
+# Tensorseed: Project Specification (Revision 13)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
-> Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
+> Website: https://tensorseed.dev (primary). tensorseed.org and tensorseed.garden are reserved as redirects to tensorseed.dev.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+> Status: 0.1.0, an early release. Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+
+Revision 13 changes: public status is 0.1.0 (an early release). The official seeder and the first additional official catalog entries are live (catalog revision 4, nine entries; 18.5). tensorseed.org and tensorseed.garden are reserved as redirects to tensorseed.dev. On main (to ship in 0.2.0): `[fetch] source_order` defaults to torrent, then Hugging Face, then HTTP mirrors; `tensorseed hf login` / `logout` / `status` and automatic reuse of an existing `hf auth login` token are implemented (18, 9).
 
 Revision 12 changes: 0.2.0 plan in section 18 (and 6.15, 16): multi-catalog subscription, a read-only explorer at explore.tensorseed.dev, `pull --include` / `--exclude`, .deb and .rpm packages from the static musl binaries, and an official seeder with a first set of additional official entries. The explorer UI is Svelte 5 with TailwindCSS and DaisyUI (build-time, self-hosted, pnpm); the verification core is a WASM module from the existing Rust crates, not a TypeScript reimplementation (8.4). 0.3.0 (section 19) is Tensorseed Desktop, a separate Tauri tray app that reuses that UI and calls the crates natively; Flatpak and AppImage wait for that, and project apt/dnf repos are deferred.
 
@@ -513,7 +515,7 @@ Anyone can run a separate catalog with their own publisher key, their own Chia D
 
 Chia proves integrity and latest state of *that publisher's* catalog, not publisher honesty. File trust comes from each entry's `hf_commit` and per-file hashes, which anyone can audit against Hugging Face while the repo is still up. Torrents are deterministic, so two catalogs that publish the same HF commit share one info hash and one swarm.
 
-In 0.1.0 a client follows one catalog per config file: pin the third party's `catalog.name`, `catalog.publisher_pubkey`, `chia.catalog_store_id`, and `file.base_url` in a separate file and pass `--config`. 0.2.0 is the multi-catalog milestone. The design, plus the explorer, selective pulls, packaging, and official seeder work, is in section 18.
+In 0.1.0 a client follows one catalog per config file: pin the third party's `catalog.name`, `catalog.publisher_pubkey`, `chia.catalog_store_id`, and `file.base_url` in a separate file and pass `--config`. 0.2.0 is the multi-catalog milestone. The design, plus the explorer, selective pulls, packaging, download source order, and Hugging Face token login, is in section 18. The official seeder and the first additional official entries are already live (18.5).
 
 Delegated writers on the official catalog (CHIP-0035) remain optional and separate; they are not the decentralization path.
 
@@ -736,6 +738,7 @@ Single binary `tensorseed`.
 | `seed [--dir DIR]... [--for DURATION] [--serve-catalog]` | Seed published revisions or pulled directories in place; `--serve-catalog` also serves the local catalog files on `serve.http_listen` (8.3). | done |
 | `serve [--for DURATION] [--serve-catalog] [--http ADDR] [--health ADDR\|off] [--fetch\|--no-fetch] [--dir DIR]... [--sync-interval SECS]` | Long running seeder: catalog loop, selection rules, takedowns, budget, auto fetch, HTTP webseed, catalog mirror, health endpoint, port mapping (8.3). | done |
 | `takedown <repo_id> --reason ... [--revisions ...] [--delete-webseed]` | Write a tombstone, optionally delete webseed objects on every storage target. | stub |
+| `hf login` / `hf logout` / `hf status` | Save, forget, or check a Hugging Face token without printing it. Also reuse a token already saved by `hf auth login`. | done (unreleased 0.2.0) |
 
 Exit codes: 0 success, 1 error, 2 not implemented yet, 3 verification or download failure.
 
@@ -1108,8 +1111,10 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 - Multi-catalog subscription (`[[catalogs]]`), independent verification, and cross-catalog hash agreement.
 - Read-only catalog explorer at explore.tensorseed.dev (8.4, 18.2): Svelte 5 + TailwindCSS + DaisyUI, WASM verification core, including a "use another catalog" form.
 - `pull --include` / `--exclude` globs, using librqbit `only_files` on the swarm pass.
+- Default download order becomes torrent, then Hugging Face, then HTTP mirrors, with a `[fetch] source_order` setting.
+- Reuse an existing `hf auth login` token, and add `tensorseed hf login`, `logout`, and `status`.
 - .deb and .rpm packages for x86_64 and aarch64, built from the static musl binaries (CLI only).
-- An always-on official seeder and a first set of additional official catalog entries (HF models and datasets only).
+- Done: an always-on official seeder and a first set of additional official catalog entries (HF models and datasets only; 18.5).
 - Operator guide for running a catalog remains [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md).
 
 **0.3.0: Tensorseed Desktop** (section 19)
@@ -1139,9 +1144,9 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 
 ## 18. 0.2.0 plan
 
-Design only in this revision; implementation follows this section. 0.2.0 stays Hugging Face models and datasets only. The cost of entry stays low: a laptop and one repo the user cares about should still be enough to pull, verify, and seed, with no extra configuration. Torrents remain the primary download, with HTTP mirrors and the Hub as failover. Chia DataLayer remains the source of truth for each catalog (6.14, 6.15).
+Implementation follows this section. 0.2.0 stays Hugging Face models and datasets only. The cost of entry stays low: a laptop and one repo the user cares about should still be enough to pull, verify, and seed, with no extra configuration. The planned default download order is torrent, then Hugging Face, then HTTP mirrors, overridable with `[fetch] source_order`. Chia DataLayer remains the source of truth for each catalog (6.14, 6.15).
 
-The four product items, plus Linux packages, are below. Suggested build order and risks are at the end.
+The official seeder and the first additional official entries are already live (18.5). The remaining product items, plus Linux packages and Hugging Face token login, are below. Suggested build order and risks are at the end.
 
 ### 18.1 Multi-catalog subscription
 
@@ -1236,6 +1241,8 @@ The read-only explorer designed in 8.4 ships in 0.2.0 at `explore.tensorseed.dev
 
 ### 18.5 Official seeder and more catalog entries
 
+Done. The always-on official seeder is running, and the first additional official entries were published in catalog revision 4 (nine official entries in total, including `TunedChaos/ChaosNexus_Tuned_v1-GGUF`). Published sizes can be smaller than the Hub `usedStorage` figures in the table below, because the Hub also counts extra export formats.
+
 An always-on official seeder gives `pull` peers from the first seconds, which is what torrent-first needs in practice. It runs `tensorseed serve` under systemd, `fetch` off unless the operator explicitly auto-follows a list, and seeds what has been pulled onto a dedicated data volume. The same machine may also serve an HTTPS webseed (`--http` behind an existing TLS reverse proxy) and `--serve-catalog`.
 
 **Host requirements (no change to published layout).** A modest x86_64 Linux host is enough: a few CPU cores, tens of GiB of RAM (the official seeder host already in use has this margin), and well over 100 GiB free for the first additional entries. The daemon itself is light compared with storing model files.
@@ -1244,7 +1251,7 @@ An always-on official seeder gives `pull` peers from the first seconds, which is
 
 **Ops.** Use the packaged (or `contrib/systemd`) unit, a dedicated system user, and a data directory on the large volume. Upload caps and `serve.max_bytes` should be set. Enable the unit only after the listen port is reachable from the internet. No new secret material belongs on this host beyond an optional HF token if gated work is ever allowed (it is not in this plan).
 
-**Candidate official entries.** Sizes below are Hugging Face `usedStorage` for the whole repo (all export formats), collected from the Hub API on 2026-11-13. Every candidate is ungated, not private, and on the default open license allowlist (`apache-2.0` or `mit`). The official catalog already has `TunedChaos/ChaosNexus_Tuned_v1-GGUF`; these are additions. Together they are about 49 GB, under a 100 GB budget. Some "small" models are large on disk because the Hub copy includes many frameworks (ONNX, TensorFlow, and so on); `--include` can later fetch only safetensors if a slimmer official copy is preferred, but the first publish should keep the repo as published unless a format is refused by policy (pickle).
+**First additional official entries (published in catalog revision 4).** Sizes below are Hugging Face `usedStorage` for the whole repo (all export formats), collected from the Hub API on 2026-11-13, before publish. Every entry is ungated, not private, and on the default open license allowlist (`apache-2.0` or `mit`). Together the Hub figures were about 49 GB, under a 100 GB budget. Some "small" models are large on disk because the Hub copy includes many frameworks (ONNX, TensorFlow, and so on).
 
 | Repo | Kind | Why | License | Size |
 |---|---|---|---|---|
@@ -1259,17 +1266,25 @@ An always-on official seeder gives `pull` peers from the first seconds, which is
 
 Not recommended in this first batch: EleutherAI Pythia repos as a whole (the Hub copies include many checkpoints and are hundreds of GB to more than 1 TB), and CC-BY-SA datasets such as SQuAD, Dolly, or WikiText, which need an explicit license allow because `cc-by-sa-*` is not on the default allowlist. Those can be a later policy decision.
 
-### 18.6 Effort, order, and risks
+### 18.6 Download source order
+
+In 0.1.0, `pull` uses the BitTorrent swarm first, then HTTP mirrors, then the Hugging Face Hub. 0.2.0 changes the default to torrent, then Hugging Face, then HTTP mirrors, so official mirror bandwidth is used only when a file is missing from the swarm and from the Hub. A `[fetch] source_order` setting (and a matching CLI flag if needed) lets a catalog operator or user pick a different order. Hash checks against the signed catalog do not change. If the Hub is missing, gated, or rate-limited, the client falls through to the remaining sources.
+
+### 18.7 Hugging Face tokens
+
+A Hugging Face token is already optional in 0.1.0 (`HF_TOKEN` or `[huggingface] token_file`; an inline `token =` in the config file is rejected). 0.2.0 should also reuse a token already saved by `hf auth login` (the usual Hugging Face CLI cache, or `HF_TOKEN_PATH`) so most people need no extra setup, and should add `tensorseed hf login`, `logout`, and `status`. `login` saves a pasted token with private file permissions (including on Windows). `status` confirms that the token works and never prints it. The token is sent only to Hugging Face and is dropped on any redirect to another site. Gated models still need `--allow-gated`.
+
+### 18.8 Effort, order, and risks
 
 Suggested order, so each step is useful on its own and early work stays cheap to try:
 
-1. **`pull --include` / `--exclude`.** Smallest user-facing change; the engine already has `only_files`. Unblocks trying one file of a large repo.
+1. **`pull --include` / `--exclude`.** Smallest user-facing change; the engine already has `only_files`. Unblocks trying one file of a large repo. The new default `source_order` and Hugging Face token login can proceed with this work.
 2. **.deb and .rpm packages.** Independent of the other items; can proceed in parallel with (1). Needs nfpm in the release justfile and package contents as in 18.4.
 3. **Multi-catalog subscription.** Core 0.2.0 feature. Config, state, `list` / `pull` / `serve` / `catalog add|remove|list`, agreement and conflict behavior.
 4. **Explorer.** Depends on the `tensorseed-verify` crate split and benefits from (3) for the agreement UI. Read-only MVP as in 18.2.
-5. **Official seeder and the additional official entries.** Operations can start as soon as the listen port is reachable; publishing the new repos can proceed in parallel with (3) and (4) using 0.1.0 tools.
+5. **Official seeder and the additional official entries.** Done (18.5).
 
-Rough effort (one experienced implementer, after this design is approved): (1) about a week including tests; (2) several days to a week; (3) two to three weeks; (4) three to five weeks including the wasm crate split, CSP, and Pages deploy; (5) mostly operations and publishing time, plus systemd and monitoring on the seeder host. These overlap.
+Rough effort (one experienced implementer, after this design is approved): (1) about a week including tests, plus the source-order and token-login work; (2) several days to a week; (3) two to three weeks; (4) three to five weeks including the wasm crate split, CSP, and Pages deploy. These overlap.
 
 **Risks.**
 
@@ -1280,7 +1295,7 @@ Rough effort (one experienced implementer, after this design is approved): (1) a
 - Hub `usedStorage` can surprise (many export formats, or every training checkpoint). Measure before publish, as in the table above.
 - Packaging must wrap the musl binary as-is; do not rebuild with a distro toolchain for the .deb/.rpm if that would change the artifact the checksums cover.
 
-### 18.7 After 0.2.0
+### 18.9 After 0.2.0
 
 The desktop GUI is not part of 0.2.0. It is 0.3.0: a separate product, Tensorseed Desktop, described in section 19.
 

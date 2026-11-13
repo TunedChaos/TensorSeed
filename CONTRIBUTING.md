@@ -1,6 +1,6 @@
 # Contributing to Tensorseed
 
-Thanks for your interest. Tensorseed is pre-alpha (milestone M0), so the design in
+Thanks for your interest. Tensorseed is at 0.1.0, an early release, so the design in
 [docs/SPEC.md](docs/SPEC.md) can still change. Opening an issue to discuss a change
 before writing a large patch saves everyone time.
 

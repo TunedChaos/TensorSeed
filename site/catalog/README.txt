@@ -7,8 +7,8 @@ described in docs/SPEC.md section 6.8 (file backend) and 6.12 (mirror lists).
   base_url = https://catalog.tensorseed.dev/
   catalog  = tensorseed
 
-The catalog is live at head revision 4, anchored on Chia mainnet
-(DataLayer generation 2). Revision 3 added the official HTTP webseed
+The catalog is live at head revision 4, anchored on Chia mainnet.
+Revision 3 added the official HTTP webseed
 https://mirror.tensorseed.dev/t/ (Cloudflare R2, bucket tensorseed-mirror).
 Revision 4 adds eight official entries (seven models and one dataset),
 all ungated, Apache-2.0 or MIT. Together with the existing first entry
@@ -57,8 +57,8 @@ and chia.coin_api_urls = ["https://api.coinset.org"], then run
 and `verify`.
 Every head, delta, snapshot, and mirrors.toml is signature checked against
 that key. Model bytes are not hosted on Pages (the per-file limit is 25 MiB).
-Pull should fetch objects from https://mirror.tensorseed.dev/ first, then
-fall back to the Hugging Face Hub if needed.
+Pull uses the BitTorrent swarm first, then the HTTP mirror at
+https://mirror.tensorseed.dev/, then the Hugging Face Hub.
 
 Layout (SPEC 6.8, 6.12)
 -----------------------

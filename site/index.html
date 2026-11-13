@@ -38,7 +38,7 @@
           Each revision publishes a signed head, an append-only delta, and
           periodic snapshots. Clients pin a publisher key, walk a hash chain,
           and reject rollback, forks, and stale heads. The catalog for this
-          project will be served from
+          project is served from
           <a href="https://catalog.tensorseed.dev/">catalog.tensorseed.dev</a>.
         </p>
       </article>
@@ -70,9 +70,8 @@
         The catalog is at revision 4, with nine official entries
         (the first model, TunedChaos/ChaosNexus_Tuned_v1-GGUF, plus
         eight models and datasets added in this revision). Object bytes
-        are mirrored
-        at <a href="https://mirror.tensorseed.dev/">mirror.tensorseed.dev</a>.
-        See the
+        are mirrored under <code>/t/</code> on
+        <code>mirror.tensorseed.dev</code>. See the
         <a href="https://catalog.tensorseed.dev/README.txt">catalog README</a>
         for the file layout.
       </p>
@@ -128,27 +127,29 @@ coin_api_urls = ["https://api.coinset.org"]</code></pre>
         <a href="https://github.com/TunedChaos/TensorSeed/releases/tag/v0.1.0">v0.1.0 GitHub release</a>.
       </p>
       <ul>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-0.1.0-x86_64-unknown-linux-musl.tar.gz">Linux x86_64, static (musl)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-0.1.0-aarch64-unknown-linux-musl.tar.gz">Linux ARM64, static (musl)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-0.1.0-x86_64-unknown-linux-gnu.tar.gz">Linux x86_64, glibc 2.17</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-0.1.0-x86_64-pc-windows-gnu.zip">Windows x86_64</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-0.1.0-aarch64-pc-windows-gnullvm.zip">Windows ARM64</a> (file format confirmed; not yet run on ARM Windows hardware)</li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-0.1.0-src.tar.gz">Source (tar.gz)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-0.1.0-src.zip">Source (zip)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-0.1.0-x86_64-unknown-linux-musl.tar.gz">Linux x86_64, static (musl)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-0.1.0-aarch64-unknown-linux-musl.tar.gz">Linux ARM64, static (musl)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-0.1.0-x86_64-unknown-linux-gnu.tar.gz">Linux x86_64, glibc 2.17</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-0.1.0-x86_64-pc-windows-gnu.zip">Windows x86_64</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-0.1.0-aarch64-pc-windows-gnullvm.zip">Windows ARM64</a> (file format confirmed; not yet run on ARM Windows hardware)</li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-0.1.0-src.tar.gz">Source (tar.gz)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-0.1.0-src.zip">Source (zip)</a></li>
       </ul>
       <p>
         There is no macOS build. The source archives are the tracked files
         from tag v0.1.0 and are listed in <code>SHA256SUMS</code>. You can
         also build from a checkout with
-        <code>cargo build --release</code> or <code>cargo install</code>
-        (Rust 1.87 or newer).
+        <code>cargo build --release</code> or
+        <code>cargo install --locked --path crates/tensorseed-cli</code>
+        (Rust 1.87 or newer), or from GitHub with
+        <code>cargo install --locked --git https://github.com/TunedChaos/TensorSeed</code>.
       </p>
       <p>
         Also download
-        <a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/SHA256SUMS">SHA256SUMS</a>,
-        <a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/SHA256SUMS.minisig">SHA256SUMS.minisig</a>,
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/SHA256SUMS">SHA256SUMS</a>,
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/SHA256SUMS.minisig">SHA256SUMS.minisig</a>,
         and
-        <a href="https://github.com/TunedChaos/TensorSeed/releases/latest/download/tensorseed-release.pub">tensorseed-release.pub</a>,
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.1.0/tensorseed-release.pub">tensorseed-release.pub</a>,
         then verify as below.
       </p>
     </section>

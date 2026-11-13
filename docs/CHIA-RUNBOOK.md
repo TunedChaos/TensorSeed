@@ -21,7 +21,7 @@ No full node.
 | Update (one generation) cost | Fee only. With fee 0 an update took about 3 minutes and one peer rejected it as `INVALID_FEE_TOO_CLOSE_TO_ZERO` first; with a 1,000,000 mojo fee updates landed on chain in about 1 to 2 minutes. |
 | Mirror coin (`add_mirror`) | `amount` (1 mojo used) plus the fee; confirmed in about 1 minute and a separate subscriber saw it through `get_mirrors`. |
 | Total testnet spend | 5,000,004 mojos for 3 stores, 4 updates with fees, and 1 mirror (earlier fee 0 updates cost nothing). |
-| Catalog size on DataLayer | The live catalog (4 signed entries, 1 model) is a 7.2 KB `.dat` file per generation. |
+| Catalog size on DataLayer | The testnet catalog at the time of that run (4 signed entries, 1 model) was a 7.2 KB `.dat` file per generation. |
 | Subscriber sync | A second, separate wallet and DataLayer subscribed with an explicit mirror URL and synced generation 1 in about one minute once the owner's `data_layer_http` was running. |
 | Signatures | Entries exported from the Chia store were byte for byte identical to the signed file catalog and verified against the publisher key; `verify` passed 9 of 9 files against the manifest read from Chia. |
 

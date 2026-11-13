@@ -11,6 +11,8 @@
     h1 { font-family: Georgia, serif; font-weight: 600; }
     a { color: #8fb36a; }
     a:hover { color: #d4a017; }
+    ul { padding-left: 1.2rem; }
+    li { margin: 0.15rem 0; }
     code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }
     pre { background: #1b2016; border: 1px solid #2d3426; padding: 1rem;
           overflow: auto; border-radius: 0.4rem; }
@@ -44,11 +46,25 @@
       Each of those files has a detached <code>.minisig</code>. The first
       published revision is
       <code>TunedChaos/ChaosNexus_Tuned_v1-GGUF</code>. The
-      <code>.torrent</code> file is under
-      <a href="/t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent"><code>/t/</code></a>.
+      <code>.torrent</code> files for every official revision are under
+      <code>/t/</code>:
+    </p>
+    <ul>
+      <li><a href="/t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent"><code>TunedChaos/ChaosNexus_Tuned_v1-GGUF</code></a></li>
+      <li><a href="/t/openai__gsm8k@740312add88f.torrent"><code>openai/gsm8k</code></a></li>
+      <li><a href="/t/BAAI__bge-small-en-v1.5@5c38ec7c405e.torrent"><code>BAAI/bge-small-en-v1.5</code></a></li>
+      <li><a href="/t/sentence-transformers__all-MiniLM-L6-v2@1110a243fdf4.torrent"><code>sentence-transformers/all-MiniLM-L6-v2</code></a></li>
+      <li><a href="/t/openai__whisper-small@973afd24965f.torrent"><code>openai/whisper-small</code></a></li>
+      <li><a href="/t/TinyLlama__TinyLlama-1.1B-Chat-v1.0@fe8a4ea1ffed.torrent"><code>TinyLlama/TinyLlama-1.1B-Chat-v1.0</code></a></li>
+      <li><a href="/t/google-bert__bert-base-uncased@86b5e0934494.torrent"><code>google-bert/bert-base-uncased</code></a></li>
+      <li><a href="/t/openai-community__gpt2@607a30d783df.torrent"><code>openai-community/gpt2</code></a></li>
+      <li><a href="/t/Qwen__Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc.torrent"><code>Qwen/Qwen2.5-1.5B-Instruct-GGUF</code></a></li>
+    </ul>
+    <p>
       Model weights themselves are not hosted on Pages. Pull verifies the
-      signed manifest and fetches bytes from the HTTP mirror at
-      https://mirror.tensorseed.dev/ (R2), with the Hub as fallback.
+      signed manifest and uses the BitTorrent swarm first, then the HTTP
+      mirror at https://mirror.tensorseed.dev/ (R2), then the Hugging Face
+      Hub.
     </p>
     <p>
       See <a href="/README.txt">README.txt</a> for the full layout,

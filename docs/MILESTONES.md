@@ -6,7 +6,7 @@ the HTTP side of M1 and M2 is already done.
 
 ## Done
 
-- [x] Project named Tensorseed; domains tensorseed.dev (primary), tensorseed.org, tensorseed.garden
+- [x] Project named Tensorseed; primary site tensorseed.dev. tensorseed.org and tensorseed.garden are reserved as redirects to tensorseed.dev
 - [x] Rust workspace scaffold: core types, `CatalogBackend` trait, CLI skeleton, config loading, CI
 - [x] Decision: keep Chia DataLayer as the first backend and add a chain-free signed-file backend (spec 6.8)
 - [x] Minisign compatible signing and verification (checked both ways against the `minisign` tool)
@@ -44,9 +44,10 @@ the HTTP side of M1 and M2 is already done.
 - [x] Fallback chosen: own BEP 52 builder plus librqbit on hybrid torrents; libtorrent-rasterbar kept as a later sidecar option
 
 ### Chia DataLayer on testnet
-- [ ] Run the implemented calls against a real node and confirm response fields (`get_root`, `get_keys` paging, missing key errors)
-- [ ] `subscribe` and `get_sync_status` from a second node
-- [ ] Check the `CatalogBackend` trait against the real call sequence and adjust it
+- [x] Run the implemented calls against a real node and confirm response fields (`get_root`, `get_keys` paging, missing key errors)
+- [x] `subscribe` and `get_sync_status` from a second node
+- [x] Check the `CatalogBackend` trait against the real call sequence and adjust it
+These were completed in the testnet11 run listed under Done.
 
 ### Signed-file catalog
 - [ ] Confirm value size overhead of the `SignedEntry` envelope against the 1 MiB target (spec 6.5)
@@ -97,10 +98,11 @@ the HTTP side of M1 and M2 is already done.
 The design is in [SPEC.md](SPEC.md) section 18. Independent catalogs are
 already possible in 0.1.0 (see [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md));
 0.2.0 is following several at once, plus the items below. Hugging Face
-models and datasets only. Suggested order: selective pulls and packages
-first (they stand alone), then multi-catalog, then the explorer, with the
-official seeder and new official entries in parallel once the listen port
-is reachable.
+models and datasets only. The official seeder and the first additional
+official catalog entries are already live (catalog revision 4, nine
+entries). Selective pulls, the new default download order, Hugging Face
+token login, and .deb/.rpm packages are on main and will ship in 0.2.0.
+Remaining work: multi-catalog, then the explorer.
 
 - [ ] Multi-catalog subscription: `[[catalogs]]` (name, publisher key, store
       id, base URL, chain check, optional label and priority); a single
@@ -118,12 +120,18 @@ is reachable.
 - [x] `pull --include` / `--exclude` globs, using librqbit `only_files`;
       `verify` accepts a recorded partial pull; `serve` and `--seed-after`
       seed the selected subset with `only_files`
+- [x] Default download order is torrent, then Hugging Face, then HTTP
+      mirrors, with a `[fetch] source_order` setting so operators can
+      choose a different order
+- [x] Reuse an existing `hf auth login` token automatically, and
+      `tensorseed hf login`, `logout`, and `status` (status confirms
+      the token works without printing it)
 - [x] .deb and .rpm for x86_64 and aarch64, built with nfpm from the
       static musl binaries; systemd unit disabled by default; example
       config under `/etc/tensorseed/`; packages listed in SHA256SUMS
       when `just dist` runs
-- [ ] Always-on official seeder and the first additional official catalog
-      entries (candidate list in SPEC 18.5)
+- [x] Always-on official seeder and the first additional official catalog
+      entries (catalog revision 4; details in SPEC 18.5)
 - [ ] Optional follow-ups, not required to ship 0.2.0: an AUR PKGBUILD;
       later, project apt/dnf repositories. Flatpak and AppImage stay
       out of scope for the CLI.

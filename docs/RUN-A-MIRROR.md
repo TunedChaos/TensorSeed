@@ -1,6 +1,6 @@
 # Run a Tensorseed mirror
 
-Tensorseed keeps open models from Hugging Face available by spreading copies
+Tensorseed keeps open models and datasets from Hugging Face available by spreading copies
 across many independent machines, the same way BitTorrent keeps popular files
 alive. Every volunteer who seeds a few revisions adds redundancy, and nobody
 has to trust anyone: each client checks the catalog against the Chia
@@ -45,8 +45,8 @@ Release archives are built with `just dist` (see
 | `aarch64-pc-windows-gnullvm` | Windows on ARM |
 
 Each archive is named `tensorseed-<version>-<target>.tar.gz` (`.zip` on
-Windows) and ships with a `SHA256SUMS` file and its minisign signature
-`SHA256SUMS.minisig`. They are signed with the **release key**, which is
+Windows). Download `SHA256SUMS` and its minisign signature
+`SHA256SUMS.minisig` from the same GitHub release as the archive. They are signed with the **release key**, which is
 deliberately not the catalog publisher key: the catalog key has to live on
 an online publishing host, while the release key stays offline, so a
 compromised catalog key can never sign a binary. Do not verify releases

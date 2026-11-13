@@ -1,0 +1,70 @@
+name: Request a catalog takedown
+description: Ask the official publisher to remove a mirrored Hugging Face repo from the official Tensorseed catalog
+title: "[takedown] "
+labels: ["takedown"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request that a Hugging Face model or dataset be
+        removed from the official Tensorseed catalog.
+
+        This form is only for the official catalog at tensorseed.dev.
+        Opening this issue does not write to the catalog; only the official
+        publisher can apply a takedown.
+
+        Do not use this form for a security vulnerability in the Tensorseed
+        software. Report those privately through the repository Security
+        tab (Report a vulnerability). See SECURITY.md. Do not post secrets,
+        credentials, or private keys here.
+  - type: input
+    id: repo_id
+    attributes:
+      label: Hugging Face repo id
+      description: The org/name on Hugging Face, for example google-bert/bert-base-uncased.
+      placeholder: org/name
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type
+      options:
+        - Model
+        - Dataset
+        - Other or unsure
+    validations:
+      required: true
+  - type: input
+    id: revisions
+    attributes:
+      label: Revisions to remove (optional)
+      description: Leave blank to request removal of every published revision of this repo. Or list branch names, tags, or commit SHAs.
+      placeholder: all published revisions
+    validations:
+      required: false
+  - type: dropdown
+    id: relationship
+    attributes:
+      label: Your relationship to the work
+      options:
+        - Rights holder or authorized representative
+        - Original Hugging Face repo owner
+        - Someone else reporting an apparent policy or legal problem
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Why it should be removed
+      description: Explain the request. If you are the rights holder, describe the rights you hold and why the mirror should be taken down. Link to the upstream repo or other public evidence. Do not paste private documents that contain secrets.
+    validations:
+      required: true
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+      description: An email address or other way to reach you about this request.
+      placeholder: you@example.com
+    validations:
+      required: true
