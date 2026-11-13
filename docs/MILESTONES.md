@@ -100,9 +100,8 @@ already possible in 0.1.0 (see [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md));
 0.2.0 is following several at once, plus the items below. Hugging Face
 models and datasets only. The official seeder and the first additional
 official catalog entries are already live (catalog revision 4, nine
-entries). Selective pulls, the new default download order, Hugging Face
-token login, and .deb/.rpm packages are on main and will ship in 0.2.0.
-Remaining work: announce 0.2.0 once the explorer is on the official domain.
+entries). 0.2.0 ships with all of the items below; the explorer is live at
+explore.tensorseed.dev.
 
 - [x] Multi-catalog subscription: `[[catalogs]]` (name, publisher key, store
       id, base URL, chain check, optional label and priority); a single

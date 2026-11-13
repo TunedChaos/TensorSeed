@@ -64,8 +64,8 @@ Check both files before running anything:
 ```sh
 minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 sha256sum -c --ignore-missing SHA256SUMS
-tar xzf tensorseed-0.1.0-x86_64-unknown-linux-musl.tar.gz
-install -m 0755 tensorseed-0.1.0-x86_64-unknown-linux-musl/tensorseed ~/.local/bin/
+tar xzf tensorseed-0.2.0-x86_64-unknown-linux-musl.tar.gz
+install -m 0755 tensorseed-0.2.0-x86_64-unknown-linux-musl/tensorseed ~/.local/bin/
 tensorseed --version
 ```
 
@@ -424,6 +424,7 @@ meant for you, not the internet.
 Seeding what you pulled does not make you a catalog publisher, and nothing
 in this guide writes to the official tensorseed.dev catalog. If you want
 your own signed, chain-anchored catalog of Hugging Face repos, follow
-[PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md). Clients can follow it in
-0.1.0 by pinning your key, catalog name, store id, and base URL in a
-separate config. Following several catalogs at once is planned for 0.2.0.
+[PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md). Clients follow it by
+adding a `[[catalogs]]` entry with your key, catalog name, store id, and
+base URL (or `tensorseed catalog add`). Since 0.2.0 one client can follow
+several catalogs at once.

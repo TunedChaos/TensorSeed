@@ -5,12 +5,15 @@
 Website: [tensorseed.dev](https://tensorseed.dev).
 Catalog explorer: [explore.tensorseed.dev](https://explore.tensorseed.dev).
 
-> **Status: 0.1.0, an early release.** Downloading and verifying works today
+> **Status: 0.2.0, an early release.** Downloading and verifying works today
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
 > v1+v2 torrents, `seed` serves them, `serve` keeps seeding what you already
 > pulled, and `pull` uses the BitTorrent swarm first, then Hugging Face, then
-> HTTP mirrors. `--seed-after` still seeds after a verified pull. The
+> HTTP mirrors. `--seed-after` still seeds after a verified pull. One client
+> can follow several catalogs at once (`[[catalogs]]`), and the browser
+> explorer verifies the catalog and its Chia anchor without installing
+> anything. The
 > official catalog is anchored on Chia mainnet, and clients check the file
 > catalog against the Chia store by default (strict). `takedown` and `doctor`
 > still print "not implemented yet". Expect breaking changes.

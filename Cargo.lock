@@ -3465,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-catalog"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3491,7 +3491,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3520,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
@@ -3533,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-fetch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "reqwest",
  "rusqlite",
@@ -3549,7 +3549,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-hf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -3563,7 +3563,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-serve"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3584,7 +3584,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-torrent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "hex",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-verify"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "blake2",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",

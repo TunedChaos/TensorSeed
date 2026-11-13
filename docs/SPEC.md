@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 13)
+# Tensorseed: Project Specification (Revision 14)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). tensorseed.org and tensorseed.garden are reserved as redirects to tensorseed.dev.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: 0.1.0, an early release. Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+> Status: 0.2.0, an early release. Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+
+Revision 14 changes: public status is 0.2.0 (an early release). Everything in the 0.2.0 plan (section 18) ships: multi-catalog subscription, the explorer at explore.tensorseed.dev, `pull --include` / `--exclude`, the torrent, then Hugging Face, then HTTP mirrors default order, `tensorseed hf login` / `logout` / `status`, .deb and .rpm packages, shell completions, and man pages.
 
 Revision 13 changes: public status is 0.1.0 (an early release). The official seeder and the first additional official catalog entries are live (catalog revision 4, nine entries; 18.5). tensorseed.org and tensorseed.garden are reserved as redirects to tensorseed.dev. On main (to ship in 0.2.0): `[fetch] source_order` defaults to torrent, then Hugging Face, then HTTP mirrors; `tensorseed hf login` / `logout` / `status` and automatic reuse of an existing `hf auth login` token are implemented (18, 9).
 

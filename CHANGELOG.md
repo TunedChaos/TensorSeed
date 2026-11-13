@@ -1,11 +1,48 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-### 0.2.0
+Tensorseed mirrors open Hugging Face models and datasets for preservation.
+0.2.0 lets one client follow several signed catalogs at once and adds a
+browser explorer at [explore.tensorseed.dev](https://explore.tensorseed.dev)
+that verifies the catalog signature and its Chia anchor without installing
+anything. Formats and commands may still change before 1.0.
 
-#### Added
+### Highlights
 
+- Multi-catalog: follow several signed, chain-anchored catalogs with
+  `[[catalogs]]` or `tensorseed catalog add`. Revisions that agree across
+  catalogs share one swarm, and `list` shows how many catalogs agree.
+- Catalog explorer at explore.tensorseed.dev: browse and search the
+  official catalog, open an entry, and check the minisign signature and
+  the Chia DataLayer anchor in the browser (WebAssembly built from the
+  same Rust verification code as the CLI). Add another catalog by URL,
+  key, and store id to compare.
+- Default download order is the BitTorrent swarm, then Hugging Face, then
+  HTTP mirrors, configurable with `[fetch] source_order`.
+- `tensorseed hf login`, `logout`, and `status`, and automatic reuse of an
+  existing Hugging Face CLI token.
+- `pull --include` and `--exclude` globs for partial pulls.
+- `.deb` and `.rpm` packages, shell completions, and man pages.
+
+### Download targets
+
+The same five archives as 0.1.0 (Linux x86_64 and ARM64 static musl,
+Linux x86_64 glibc 2.17, Windows x86_64, Windows ARM64), signed source
+archives (`tensorseed-0.2.0-src.tar.gz` and `.zip`), and new `.deb` and
+`.rpm` packages for x86_64 and aarch64. All are listed in `SHA256SUMS`,
+signed with the release key (minisign, key id F5D2D3C4C27D459D).
+
+### Added
+
+- Read-only catalog explorer (`explorer/`, Svelte 5, TailwindCSS,
+  DaisyUI, built with pnpm, no third party scripts) deployed at
+  explore.tensorseed.dev. It verifies the catalog with a WebAssembly
+  build of `tensorseed-verify` (`tensorseed-wasm`), shows chain status,
+  per-entry files, hashes, licenses, and torrent details, and has a
+  "use another catalog" form with agreement across catalogs.
+  Catalog signature and chain checks moved into the `tensorseed-verify`
+  crate so the CLI and the explorer share one implementation.
 - `tensorseed pull --include GLOB` and `--exclude GLOB` (repeatable) select
   files by path. Globs use the same rules as `serve` (`*` matches any
   run of characters, including `/`). `--exclude` wins when both match.
@@ -57,7 +94,7 @@
   subscriptions; `catalog info` and `catalog chain-status` accept
   `--catalog`.
 
-#### Fixed
+### Fixed
 
 - The BitTorrent DHT binds IPv4-only when the configured listen address is
   IPv4, and stores its routing table under Tensorseed's data directory
