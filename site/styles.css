@@ -208,3 +208,19 @@ pre.copyable code {
   margin-top: 1.5rem;
 }
 
+.support-btn {
+  display: inline-block;
+  margin: 0 0 1rem;
+  padding: 0.55rem 1.1rem;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 0.4rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.support-btn:hover {
+  background: var(--leaf);
+  color: var(--bg);
+}
+
