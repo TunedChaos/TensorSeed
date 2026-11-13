@@ -1319,9 +1319,11 @@ Design only in this revision; 0.3.0 comes after 0.2.0. Hugging Face models and d
 
 **Packaging (Desktop, 0.3.0).**
 
-- Windows: an installer (MSI or NSIS).
+- Windows: both an MSI and an NSIS installer. 0.3.0 ships them without Authenticode signing, so SmartScreen warns on first run; integrity comes from the minisign signed `SHA256SUMS` as for every artifact.
 - Linux: .deb, .rpm, AppImage, and Flatpak. (These formats were deferred in 0.2.0 because they add little on top of the static CLI; they are the right fit once there is a GUI to bundle.)
 - The 0.2.0 CLI .deb and .rpm stay CLI-only: they must not start pulling in a webview or a tray. A Desktop package may depend on the CLI package, or bundle the CLI binary, but the CLI artifact itself stays GUI-free.
 - There is no macOS CLI build yet; a macOS Desktop build is not part of this plan until that changes.
+- The Desktop code stays portable (platform specifics behind `cfg` gates) so macOS can be added later, but macOS is not a 0.3.0 release target.
+- Updates: Desktop includes the Tauri in-app updater, verifying update signatures with a dedicated updater key (separate from the release key) against a static feed on tensorseed.dev. The app sends no telemetry.
 
 **Order.** 0.3.0 starts after the 0.2.0 explorer UI exists, so Desktop can reuse it. CLI packaging and the `gui` launcher stub can be designed earlier, but the app itself is a 0.3.0 milestone.
