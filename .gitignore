@@ -18,6 +18,7 @@
 # Secrets: publisher keys, passphrases, credentials, wallets (never commit)
 *.key
 !/crates/tensorseed-catalog/tests/fixtures/minisign-*.key
+!/crates/tensorseed-verify/tests/fixtures/minisign-*.key
 **/passphrase
 *passphrase*.txt
 *recovery-phrase*
@@ -62,3 +63,11 @@ wrangler-cache/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Explorer build output (WASM bindings and Vite dist)
+/explorer/src/pkg/
+/explorer/dist/
+/explorer/test-results/
+/explorer/playwright-report/
+/explorer/blob-report/
+/explorer/playwright/.cache

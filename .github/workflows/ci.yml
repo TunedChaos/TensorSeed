@@ -40,3 +40,20 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources
+
+  explorer:
+    name: explorer (wasm + static build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked --version 0.2.130
+      - name: Build explorer
+        run: pnpm --dir explorer install --frozen-lockfile && pnpm --dir explorer build

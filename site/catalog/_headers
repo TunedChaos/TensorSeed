@@ -28,6 +28,8 @@
 /tensorseed/deltas/0000000002.json.minisig
 /tensorseed/deltas/0000000003.json
 /tensorseed/deltas/0000000003.json.minisig
+/tensorseed/deltas/0000000004.json
+/tensorseed/deltas/0000000004.json.minisig
 /tensorseed/snapshots/0000000001.json
 /tensorseed/snapshots/0000000001.json.minisig
   Cache-Control: public, max-age=31536000, immutable
@@ -42,5 +44,6 @@
 /tensorseed/deltas/0000000001.json.minisig
 /tensorseed/deltas/0000000002.json.minisig
 /tensorseed/deltas/0000000003.json.minisig
+/tensorseed/deltas/0000000004.json.minisig
 /tensorseed/snapshots/0000000001.json.minisig
   Content-Type: application/minisign; charset=utf-8

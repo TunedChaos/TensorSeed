@@ -8,11 +8,13 @@
 #
 # This script never prints the token. It only checks that the variable is set.
 #
-# Two free Pages projects:
+# Pages projects:
 #   tensorseed          site/                 -> tensorseed.dev
 #                                               tensorseed.pages.dev
 #   tensorseed-catalog  site/catalog          -> catalog.tensorseed.dev
 #                                               tensorseed-catalog.pages.dev
+#   tensorseed-explorer explorer/dist         -> explore.tensorseed.dev
+#                                               tensorseed-explorer.pages.dev
 #
 # The second project serves the SPEC 6.8 tree at the origin of
 # catalog.tensorseed.dev (file.base_url), rather than under a /catalog path.
@@ -58,6 +60,10 @@ pnpm dlx wrangler pages deploy site --project-name tensorseed --branch main
 echo "Deploying tensorseed-catalog from site/catalog"
 pnpm dlx wrangler pages deploy site/catalog --project-name tensorseed-catalog --branch main
 
+echo "Building and deploying tensorseed-explorer from explorer/dist"
+(cd explorer && pnpm install --frozen-lockfile && pnpm build)
+pnpm dlx wrangler pages deploy explorer/dist --project-name tensorseed-explorer --branch main
+
 cat <<'EOF'
 
 If you still need to attach the custom domains (once per project):
@@ -74,14 +80,22 @@ If you still need to attach the custom domains (once per project):
     -H "Content-Type: application/json" \
     -d '{"name":"catalog.tensorseed.dev"}'
 
+  curl -sS -X POST \
+    "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/tensorseed-explorer/domains" \
+    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"explore.tensorseed.dev"}'
+
 If Cloudflare does not create the DNS records, add proxied CNAMEs:
 
   tensorseed.dev          CNAME  tensorseed.pages.dev
   catalog.tensorseed.dev  CNAME  tensorseed-catalog.pages.dev
+  explore.tensorseed.dev  CNAME  tensorseed-explorer.pages.dev
 
 Create the projects first, if they do not exist:
 
   pnpm dlx wrangler pages project create tensorseed --production-branch main
   pnpm dlx wrangler pages project create tensorseed-catalog --production-branch main
+  pnpm dlx wrangler pages project create tensorseed-explorer --production-branch main
 
 EOF

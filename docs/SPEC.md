@@ -635,7 +635,9 @@ Implemented (Revision 9). `tensorseed serve [--for DURATION] [--serve-catalog] [
 
 ---
 
-### 8.4 Browser catalog explorer (design, not built)
+### 8.4 Browser catalog explorer
+
+Status: shipped as the static app in `explorer/`, served at https://explore.tensorseed.dev. The verification core is `tensorseed-wasm` on top of `tensorseed-verify`.
 
 Status: design only. Nothing in this section is implemented, and nothing here changes the formats or the CLI.
 

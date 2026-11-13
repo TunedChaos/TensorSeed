@@ -1,0 +1,26 @@
+{
+  "name": "tensorseed-explorer",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Tensorseed catalog explorer (SPEC 8.4).",
+  "scripts": {
+    "wasm": "bash scripts/build-wasm.sh",
+    "dev": "pnpm wasm && vite",
+    "build": "pnpm wasm && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "test": "playwright test"
+  },
+  "engines": {
+    "pnpm": ">=9"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "daisyui": "^5.8.0",
+    "svelte": "^5.57.3",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

@@ -102,7 +102,7 @@ models and datasets only. The official seeder and the first additional
 official catalog entries are already live (catalog revision 4, nine
 entries). Selective pulls, the new default download order, Hugging Face
 token login, and .deb/.rpm packages are on main and will ship in 0.2.0.
-Remaining work: multi-catalog, then the explorer.
+Remaining work: announce 0.2.0 once the explorer is on the official domain.
 
 - [x] Multi-catalog subscription: `[[catalogs]]` (name, publisher key, store
       id, base URL, chain check, optional label and priority); a single
@@ -113,7 +113,7 @@ Remaining work: multi-catalog, then the explorer.
       "N of M catalogs agree"; same commit with different hashes is a
       hard error unless `--catalog` is given
 - [x] Per-catalog takedowns; `tensorseed catalog add` / `remove` / `list`
-- [ ] Read-only catalog explorer at explore.tensorseed.dev (SPEC 8.4 and
+- [x] Read-only catalog explorer at explore.tensorseed.dev (SPEC 8.4 and
       18.2): Svelte 5 + TailwindCSS + DaisyUI (build-time, self-hosted,
       pnpm); wasm verification core from the existing Rust crates; no
       third party scripts; "use another catalog" form; agreement UI

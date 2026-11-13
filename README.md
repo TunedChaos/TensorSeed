@@ -2,7 +2,8 @@
 
 **Verifiable, chain anchored mirrors of open Hugging Face models, shared over BitTorrent v2.**
 
-Website: [tensorseed.dev](https://tensorseed.dev)
+Website: [tensorseed.dev](https://tensorseed.dev).
+Catalog explorer: [explore.tensorseed.dev](https://explore.tensorseed.dev).
 
 > **Status: 0.1.0, an early release.** Downloading and verifying works today
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
@@ -232,7 +233,9 @@ tensorseed completions fish | source   # fish, until the package is installed
 | `crates/tensorseed-core` | Manifest and catalog JSON types, `ts/v1/` keys, canonical JSON, SHA-256 and git blob hashing, directory verification |
 | `crates/tensorseed-hf` | Hugging Face Hub API client (repo info, tree, listings, backoff) and license policy |
 | `crates/tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback |
-| `crates/tensorseed-catalog` | `CatalogBackend` trait, signed entries and keys (minisign format), signed-file backend, Chia DataLayer backend, storage sinks |
+| `crates/tensorseed-verify` | Pure catalog verification: minisign, signed-file hash chain, and chain proofs (no network) |
+| `crates/tensorseed-catalog` | `CatalogBackend` trait, HTTPS and Chia I/O on top of `tensorseed-verify` |
+| `crates/tensorseed-wasm` | WebAssembly bindings for the explorer |
 | `crates/tensorseed-torrent` | BEP 52 v2 and hybrid torrent builder and parser (pure Rust), Merkle checks, librqbit seeding and swarm downloads |
 | `crates/tensorseed-serve` | Building blocks of `serve`: webseed HTTP server, health endpoint, NAT-PMP and UPnP port mapping, selection rules |
 | `crates/tensorseed-cli` | The `tensorseed` binary |
