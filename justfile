@@ -32,6 +32,11 @@ bin := "tensorseed"
 version := `sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1`
 dist_dir := "dist"
 
+# With Rust 1.100 and Zig as the linker, aarch64-pc-windows-gnullvm fails to
+# link crc-fast's dylib on missing _Unwind_* symbols. Zig ships libunwind for
+# this target, so ask for it explicitly. No other target uses this variable.
+export CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_RUSTFLAGS := "-C link-arg=-lunwind"
+
 # List recipes.
 default:
     @just --list --unsorted
