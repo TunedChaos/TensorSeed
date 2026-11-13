@@ -3,19 +3,22 @@
 Status: **draft for discussion**. Nothing in this document is implemented
 beyond the unsigned `ts.served-weights/0` placeholder already described in
 SPEC section 19.1 and [SELL-INFERENCE.md](../SELL-INFERENCE.md). Field
-names, command names, and the EAS schema string below are proposals. They
-are not a released schema.
+names, command names, header names, and the EAS schema string below are
+proposals. They are not a released schema.
 
 Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-Date: 2026-11-13.
+Date: 2026-11-13. Revised the same day: the primary live check is signed
+responses plus rare logprob challenges (section 5). Full-generation
+spot checks are a dispute tool (section 6).
 
 This draft is meant to be read with a marketplace partner. Tensorseed's
-part is deliberately small: a signed claim, helpers that never hold wallet
-keys, a reference-answer file, and a spot-check client. Stake custody,
+part is deliberately small: a signed claim, response signing on the
+seller's machine, helpers that never hold wallet or marketplace keys,
+offline reference generation, and a check client. Stake custody,
 adjudication, offer routing, and buyer-facing badges belong on the
-marketplace side. Tensorseed is token-neutral: it has no dependency on any
-marketplace token, does not hold or promote one, and does not require one
-to write, register, or check a claim.
+marketplace side. Tensorseed is token-neutral: it has no dependency on
+any marketplace token, does not hold or promote one, and does not
+require one to write, register, or check a claim.
 
 ---
 
@@ -27,18 +30,33 @@ strength:
 1. What does the seller *claim* to be serving (which catalog, which
    revision, which file or quantization, which endpoint)?
 2. Is that claim public, permanent, and revocable on a chain the
-   marketplace already uses?
-3. When someone challenges the endpoint, do the answers match a published
-   reference run of those exact weights, within a stated tolerance?
-4. (Optional, premium.) Does hardware attestation show that a measured
-   guest, on a confidential GPU, loaded those weights?
+   marketplace already uses, and does the named manifest hash really
+   appear in a signed Tensorseed catalog for that model?
+3. Can a given answer be attributed to that seller (signed responses)?
+4. Do rare, precomputed logprob challenges show that the live endpoint
+   behaves like those hashed weights?
+5. (Dispute only.) Do longer, full-generation checks still agree, if a
+   challenge is contested?
+6. (Optional, premium.) Does a hardware handshake at connection setup
+   show that a measured guest, on a confidential GPU, loaded those
+   weights?
 
-A chain cannot see inside a seller's server, so it cannot prove by itself
-what is running. What it can do is make the seller's claim public and
-bind it to a wallet, and (if the marketplace chooses) attach a deposit
-that the seller loses if a challenge succeeds. Even a signed claim proves
-what the seller asserts, not what actually runs. Layers 3 and 4 are how
-that gap is narrowed. This matches the limit already stated in SPEC 19.1.
+A catalog hash match is necessary and cheap. It proves the seller
+pointed at a real, signed revision. It does not prove those bytes are
+what answers the buyer: a seller could hold the real weights, pass a
+hash check, and still route traffic to a cheaper model.
+
+A chain cannot see inside a seller's server, so it cannot close that
+gap by itself. Signed responses make misrepresentation attributable.
+Rare logprob challenges, whose expected values are computed once
+offline and reused, test what is actually answering without a second
+live model running in parallel. Hardware attestation is the only true
+handshake: the check happens when the connection opens, not on every
+request.
+
+Even a signed claim proves what the seller asserts, not what actually
+runs. That limit is already stated in SPEC 19.1. Layers 5 and 8 are
+how the gap is narrowed.
 
 ## 2. What exists today (unreleased 0.3.0)
 
@@ -104,6 +122,8 @@ version 0 record:
   "public_base_url": "https://llm.example.com/v1",
   "files": [ { "path": "...", "size": 0, "sha256": "..." } ],
   "seller_wallet": "0x<40 lowercase hex>",
+  "response_key": { "alg": "ed25519", "pubkey": "<32-byte public key, 64 lowercase hex>" },
+  "logprobs": "required",
   "started_at": "2026-11-13T21:01:42Z",
   "created_at": "2026-11-13T21:01:42Z",
   "claim_sha256": "<sha256 of the canonical unsigned body, 64 lowercase hex>",
@@ -113,9 +133,10 @@ version 0 record:
 
 Notes on names, so this stays aligned with 19.1:
 
-- `catalog.manifest_sha256` is the manifest hash the task called "manifest
-  hash": the SHA-256 of the signed manifest value already stored in
-  version 0.
+- `catalog.manifest_sha256` is the manifest hash: the SHA-256 of the
+  signed manifest value already stored in version 0. A marketplace
+  should check that this hash is the signed catalog entry for `repo`
+  and `revision` before treating the claim as verified.
 - `entrypoint` is the quantization or file: `kind` is `gguf` with a
   relative `path`, or `kind` is `directory` for a safetensors checkpoint
   (same tagged enum `serve-inference` already writes).
@@ -128,6 +149,14 @@ Notes on names, so this stays aligned with 19.1:
 - `seller_wallet` is an Ethereum address, stored lowercase (no checksum
   mixed in) so the canonical bytes are unique. Verifiers accept an EIP-55
   checksum and normalize.
+- `response_key` is a dedicated Ed25519 public key used only to sign
+  responses (section 5.1). It is named in the claim so it is bound to
+  `seller_wallet`. It is not the catalog publisher key and not a
+  marketplace key. The matching secret stays on the seller's machine.
+- `logprobs` is `required` for the logprob-verified tier, or `none` if
+  the engine cannot return logprobs. A `none` offer may still carry a
+  signed claim and signed responses, but it is not in the verifiable
+  tier (section 5.6).
 - `started_at` is when this serving period began. `created_at` is when
   this document was written. They are often the same instant.
 - The catalog publisher key does not sign this document. The seller's
@@ -140,8 +169,8 @@ The unsigned body is the JSON object with every field above except
 `claim_sha256` and `sig`. Canonicalization is the same rule as SPEC 6.4:
 UTF-8, object keys sorted at every nesting level, no insignificant
 whitespace. Tensorseed already implements this in `tensorseed_core`
-(`to_canonical_vec`). Timestamps are RFC 3339 UTC. Hex hashes and the
-wallet address are lowercase.
+(`to_canonical_vec`). Timestamps are RFC 3339 UTC. Hex hashes, the
+wallet address, and `response_key.pubkey` are lowercase.
 
 ```
 unsigned          = canonical JSON of the object without claim_sha256 or sig
@@ -157,10 +186,13 @@ Verification:
 2. Rebuild the unsigned body, canonicalize it, and check `claim_sha256`.
 3. Recover the signer of `sig.value` over `eip191_message` and require it
    to equal `seller_wallet` (after lowercase normalization).
-4. Re-check `catalog.manifest_sha256` against a locally verified manifest
-   when one is available, and check that `files` match that manifest.
+4. Re-check `catalog.manifest_sha256` against a locally verified catalog
+   manifest for the same `repo` and `revision`, and check that `files`
+   match that manifest.
 5. Require `public_base_url` to use `https` when the claim will be
    published.
+6. Require `response_key.alg` to be `ed25519` and the public key to be
+   32 bytes.
 
 EIP-191 is the proposed default because Tensorseed can print the exact
 message and an external wallet can sign it, with no Tensorseed-held key.
@@ -172,12 +204,13 @@ Do not accept both algorithms in one schema revision.
 ### 3.3 What the claim does not prove
 
 The signature binds the seller wallet to a statement about a catalog
-revision, a file, and an endpoint. It does not prove that the process
-listening on that endpoint loaded those bytes, that it still does so
-an hour later, or that every request is served by the same weights.
-Changing the weights, the file, the endpoint, or the served model id
-requires a new claim. The previous claim should be revoked on chain
-(section 4.3).
+revision, a file, an endpoint, and a response-signing key. A catalog
+lookup can confirm that `manifest_sha256` is genuine. None of that
+proves that the process listening on the endpoint loaded those bytes,
+that it still does so an hour later, or that every request is served
+by the same weights. Changing the weights, the file, the endpoint,
+the served model id, or the response key requires a new claim. The
+previous claim should be revoked on chain (section 4.3).
 
 ---
 
@@ -218,7 +251,7 @@ the attestation carries a hash and the fields a marketplace index needs.
 Proposed schema string (exact characters, including spaces after commas):
 
 ```
-bytes32 claimSha256,string catalog,string repo,string revision,string servedModelId,string publicBaseUrl,string runtime,string entrypoint,uint64 startedAt
+bytes32 claimSha256,string catalog,string repo,string revision,string servedModelId,string publicBaseUrl,string runtime,string entrypoint,bytes32 responsePubkey,uint64 startedAt
 ```
 
 Proposed registration flags:
@@ -228,12 +261,13 @@ Proposed registration flags:
 
 `claimSha256` is the 32-byte SHA-256 of the canonical unsigned claim
 (the same value as `claim_sha256`). `entrypoint` is a short string such
-as `gguf:qwen2.5-1.5b-instruct-q4_k_m.gguf` or `directory`. `startedAt`
-is a Unix timestamp in UTC, equal to `started_at`.
+as `gguf:qwen2.5-1.5b-instruct-q4_k_m.gguf` or `directory`.
+`responsePubkey` is the 32-byte Ed25519 public key from `response_key`.
+`startedAt` is a Unix timestamp in UTC, equal to `started_at`.
 
 The attester of the EAS attestation must be `seller_wallet`. A reader
 rejects the pair if they differ. `refUID` is zero for a bare serving
-claim. A later hardware attestation (section 6) may point at this
+claim. A later hardware attestation (section 8) may point at this
 attestation's UID through `refUID`.
 
 The schema UID is assigned at registration time (it depends on the
@@ -252,8 +286,9 @@ without deleting the original record.
 The schema is registered as revocable so a seller can call `revoke` when:
 
 - they stop serving the endpoint;
-- they change weights, quantization, runtime, model id, or public URL
-  (those changes need a new claim and a new attestation);
+- they change weights, quantization, runtime, model id, public URL, or
+  the response-signing key (those changes need a new claim and a new
+  attestation);
 - they rotate the serving host but keep the same weights (new claim,
   new attestation, old one revoked).
 
@@ -263,7 +298,7 @@ that offer. An expired attestation (`expirationTime` set at attest time)
 should be treated the same way. This draft recommends `expirationTime = 0`
 (no automatic expiry) plus an operational habit of revoking promptly,
 rather than silent expiry, so a forgotten claim does not vanish without
-a trace. That choice is open (section 10).
+a trace. That choice is open (section 13).
 
 A seller must not leave two unrevoked attestations for the same
 `publicBaseUrl` and `servedModelId` with different `claimSha256` values.
@@ -306,7 +341,7 @@ unknown and keep registration on Base.
 
 ### 4.5 What Tensorseed will and will not send
 
-`tensorseed attest-serving` (section 8) prints the EAS `attest` calldata
+`tensorseed attest-serving` (section 11) prints the EAS `attest` calldata
 (to, data, and a human decode of the fields) for an external wallet or
 a marketplace helper to submit. Tensorseed does not hold a private key,
 does not talk to a wallet service, and does not depend on any token to
@@ -314,45 +349,146 @@ build that calldata. Gas is paid by the seller's own wallet.
 
 ---
 
-## 5. Layer 3: stake and spot checks
+## 5. Primary live check: signed responses and rare logprob challenges
 
-Layer 2 makes the claim public. Layer 3 tests whether the live endpoint
-behaves like the claimed weights. This is statistical, not a proof.
+This is the main approach. It has two parts that work together.
 
-### 5.1 Why exact match is the wrong test
+- **Signed responses** prove which seller answered a given request, and
+  make a false claim a public, attributable offence. They do not prove
+  which model produced the answer.
+- **Rare logprob challenges** test whether the live endpoint matches
+  the claimed weights. Expected token logprobs are computed once,
+  offline, from a verified copy of that exact manifest revision and
+  entrypoint, then reused by every marketplace. There is no second
+  model running in parallel with production traffic.
 
-Greedy decoding (`temperature` 0, a fixed seed, `top_k` 1) is
-theoretically deterministic, but production inference often is not.
-Thinking Machines' September 2025 note
-([Defeating Nondeterminism in LLM Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/))
-shows that temperature 0 APIs, and even self-hosted stacks such as
-vLLM, still vary in practice. The main cause they identify is that
-kernels are not batch-invariant: the numeric reduction order changes
-with batch size, and a server's batch size changes with load. Floating
-point non-associativity is real, but a single matrix multiply on the
-same data is bit-identical; the load-dependent batch is what makes
-successive requests diverge.
+Together they are much cheaper than running a shadow copy of the model
+on every (or even many) buyer requests. Cost arithmetic is in section 7.
+Full-generation comparisons are reserved for disputes (section 6).
 
-Two further gaps matter for Tensorseed mirrors:
+### 5.1 Signed responses
 
-- Different quantizations (for example two GGUF files in the same repo)
-  are different entrypoints and will not match each other's tokens or
-  logprobs. Each reference file is bound to one entrypoint.
-- Different engines (llama.cpp vs vLLM), GPU models, and driver or
-  kernel versions will not be bit-identical even on the same
-  unquantized checkpoint.
+`serve-inference` starts llama.cpp or vLLM and is not, today, on the
+request path after the runtime is up. The proposed place to sign is a
+small signing proxy that Tensorseed can start in front of the runtime,
+on loopback, with the TLS reverse proxy in front of that:
 
-So a challenge compares answers with a stated tolerance, and a failure
-has to be repeatable, not a one-off numeric wobble.
+```
+client or marketplace
+  -> TLS reverse proxy
+  -> tensorseed signing proxy (loopback)
+  -> llama.cpp or vLLM (loopback)
+```
 
-### 5.2 Reference answers file
+The signing key never leaves the seller's machine. Tensorseed does not
+hold marketplace keys, and the marketplace does not hold the seller's
+response key. Rotating the key means a new claim and a new attestation.
 
-Published per mirrored revision and entrypoint, bound to the same
-`manifest_sha256` as the claim. Proposed schema `ts.reference-answers/1`:
+#### Headers
+
+Proposed request header, set by the buyer or by the marketplace before
+it forwards the call:
+
+| Header | Value |
+|---|---|
+| `X-Tensorseed-Request-Id` | Opaque id unique to this call (a UUID, or 32 random bytes as 64 lowercase hex) |
+
+Proposed response headers, set by the signing proxy:
+
+| Header | Value |
+|---|---|
+| `X-Tensorseed-Claim-SHA256` | `claim_sha256` (64 lowercase hex) |
+| `X-Tensorseed-Request-Id` | Echo of the request id |
+| `X-Tensorseed-Served-Model` | `served_model_id` from the claim |
+| `X-Tensorseed-Timestamp` | RFC 3339 UTC when the signature was made |
+| `X-Tensorseed-Body-SHA256` | SHA-256 of the exact response body bytes the runtime returned, 64 lowercase hex |
+| `X-Tensorseed-Signature` | Ed25519 signature over the canonical digest, 64 bytes as 128 lowercase hex |
+
+If the request had no `X-Tensorseed-Request-Id`, the proxy mints one and
+echoes it. Verifiers that sent an id must require a byte-for-byte echo.
+
+#### Canonical digest
+
+The proxy signs the UTF-8 bytes of this exact message (field order is
+fixed, no extra whitespace, hex lowercase, a newline after each line
+including the last):
+
+```
+ts.response-sig/1
+claim_sha256=<64 hex>
+request_id=<echoed id>
+served_model_id=<id>
+timestamp=<RFC 3339 UTC>
+body_sha256=<64 hex>
+```
+
+The signature is raw Ed25519 (the algorithm already used inside
+Tensorseed's minisign implementation) over those message bytes, with
+`response_key`.
+
+`body_sha256` covers the runtime body only: the OpenAI-compatible JSON
+as returned by llama.cpp or vLLM, before any marketplace annotation.
+A gateway that adds its own fields (for example a billing object) must
+hash and verify the seller body first, then add fields. Verifying after
+mutation would break honest signatures.
+
+#### Who verifies, and how
+
+A buyer or a marketplace:
+
+1. Loads the `ts.served-weights/1` claim for `X-Tensorseed-Claim-SHA256`
+   (from the listing, or by fetching a published copy) and verifies it
+   as in section 3.2, including the catalog hash match.
+2. Checks that `X-Tensorseed-Served-Model` equals the claimed
+   `served_model_id` and the model id that was requested.
+3. Checks that `X-Tensorseed-Request-Id` equals the id that was sent.
+4. Checks that the timestamp is within a skew window (proposed: 5
+   minutes) and not unreasonably in the future.
+5. Recomputes SHA-256 of the seller response body and checks
+   `X-Tensorseed-Body-SHA256`.
+6. Rebuilds the canonical digest and verifies `X-Tensorseed-Signature`
+   with `response_key.pubkey`.
+7. Rejects a repeated `X-Tensorseed-Request-Id` for the same claim
+   (replay). Marketplaces should record recent ids.
+
+A missing or invalid signature on an offer that advertised signing is a
+hard failure. Signed responses are cheap (one Ed25519 signature per
+reply, on the CPU) and should be on by default for any verified listing.
+
+What this does not prove: a seller can still run a different model and
+sign that output. The value is attribution. Once logprob challenges
+(or a dispute check) show a mismatch, the signed replies are evidence
+tied to that seller's key and wallet, not an anonymous host.
+
+### 5.2 Logprob challenges
+
+The marketplace (or another checker it trusts) occasionally sends the
+seller a challenge that looks like an ordinary `chat/completions`
+request, but whose expected next-token logprobs are already known.
+
+Properties:
+
+- The expected values are generated once per catalog revision and
+  entrypoint, offline, from a verified copy of the weights, with
+  `tensorseed reference-logprobs` (section 11). They are reused by
+  every marketplace and for the life of that set. There is no live
+  parallel runner sitting beside production traffic.
+- Each challenge asks for a short completion (`max_tokens` 1, or a
+  few) with `temperature` 0, a fixed `seed`, `logprobs` true, and
+  `top_logprobs` set (proposed: 5). That is one forward pass, on the
+  order of a prefill plus one or a few output tokens, not a long
+  generation.
+- Challenges are sent as additional requests in the seller's stream,
+  not by replacing a buyer's prompt. The buyer always gets their own
+  answer.
+- At a rate such as 1 in 1000 seller requests, the added inference
+  cost is well under 1% (section 7).
+
+Proposed expectation file, `ts.reference-logprobs/1`:
 
 ```json
 {
-  "schema": "ts.reference-answers/1",
+  "schema": "ts.reference-logprobs/1",
   "manifest_sha256": "<same as the claim>",
   "repo": "<org>/<name>",
   "revision": "<commit>",
@@ -360,146 +496,272 @@ Published per mirrored revision and entrypoint, bound to the same
   "sampling": {
     "temperature": 0,
     "seed": 1,
-    "top_k": 1,
-    "max_tokens": 32,
+    "max_tokens": 1,
     "logprobs": true,
     "top_logprobs": 5
   },
   "generator": {
+    "tool": "tensorseed reference-logprobs",
     "runtime": "llama-cpp",
     "engine_version": "<string>",
     "note": "A reference run, not a bit-identical guarantee."
   },
+  "set_hash": "<sha256 of the canonical prompts and expected values>",
   "prompts": [
     {
-      "id": "ra-0001",
+      "id": "lp-0001",
       "messages": [ { "role": "user", "content": "..." } ],
-      "tokens": ["...", "..."],
-      "logprobs": [ [ { "token": "...", "logprob": 0.0 } ] ]
+      "expected": [
+        {
+          "token": "...",
+          "logprob": 0.0,
+          "top_logprobs": [ { "token": "...", "logprob": 0.0 } ]
+        }
+      ]
     }
   ]
 }
 ```
 
-Sampling is fixed and must be sent unchanged to the seller (OpenAI
-compatible `chat/completions` fields: `temperature`, `seed`,
-`max_tokens`, `logprobs`, `top_logprobs`; `top_k` where the runtime
-accepts it). The prompt set should mix short factual items, a little
-code, and a short structured extraction task, so a swapped or heavily
-compressed model shows up quickly. A second, held-out set (not
-published with the mirror) makes it harder for a seller to special-case
-the public prompts; who holds that set is a marketplace decision.
+Reference values are per entrypoint. Two GGUF quantizations of the same
+repo are two files, two `set_hash` values, and must not be compared to
+each other. A safetensors directory is its own entrypoint.
 
-Who produces the file is an open question (section 10). Options: the
-catalog publisher, a well-known reference runner, or the first seller,
-with later cross-checks. The file should be signed (publisher minisign,
-or the same wallet scheme as the claim) so it cannot be quietly
-replaced.
+#### Keeping the set secret, then revealing it
 
-`tensorseed reference-answers` (section 8) generates this file from a
-verified local copy.
+A public, fixed prompt set can be special-cased. The live challenge set
+is therefore held by the marketplace (or by a shared checker the
+marketplace names), not published with the mirror.
 
-### 5.3 Comparison
+To keep the checker honest, use commit-reveal:
 
-For each prompt, send the same messages and sampling to
-`<public_base_url>/chat/completions` with the claimed `served_model_id`.
-Then:
+1. When a set is created, publish only `set_hash` (the SHA-256 of the
+   canonical `ts.reference-logprobs/1` object, or a Merkle root of the
+   prompt records) and the manifest hash it is bound to. The prompts
+   and expected logprobs stay secret.
+2. Use that set for a limited period, then retire it and switch to a
+   new set with a new published hash.
+3. After retirement, or when a dispute needs it, reveal the file.
+4. Anyone can then run `tensorseed reference-logprobs` against a
+   verified copy of the same revision and entrypoint and check that
+   the revealed expectations match what the published tool produces
+   (and that `set_hash` matches). The tool is part of Tensorseed, so
+   the method is auditable after reveal.
 
-1. **Token agreement.** Compare the returned token sequence to the
-   reference (or the argmax of the returned logprobs, when the text
-   tokenizer would otherwise disagree). Allow a small number of token
-   mismatches per prompt (proposed starting point: zero mismatches on
-   short prompts of 8 tokens or fewer, and at most one mismatch on
-   longer ones). If that is too strict across engines, relax by
-   documented agreement, not silently.
-2. **Logprob distance.** For each position, compare the logprob of the
-   reference token, and the top-k list when present. A proposed starting
-   threshold is a mean absolute deviation of 0.5 nats or less on the
-   reference-token logprobs, averaged over the completion, with a cap
-   on per-token spikes. The number is a starting point for calibration,
+Rotation should happen often enough that a revealed set is no longer
+the live set. Who holds the secret copy, and whether several
+marketplaces share one checker, is an open question (section 13).
+
+#### Indistinguishability from normal traffic
+
+If every challenge were the only request that set `logprobs: true` and
+`max_tokens: 1`, a cheating seller could detect the pattern and run the
+real weights only then. Challenges should therefore:
+
+- use the same `served_model_id`, the same URL, and the same upstream
+  credential as ordinary traffic;
+- vary message shape and length, and not always use `max_tokens: 1`;
+- carry no checker-only header the seller can see (the request id is
+  fine, because honest clients send one too);
+- be mixed with cover: the marketplace may also request `logprobs` on
+  a small fraction of real buyer calls, so logprobs are not a signal
+  by themselves. Asking an engine for logprobs on a request it is
+  already serving does not take a second forward pass; it may only
+  enlarge the response.
+
+Perfect indistinguishability is not realistic. The practical bar is
+that a seller cannot cheaply filter challenges out of the stream.
+
+#### Tolerances and engines that cannot return logprobs
+
+The same numeric caveats as any temperature 0 comparison still apply.
+Thinking Machines' September 2025 note
+([Defeating Nondeterminism in LLM Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/))
+shows that temperature 0 APIs, and even self-hosted stacks such as
+vLLM, still vary in practice, mainly because kernels are not
+batch-invariant. Different engines, GPU models, and driver versions
+will not be bit-identical even on the same unquantized checkpoint.
+
+So a challenge compares logprobs with a stated tolerance, and a failure
+has to be repeatable:
+
+1. Look up the expected logprob of each reference token (and the
+   top-k list when present) in the seller's `logprobs` payload.
+2. Proposed starting threshold: a mean absolute deviation of 0.5 nats
+   or less on the reference-token logprobs for that challenge, with a
+   cap on per-token spikes. This is a starting point for calibration,
    not a claim about any one model.
-3. **Repeat on failure.** A single failing request is not enough, because
-   of section 5.1. The checker repeats the same prompt a small number of
-   times (proposed: three) and asks the marketplace to reproduce it
-   before a stake is touched.
-4. **Hard failures, no tolerance.** Wrong model id, HTTP error, refusal
-   to return logprobs when the listing promised them, or an answer
-   distribution that looks like a clearly different model (for example
-   a 1B stand-in for a 70B) are immediate evidence.
+3. Repeat a failing challenge a small number of times (proposed:
+   three) before it counts as evidence.
+4. Hard failures, no tolerance: wrong model id, HTTP error, missing
+   `logprobs` on a listing that claimed `logprobs: "required"`, or a
+   distribution that is clearly a different model (for example a 1B
+   stand-in for a 70B).
+
+An engine or listing that cannot return logprobs cannot be in the
+logprob-verified tier. It may still be listed with a signed claim and
+signed responses (`logprobs: "none"`). Buyers should see that as a
+weaker, "unverified" (or "claim only") mark. There is no honest way to
+run this primary check without logprobs.
 
 A swapped model, a different quantization, or a much smaller stand-in
-is expected to fail (2) quickly even when (1) occasionally passes. A
-honest seller on a different GPU than the reference machine should
-usually pass (2) after calibration. That last sentence needs real
-measurements before any deposit is at risk.
+is expected to fail the logprob distance quickly. An honest seller on a
+different GPU than the reference machine should usually pass after
+calibration. That last sentence needs real measurements before any
+deposit is at risk.
 
-### 5.4 Challenge flow
+### 5.3 Challenge flow
 
-1. A challenger (the marketplace itself, a buyer, or a third party the
-   marketplace allows) selects prompts from the published set and, if
-   one exists, the held-out set.
-2. The challenger calls the seller's public endpoint, or the
-   marketplace's proxy if that is the only reachable URL, with the
-   fixed sampling.
-3. The challenger compares as in 5.3 and, on a repeatable failure,
-   builds an evidence bundle.
-4. The marketplace repeats the check from its own infrastructure when
-   it can reach the endpoint, then decides.
-5. If the challenge is upheld, the marketplace applies whatever stake
-   or listing penalty it has defined. If it is rejected, the
-   challenger's own bond (if any) may be taken, so griefing is not
-   free.
+1. At a low rate, the marketplace picks a secret prompt from the
+   current committed set for that `manifest_sha256` and entrypoint,
+   and sends it to the seller's `base_url` as an ordinary
+   `chat/completions` call, with the request id and sampling above.
+2. It verifies the signed response (section 5.1), then compares
+   logprobs (section 5.2).
+3. On a repeatable failure it stores evidence (section 5.4), may
+   pause the offer, and starts whatever adjudication it has defined.
+4. On a formal dispute it may also run a full-generation check
+   (section 6) and, after the set is retired, reveal the challenge
+   file so others can audit the expectations.
 
-Health checks (liveness of `/models`) and spot checks (weight identity)
-are different. A live endpoint can still be serving the wrong weights.
+Health checks (liveness of `/models`) and logprob challenges (weight
+identity) are different. A live endpoint can still be serving the
+wrong weights.
 
-### 5.5 Evidence format
+### 5.4 Evidence format
 
 Proposed bundle, `ts.challenge-evidence/1`, as canonical JSON:
 
 - the claim (`ts.served-weights/1`) and its EAS UID and transaction;
-- the reference-answers file identity (`manifest_sha256`, entrypoint,
-  prompt ids);
+- the `set_hash` and prompt ids (not necessarily the secret prompts
+  until reveal);
 - each request (URL, headers with secrets removed, body) and each
-  response (status, body, time);
+  response (status, headers, body, time), including the signature
+  headers;
 - the comparison results, including repeat counts;
-- the challenger wallet or marketplace operator id, and a UTC timestamp;
+- the challenger identity and a UTC timestamp;
 - a signature over the canonical bundle by the challenger.
 
-API keys and upstream keys never appear in evidence. The marketplace
-already stores an optional upstream key for proxying; challenge requests
-should use a dedicated checker credential.
+API keys and upstream keys never appear in evidence.
 
-### 5.6 Stake custody and adjudication
+### 5.5 Stake custody and adjudication
 
 Tensorseed does not hold deposits, does not slash, and does not decide
-disputes. If a marketplace wants a financial backstop, it defines:
+disputes. If a marketplace wants a financial backstop, it defines that
+separately from its existing buyer prepaid escrow and seller settlement
+of earnings. Kompute's public docs today describe those buyer and
+settlement rails, not a seller listing bond. A seller deposit for
+verified serving would be new marketplace work, not a change to those
+rails, and not something Tensorseed can do on its own.
 
-- what asset is locked (this draft does not require any particular
-  token; a stable prepaid rail the marketplace already uses is the
-  obvious choice);
-- how much, and whether it scales with volume or is a flat listing
-  bond;
-- who may challenge, and whether a challenger posts a bond;
-- the time window to reproduce a failure;
-- who rules, and how a seller appeals;
-- what happens on a seller-initiated revoke (the deposit should be
-  returnable after a quiet period, not frozen forever).
+This draft does not require any particular token. A stable prepaid rail
+the marketplace already uses is the obvious choice if a bond is added.
 
-Kompute's public docs today describe *buyer* prepaid escrow and seller
-settlement of earnings, not a seller listing bond or slashing. A seller
-deposit for verified serving would be new marketplace work, not an
-extension Tensorseed can do on its own.
+### 5.6 Tiers, in short
+
+| Tier | What is required | What a buyer can believe |
+|---|---|---|
+| Claim only | Valid `ts.served-weights/1` and catalog hash match; optional signed responses | The seller claimed these weights. The catalog hash is real. |
+| Logprob-verified | The above, `logprobs: "required"`, signed responses, and passing rare challenges | In addition, the live endpoint has been matching precomputed logprobs of those weights, statistically. |
+| Hardware-attested | The above (or at least the claim), plus section 8 | A measured confidential guest reported loading those weights at handshake time. |
 
 ---
 
-## 6. Layer 4: hardware attestation (premium tier)
+## 6. Secondary tool: full-generation checks for disputes
 
-This tier is optional. It is the strongest practical path today, and it
-needs specific hardware and a measured software stack that most sellers
-will not have.
+Longer reference-answer comparisons (many output tokens, token
+agreement plus logprobs over a full completion) are useful, but they
+are the wrong default for live traffic. They cost more per check, and
+they are easy to mistake for "a second model running all the time."
 
-### 6.1 What the hardware actually provides
+They are not that, even when used. A `ts.reference-answers/1` file is
+also generated once, offline, from the verified copy, and reused. The
+cost is amortized. A live shadow model that answers every buyer prompt
+in parallel would roughly double inference cost; this design does not
+do that.
+
+Use full-generation checks:
+
+- when a logprob challenge is contested and needs a richer comparison;
+- when calibrating tolerances for a new engine or GPU;
+- optionally, as a rare audit, far less often than the 1-in-1000
+  logprob probes.
+
+The file shape is `ts.reference-answers/1`, bound to `manifest_sha256`
+and the entrypoint, with fixed sampling (`temperature` 0, a fixed seed,
+`logprobs` true, a larger `max_tokens`). `tensorseed reference-answers`
+generates it. `tensorseed check-endpoint` can run this mode with a
+flag, defaulting to logprob challenges.
+
+Comparison rules (token agreement, logprob distance, required repeats,
+hard failures) are the same idea as section 5.2, applied to a longer
+sequence. The same numeric caveats apply. These files may be published
+with the mirror, because they are not the secret live challenge set;
+the secret set stays in `ts.reference-logprobs/1` until reveal.
+
+---
+
+## 7. Cost
+
+This section is arithmetic under stated assumptions. It is not a
+benchmark. No measured tokens-per-second or dollar figures are claimed.
+
+Let:
+
+- `C` be the average billed cost of one ordinary buyer request (input
+  tokens plus output tokens, at the offer price);
+- `C_ch` be the cost of one logprob challenge (a short prefill plus
+  `max_tokens` of 1 or a few);
+- `p` be the fraction of seller requests that are challenges;
+- `N` be the number of prompts in a challenge set;
+- `C_pre` be the one-time cost to generate that set offline
+  (`N * C_ch`, once per revision and entrypoint);
+- `C_sign` be the cost of one Ed25519 signature over a short message.
+
+Then:
+
+- Added inference cost on the live path is `p * C_ch` per ordinary
+  request, or `(p * C_ch) / C` as a fraction of buyer inference.
+- If we take a conservative upper bound `C_ch = C` (a challenge costs
+  as much as an average buyer request, which will usually be an
+  overestimate, because challenges are short), then `p = 1/1000`
+  adds 0.1% to inference cost.
+- If a typical buyer request is much longer than a one-token
+  challenge, `C_ch` is a fraction of `C`, and the overhead is
+  correspondingly lower (for example 0.01% if `C_ch` is `C/10`).
+- Cover traffic that asks for logprobs on a real buyer request does
+  not add a second forward pass. It may add some response bytes. That
+  is not counted as `p * C_ch`.
+- Precomputation `C_pre` is paid once per revision and entrypoint,
+  then shared by every marketplace and every seller of that
+  quantization for the life of the set. It is not a per-request cost.
+- `C_sign` is a CPU signature per response. Relative to a GPU forward
+  pass it is treated as negligible.
+- A full-generation dispute check costs more than `C_ch` (it may be
+  on the order of `C` or several times `C`, depending on
+  `max_tokens`). It is incurred only when a dispute or rare audit
+  needs it, not at rate `p`.
+- A live parallel runner that generated a reference for every buyer
+  prompt would add about 100% to inference cost. That is the path
+  this design avoids.
+- Hardware attestation (section 8) is paid at connection setup, not
+  per request.
+
+The 1-in-1000 rate is a starting policy, not a measured optimum. If
+challenges are cheap relative to `C`, a marketplace can raise `p`
+and still stay well under 1%.
+
+---
+
+## 8. Hardware attestation (premium tier)
+
+This is the only true handshake in the design: the relying party
+checks a hardware-signed report when the connection (or session)
+opens, and does not need a per-request inference challenge to
+establish what was loaded. It is optional. It needs specific hardware
+and a measured software stack that most sellers will not have.
+
+### 8.1 What the hardware actually provides
 
 NVIDIA Confidential Computing runs the GPU in a trusted execution
 environment with a hardware root of trust. When the GPU boots in
@@ -533,7 +795,7 @@ SEV-SNP) plus GPU evidence (H100, H200, or Blackwell in CC or PPCIE
 mode), appraised against current reference values and certificate
 revocation, plus a binding to the weights.
 
-### 6.2 Binding the weights hash
+### 8.2 Binding the weights hash
 
 NVIDIA's report measures the GPU identity, firmware, driver, and
 confidential computing mode. It does not, by itself, name a Tensorseed
@@ -551,9 +813,11 @@ manifest hash. The binding has to be built in the measured guest:
 4. Only then is the endpoint advertised under the layer-1 claim.
 
 Without step 3, a seller could attest a genuine confidential GPU and
-still load different weights inside it.
+still load different weights inside it. With it, hash matching is
+real: the protected machine hashes the weights it actually loaded,
+and that hash is compared to the catalog.
 
-### 6.3 Posting a digest on chain
+### 8.3 Posting a digest on chain
 
 The full CPU and GPU reports are too large and too sensitive to put in
 an EAS payload. Proposed second schema, also revocable, registered on
@@ -572,7 +836,7 @@ layer-2 serving claim. Verifiers fetch the full evidence from a URL
 the seller publishes, recompute the digest, and only then trust the
 row.
 
-### 6.4 Who does this today
+### 8.4 Who does this today
 
 This draft only names operators when a public source confirms the
 relevant piece.
@@ -594,7 +858,19 @@ inference marketplace already does that for listed offers.
 
 ---
 
-## 7. Layer 5: zkML is not a path for this design today
+## 9. Weight fingerprinting (not used for mirrors)
+
+A publisher who trains a model themselves can, in principle, embed a
+hidden trigger so the model gives a known odd reply, or otherwise
+watermark the weights, and later use that as a fingerprint. That only
+applies to models the publisher trains and releases (for example a
+first-party fine-tune). It does not help for ordinary Hugging Face
+mirrors, which is most of a Tensorseed catalog, and it is not part of
+the primary check. This draft does not rely on it.
+
+---
+
+## 10. zkML is not a path for this design today
 
 Zero-knowledge proofs of inference (often called zkML) would, in
 principle, prove that a given output came from a named model without a
@@ -618,45 +894,52 @@ another EAS `refUID`, the same way hardware reports would.
 
 ---
 
-## 8. What Tensorseed implements, and what the marketplace implements
+## 11. What Tensorseed implements, and what the marketplace implements
 
 Tensorseed stays small, offline-verifiable, and token-neutral. It never
-holds a seller or marketplace private key.
+holds a seller or marketplace private key. Response-signing secrets
+stay on the seller's machine.
 
-### 8.1 Tensorseed (proposed commands, not yet built)
+### 11.1 Tensorseed (proposed commands, not yet built)
 
 | Command | Role |
 |---|---|
-| `tensorseed claim-serving <dir\|repo_id>` | After a verified copy exists, write the unsigned `ts.served-weights/1` body, compute `claim_sha256`, and print the exact EIP-191 message. `--wallet` sets `seller_wallet`. `--sig 0x...` verifies the signature and writes the signed file. |
-| `tensorseed attest-serving <claim.json>` | Check the claim, then print EAS calldata for Base (contract `0x4200…0021`, encoded `attest` data, and a human summary). `--broadcast` is out of scope; an external wallet or the marketplace submits the transaction. |
-| `tensorseed reference-answers <dir>` | Run the verified copy under the chosen runtime with the fixed sampling, and write `ts.reference-answers/1`. |
-| `tensorseed check-endpoint` | Fetch or accept a claim and a reference file, call the public endpoint, and exit with a comparison report (and, optionally, a `ts.challenge-evidence/1` bundle). No stake is moved. |
+| `tensorseed claim-serving <dir\|repo_id>` | After a verified copy exists, write the unsigned `ts.served-weights/1` body (including `response_key`), compute `claim_sha256`, and print the exact EIP-191 message. `--wallet` sets `seller_wallet`. `--sig 0x...` verifies the signature and writes the signed file. `--response-key` names a local public key; Tensorseed can also generate a key pair on the seller's machine and refuse to print or upload the secret. |
+| `tensorseed attest-serving <claim.json>` | Check the claim, then print EAS calldata for Base (contract `0x4200...0021`, encoded `attest` data, and a human summary). `--broadcast` is out of scope; an external wallet or the marketplace submits the transaction. |
+| `tensorseed reference-logprobs <dir>` | From a verified local copy, generate `ts.reference-logprobs/1` for that entrypoint: the secret (or later revealed) challenge expectations. Prints `set_hash` so a marketplace can commit to the set without publishing the prompts yet. |
+| `tensorseed reference-answers <dir>` | Generate the longer `ts.reference-answers/1` file used for disputes and calibration, also offline and amortized. |
+| `tensorseed check-endpoint` | Default: verify signed responses and run logprob challenges against a claim and a `ts.reference-logprobs/1` file (or a revealed set). A flag runs the full-generation dispute mode instead. Writes an optional `ts.challenge-evidence/1` bundle. No stake is moved. |
+| `tensorseed serve-inference` (extension) or `tensorseed sign-responses` | Start (or run standalone) the loopback signing proxy in front of the runtime, using the local response key. The secret key never leaves the seller host and is never sent to Tensorseed developers or to a marketplace. |
 
 `serve-inference` can later gain a flag to write a version 1 body and
-pause for a signature, but version 0 stays the default until this
-schema is accepted.
+pause for a wallet signature, but version 0 stays the default until
+this schema is accepted.
 
-All four commands use only the local catalog, the local copy, and
-public HTTP. None of them take a private key flag, talk to a chain RPC
-with a signer, or mention a token.
+All of these use only the local catalog, the local copy, local keys,
+and public HTTP. None of them take a marketplace private key, talk to
+a chain RPC with a signer, or mention a token.
 
-### 8.2 Marketplace
+### 11.2 Marketplace
 
 The marketplace, not Tensorseed, would:
 
 - register the EAS schema on Base and publish the UID;
 - accept a claim and an attestation UID when a seller lists an offer,
   and check that the attester, model id, and `public_base_url` match
-  the listing;
-- show a verified-serving mark on offers that have an unrevoked
-  attestation, and hide or down-rank ones that are revoked or stale;
-- decide whether routing may prefer, or require, a verified claim when
+  the listing, and that `manifest_sha256` is in the signed catalog;
+- verify signed responses on the proxy path (hash the seller body
+  before adding any marketplace fields);
+- hold the secret logprob set, publish `set_hash`, rotate and reveal,
+  and inject rare challenge requests into the seller's stream without
+  altering buyer prompts or the existing billing ledger;
+- show the tier (claim only, logprob-verified, hardware-attested) on
+  offers, and hide or down-rank revoked or failing ones;
+- decide whether routing may prefer, or require, a verified tier when
   several sellers list the same model id;
-- run or accept spot checks, store evidence, and adjudicate;
-- if it wants a financial backstop, design seller deposits and slashing
-  (not part of today's public Kompute billing, which is buyer prepaid
-  escrow plus settlement of earnings);
-- optionally, accept a layer-4 hardware attestation as a higher tier.
+- store evidence and adjudicate; run section 6 checks on dispute;
+- if it wants a financial backstop, design seller deposits without
+  reworking existing buyer escrow or settlement rails;
+- optionally, accept a section 8 hardware attestation as a higher tier.
 
 Kompute is the intended first partner for that work. The public product
 shape this draft assumes is the one in [kompute.gg/docs](https://kompute.gg/docs):
@@ -668,58 +951,72 @@ marketplace developers.
 
 ---
 
-## 9. Threat model
+## 12. Threat model
 
 | Threat | What stops it | What remains |
 |---|---|---|
-| Seller lists a model id that does not match the weights they run | Layer 3 spot checks against reference answers; layer 4 if present | Checks are statistical; a seller who cheats only on rare requests may be missed |
+| Seller lists a model id that does not match the weights they run | Catalog hash match, plus rare logprob challenges; hardware handshake if present | Challenges are statistical; a seller who cheats only on rare requests may be missed, which is why the rate `p` is a policy choice |
+| Seller holds the real weights but serves a cheaper model | Logprob challenges (and dispute checks). Hash match alone does not catch this | Same statistical limit |
 | Seller signs a claim for weights they never loaded | Same as above. The claim alone does not catch this | Buyers who trust only layer 2 are exposed |
-| Seller changes weights after attesting | Revoke-and-replace rule; periodic spot checks; layer 4 re-attestation on guest restart | A window between the change and the next check |
-| Seller special-cases the public prompt set | Held-out prompts; periodic refresh of the public set | Held-out prompts have to stay secret and be rotated |
-| False failure from GPU or batch nondeterminism | Fixed sampling, tolerances, and required repeats (section 5.1, 5.3) | Tolerances that are too loose miss cheats; too tight punish honest sellers |
-| Different quantization served than claimed | Entrypoint-bound reference files; logprob distance | None, if the reference is present and logprobs are required |
-| Stolen seller wallet signs a claim for someone else's host | Marketplace already binds offers to the signed-in wallet; it should also require control of the `base_url` (existing health check, plus TLS) | A stolen key is still a stolen identity; wallet hygiene is out of band |
+| Seller changes weights after attesting | Revoke-and-replace rule; ongoing challenges; hardware re-attestation on guest restart | A window between the change and the next challenge |
+| Seller special-cases the live challenge set | Secret sets, rotation, commit-reveal, and cover logprobs on real traffic (section 5.2) | Perfect indistinguishability is not claimed |
+| Seller runs the real model only when `logprobs` is set | Cover: some real buyer requests also ask for logprobs; challenges vary in shape | A sophisticated filter may still exist; dispute checks and hardware help |
+| False failure from GPU or batch nondeterminism | Fixed sampling, tolerances, and required repeats | Tolerances that are too loose miss cheats; too tight punish honest sellers |
+| Different quantization served than claimed | Per-entrypoint reference files; logprob distance | None, if the set is present and logprobs are required |
+| Engine cannot return logprobs | Offer is claim-only / unverifiable tier, not logprob-verified | Buyers must see the weaker mark |
+| Stolen response key or stolen seller wallet | Key lives only on the seller host; rotation is a new claim; marketplace binds offers to the signed-in wallet | A stolen key is still a stolen identity; wallet and host hygiene are out of band |
+| Replay of a signed good response on a later request | Unique `X-Tensorseed-Request-Id` bound in the digest; verifiers reject reuse | Callers must actually send unique ids and check the echo |
+| Marketplace annotates the response and breaks the signature | Verify and hash the seller body before adding fields | Implementations that hash too late will false-fail |
 | Replay of an old attestation after the seller moved | `public_base_url` is inside the signed claim and the EAS payload; revoke on move | A forgotten unrevoked attestation can linger until noticed |
-| Marketplace as a dishonest adjudicator | Evidence bundles are public and reproducible with `check-endpoint` | A marketplace that censors evidence or never runs checks cannot be fixed by Tensorseed |
+| Marketplace as a dishonest adjudicator | Commit-reveal of `set_hash`; evidence bundles; anyone can regenerate expectations with `reference-logprobs` after reveal | A marketplace that never runs checks cannot be fixed by Tensorseed |
 | Griefing challenges | Challenger bond; required repeats; marketplace reproduction | Policy has to be written and enforced |
-| Upstream key or buyer key leaks into evidence | Evidence format forbids secrets; checkers use a dedicated credential | Operator error is still possible |
+| Upstream key or buyer key leaks into evidence | Evidence format forbids secrets | Operator error is still possible |
 | Forged hardware report or stale TCB | Appraise against NVIDIA / CPU vendor roots and current revocation; require both CPU and GPU evidence | Side channels and unmeasured guest software remain, per NVIDIA's threat model |
 | Claim registered on the wrong chain or a fake EAS | Tensorseed defaults to the official Base predeploys in section 4.1 | A copy of EAS on another chain is only useful after a bytecode and operator check |
 
 ---
 
-## 10. Open questions for the marketplace discussion
+## 13. Open questions for the marketplace discussion
 
 1. Who registers the EAS schema on Base, and which wallet owns that
    transaction? Tensorseed can print the `register` calldata either way.
 2. Is Base the only attestation chain for v1, given that official EAS
    documentation does not list Robinhood Chain (section 4.4)?
-3. Should routing prefer verified offers, require them for some model
-   ids, or only display a badge and leave price-first routing as it is?
+3. Should routing prefer logprob-verified offers, require them for some
+   model ids, or only display a badge and leave price-first routing as
+   it is?
 4. Does a listing have to include a claim up front, or can a seller add
    one later?
-5. Who publishes `ts.reference-answers/1` for official catalog
-   revisions, and is there a held-out set?
-6. What logprob and token tolerances survive a calibration run across
-   llama.cpp and vLLM on at least two GPU models?
-7. Should a verified listing be required to expose `logprobs`?
-8. Is a seller deposit in scope for a first version, and if so, on
-   which existing prepaid rail (if any), in what amount, and with what
-   quiet period after a revoke? Tensorseed will not custody it.
-9. Who may file a challenge (marketplace only, any buyer, anyone), and
-   is there a challenger bond?
-10. How should `expirationTime` be used, if at all?
-11. Is EIP-191 acceptable for the claim signature, or is EIP-712
+5. Who holds the secret `ts.reference-logprobs/1` set, who publishes
+   `set_hash`, and do several marketplaces share one checker?
+6. What rotation and reveal cadence is enough, and who may request an
+   early reveal in a dispute?
+7. What logprob tolerances survive a calibration run across llama.cpp
+   and vLLM on at least two GPU models, for both one-token challenges
+   and full-generation dispute checks?
+8. What fraction of real buyer requests should also ask for logprobs,
+   as cover, and is `p = 1/1000` a good starting challenge rate?
+9. Is Ed25519 as a dedicated `response_key` acceptable, or is signing
+   with the seller wallet (EIP-191 or EIP-712) preferred even on the
+   per-response path?
+10. Are the proposed `X-Tensorseed-*` header names acceptable, and
+    should the body digest cover raw bytes or canonical JSON?
+11. How should offers whose engines cannot return logprobs be labelled
+    and ranked?
+12. Is a seller deposit in scope for a first version, and if so, in
+    what amount and with what quiet period after a revoke, without
+    changing existing buyer escrow or settlement? Tensorseed will not
+    custody it.
+13. How should `expirationTime` be used, if at all?
+14. Is EIP-191 acceptable for the claim signature, or is EIP-712
     preferred for wallet display?
-12. For layer 4, is a digest-plus-off-chain-evidence URL enough, and
-    which appraisers (NVIDIA NRAS, a local verifier, a third party) are
-    acceptable?
-13. Should `check-endpoint` results be accepted from third parties, or
-    only from the marketplace's own runners?
+15. For the hardware tier, is a digest-plus-off-chain-evidence URL
+    enough, and which appraisers (NVIDIA NRAS, a local verifier, a
+    third party) are acceptable?
 
 ---
 
-## 11. Sources
+## 14. Sources
 
 - Tensorseed SPEC sections 6.4 (canonical JSON), 6.9 (signatures), 11.1
   (commercial serving marks), 19.1 (`serve-inference` and
