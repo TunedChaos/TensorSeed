@@ -1,8 +1,8 @@
 # Tensorseed milestones
 
-Derived from [SPEC.md](SPEC.md) section 16. Current milestone: **M0** (a Chia
-testnet run is the open item; the BitTorrent spike is done); much of the HTTP
-side of M1 and M2 is already done.
+Derived from [SPEC.md](SPEC.md) section 16. Current milestone: **M0** (the Chia
+testnet run and the BitTorrent spike are done; Chia mainnet is next); much of
+the HTTP side of M1 and M2 is already done.
 
 ## Done
 
@@ -19,7 +19,8 @@ side of M1 and M2 is already done.
 - [x] File backend transport: HTTPS sync with mirror fallback, persisted trust anchor, publishing (delta, snapshot, head), head re-signing, on demand snapshots
 - [x] Storage: local disk by default; optional named, repeatable `[[storage.target]]` blocks (`r2`, `b2`, `vultr`, `wasabi`, `minio`, `aws`, `s3`, `http`, `local`) with derived endpoints, per target `enabled`, `priority`, `upload`, `public_base_url`, credentials from named env vars only; publish writes to every enabled target, multipart uploads (spec 10.1)
 - [x] Mirror lists: local `mirrors.toml` and publisher signed `<catalog>/mirrors.toml` (`[[mirror]]` blocks), merged by priority for catalog reads and pull webseeds; `mirror add|remove|list|publish` (spec 6.12)
-- [x] Chia DataLayer calls: `create_data_store`, `get_value` with envelope verification, paginated `get_keys`, `batch_update` with `submit_on_chain=false`, `submit_pending_root`, confirmation polling, `subscribe`, `get_sync_status`, `add_mirror` (mocked RPC tests only)
+- [x] Chia DataLayer calls: `create_data_store`, `get_value` with envelope verification, paginated `get_keys`, `batch_update` with `submit_on_chain=false`, `submit_pending_root`, confirmation polling, `subscribe`, `get_sync_status`, `add_mirror`, `get_root_history`
+- [x] Chia testnet11 run (spec 6.13, [CHIA-RUNBOOK.md](CHIA-RUNBOOK.md)): live catalog imported with signatures intact, read back and verified from a second subscriber-only node, `publish` through the Chia backend; `catalog create` waits for the store, `catalog subscribe`, no-op re-imports, resume after an interrupted submit, rollback and fork anchor for Chia reads
 - [x] `catalog create`, `info`, `add-mirror`, `export`, `import` (full), `resign-head`, `snapshot`
 - [x] `tensorseed-fetch`: verified, resumable, parallel downloads with webseed then Hub fallback, SQLite job state, atomic rename
 - [x] `pull` (catalog, `--manifest-file`, `--manifest-url`, `--from-hf`), `verify` (directory, catalog, manifest file, `--hf`), `list`, `show`, `jobs`

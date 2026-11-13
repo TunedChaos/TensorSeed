@@ -8,7 +8,8 @@ Website: [tensorseed.dev](https://tensorseed.dev)
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
 > v1+v2 torrents, `seed` serves them, `serve` keeps seeding whatever the
-> catalog says, and `pull --swarm` / `--seed-after` use the swarm. The Chia backend has only been tested against mocked RPC responses, and
+> catalog says, and `pull --swarm` / `--seed-after` use the swarm. The Chia
+> backend has run end to end on Chia testnet11 (not mainnet yet), and
 > `publish`, `takedown`, and `doctor` still print "not implemented yet". Expect
 > breaking changes.
 

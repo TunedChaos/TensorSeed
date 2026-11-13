@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
-use tensorseed_catalog::chia::{ChiaConfig, ChiaDataLayer};
+use tensorseed_catalog::chia::{ChiaAnchor, ChiaConfig, ChiaDataLayer};
 use tensorseed_catalog::file::{FileCatalog, FileCatalogConfig};
 use tensorseed_catalog::minisign::{PublicKey, SecretKey};
 use tensorseed_catalog::signed::SignedEntry;
@@ -114,6 +114,30 @@ pub fn chia(cfg: &Config) -> anyhow::Result<ChiaDataLayer> {
     Ok(chia)
 }
 
+fn chia_anchor_path(cfg: &Config, id: &CatalogId) -> std::path::PathBuf {
+    expand(&cfg.file.state_dir)
+        .join(&cfg.catalog.name)
+        .join(format!("chia-{}.json", id.0))
+}
+
+/// The last accepted on-chain state for a Chia store, if any.
+pub fn load_chia_anchor(cfg: &Config, id: &CatalogId) -> Option<ChiaAnchor> {
+    let raw = std::fs::read(chia_anchor_path(cfg, id)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// Persist the accepted on-chain state for a Chia store (atomic rename).
+pub fn save_chia_anchor(cfg: &Config, anchor: &ChiaAnchor) -> anyhow::Result<()> {
+    let path = chia_anchor_path(cfg, &CatalogId(anchor.store_id.clone()));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(anchor)?)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 /// An opened backend.
 #[allow(clippy::large_enum_variant)] // built once per command
 pub enum Backend {
@@ -165,6 +189,16 @@ pub async fn open_reader(
             }
             let c = chia(cfg)?;
             let id = CatalogId(cfg.chia.catalog_store_id.clone());
+            // Rollback and fork check against the last accepted on-chain
+            // state, then advance the anchor (spec section 6.13).
+            let prev = load_chia_anchor(cfg, &id);
+            let anchor = c
+                .check_anchor(&id, prev.as_ref())
+                .await
+                .context("checking the DataLayer store against the local anchor")?;
+            if prev.as_ref() != Some(&anchor) {
+                save_chia_anchor(cfg, &anchor)?;
+            }
             if !no_wait {
                 let st = c
                     .sync_status(&id)

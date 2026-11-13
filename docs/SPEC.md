@@ -3,7 +3,7 @@
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend is implemented against mocked RPC responses only.
+> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); mainnet is not live yet.
 
 Revision 9 changes: `tensorseed serve`, the long running seeder (8.3): catalog driven loop with selection rules, disk budget, takedowns, auto fetch through the pull pipeline, upload and download caps, uTP, opt in NAT-PMP and UPnP IGD port mapping, HTTP webseed serving with ranges, `--serve-catalog` (also on `seed`), a localhost JSON health endpoint, state file resume, graceful SIGTERM, and a hardened systemd unit. New crate `tensorseed-serve`; the `[serve]` config block replaces `[seed]` (9, 10, 12.1).
 
@@ -195,7 +195,7 @@ Rules:
 | `max_delta_file_size: 250` MiB per generation on subscribers | same config; enforced in `chia/data_layer/download_data.py` |
 | One pending root per store; next write fails with "Already have a pending root waiting for confirmation." | https://docs.chia.net/datalayer-rpc/ |
 | `batch_update` has `submit_on_chain` (since 2.3.0); `submit_pending_root` publishes staged batches | https://docs.chia.net/datalayer-rpc/ |
-| `get_root` invalid for subscribed stores; use `get_local_root` | https://docs.chia.net/datalayer-rpc/ |
+| `get_root` invalid for subscribed stores; use `get_local_root`. On 2.7.5 `get_root` reads the wallet's tracked singleton and returned the right confirmed root on a subscriber once `subscribe` had run; Tensorseed reads generations from `get_sync_status` and history from `get_root_history` | https://docs.chia.net/datalayer-rpc/; testnet11 run (6.13) |
 | `add_mirror` takes `id`, `urls`, `amount` (min 0, refunded on delete), `fee`; works for owned or subscribed stores | https://docs.chia.net/datalayer-rpc/ and https://docs.chia.net/guides/datalayer-user-guide/ |
 | Subscribers find mirrors from on-chain mirror coins plus subscribe `urls`, shuffle them, and fetch whole `.dat` files from one server at a time | `chia/data_layer/data_layer.py` (`fetch_and_validate`) |
 | Default fee from config is 1,000,000,000 mojos (0.001 XCH) if none is passed | https://docs.chia.net/datalayer-rpc/ |
@@ -427,6 +427,28 @@ Two lists exist:
 The effective ranking merges the local list, the published list, `file.mirror_urls` (priority 100), and storage targets' public URLs, keeps enabled HTTP mirrors whose pin (if any) matches, deduplicates by URL keeping the lowest priority, and sorts by priority. Catalog reads try `file.base_url` first and then this ranking; pulls use it for webseeds (10.1). `tensorseed mirror list` prints it. Mirrors are untrusted by design: catalog files are signature and hash chain checked and every downloaded byte is hash checked, so a hostile mirror can only be slow, stale (detected by the head expiry and rollback checks), or absent.
 
 ---
+
+### 6.13 DataLayer on testnet11: observed behavior and client anchor
+
+Run on 2026-11-12 with the reference client 2.7.5 (wallet, `data_layer`, `data_layer_http`; no full node, light wallet sync). Measurements and the mainnet runbook are in [CHIA-RUNBOOK.md](CHIA-RUNBOOK.md).
+
+Behavior the backend now relies on, confirmed live:
+
+- `create_data_store` returns `id` at once, but `get_root` fails ("Failed to get root") and `get_sync_status` fails ("No store id stored in the local database") until the launcher confirms; writes before that fail with "Already have a pending root waiting for confirmation." `catalog create` waits for confirmation (`--no-wait` to skip).
+- `get_value` for a missing key fails with "Key not found: <hex>", or with "unknown key: KeyId(n)" when the key bytes exist in the node's shared key/value blob table (another store, or a staged batch) but not in this store's tree. Both mean absent.
+- A changelist that leaves the tree unchanged fails ("Changelist resulted in no change to tree data"), and `submit_pending_root` with nothing staged fails ("Latest root is already confirmed."). Writers therefore diff against stored bytes and skip identical upserts and deletes of absent keys, so re-running an import or publish is a free no-op.
+- `submit_pending_root` on an already submitted root fails ("Pending root is already submitted."); `batch_update` while a submitted root is unconfirmed fails as above. Writers resume: they wait for the earlier root and then continue.
+- `get_root_history` is oldest first, includes an unconfirmed entry while a root is pending, and collapses consecutive equal roots, so its length is not a generation number. Generations come from `get_sync_status` (`generation`, `target_generation`).
+- The owner's `.dat` files are only served when the separate `data_layer_http` service runs; subscribers stay at generation 0 otherwise.
+
+Client anchor (implemented): every read through the Chia backend checks the store against `<file.state_dir>/<catalog>/chia-<store>.json` (`store_id`, `generation`, `root`). A lower on-chain generation is a `Rollback`; a different root at the anchored generation, or a confirmed history that no longer contains the anchored root, is a `Fork`. The anchor advances after each successful check. Because the chain itself cannot be rolled back past a reorg, this mainly protects against a client being pointed at a different or stale node.
+
+Planned: Chia as the source of truth for every client. The design decision is that the on-chain DataLayer root is authoritative and the file catalog, Pages, R2, and other HTTP copies are caches. What that needs, not built yet:
+
+1. A chain-derived commitment the file catalog can be checked against. The file catalog's `root` is Tensorseed's own hash chain, not the DataLayer Merkle root, so the two cannot be compared directly. Options: (a) store the file head (`revision`, `root`) under a reserved key such as `ts/v1/file-head` in each Chia generation, written in the same publish; or (b) compute the DataLayer Merkle root from the file entries locally (needs Chia's tree hashing, which `chia_rs` exposes). Option (a) is simpler and keeps both backends independent.
+2. A light way for clients to read the confirmed on-chain root without running a wallet and DataLayer: a public read-only endpoint (a coinset style full node API or our own) queried for the store singleton's latest confirmed root, verified by the singleton lineage. Running a local wallet stays the strongest option.
+3. Client policy, `catalog.chain_check = "strict" | "warn" | "off"`: with `strict`, a file or HTTP head is accepted only if its revision and root match the chain commitment, and reads fail when the chain is unreachable; with `warn`, mismatches still fail but an unreachable chain falls back to the signed file catalog with a warning and the last chain anchor; `off` keeps today's behavior. Default `warn` until the public endpoint exists, then `strict` for publishers and mirrors.
+4. Publish order: Chia generation first, then the file catalog and mirrors, so a cache is never ahead of the chain. The weekly head re-sign does not change the root and needs no chain write.
 
 ## 7. Content layer
 
@@ -910,7 +932,8 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 - Confirm HF API field names (tree `lfs.oid`, `gated`, license tag). Done (section 5); `hf-hub` dropped.
 - Pick sqlite crate and S3 crate (done: `rusqlite`, `object_store`). Pick default `piece_length` (done: automatic, 7.1).
 - Check the `CatalogBackend` trait (section 6.0) against the real DataLayer call sequence and adjust it before M1 depends on it.
-- Signed-file backend core (done): minisign compatible signing, `SignedEntry`, hash chain with rollback, fork, gap, and stale head checks, export bundles. Encrypted key files, `catalog keygen`, and trust anchor persistence are done too. The DataLayer calls are implemented and tested against mocked responses; the testnet run is still open.
+- Signed-file backend core (done): minisign compatible signing, `SignedEntry`, hash chain with rollback, fork, gap, and stale head checks, export bundles. Encrypted key files, `catalog keygen`, and trust anchor persistence are done too.
+- DataLayer testnet11 run (done, 6.13): the live signed catalog was imported into a testnet store with signatures intact and read back from a second, subscriber-only node; `publish` wrote through the Chia backend; the bugs it found in the real RPC path were fixed. Mainnet steps are in [CHIA-RUNBOOK.md](CHIA-RUNBOOK.md).
 
 **M1: Publish**
 - `doctor`, `publish`, `sync`. Storage upload of torrents is done in `harvest`; atomic catalog writes through one queue. Testnet first, then mainnet. (`catalog create/info/add-mirror`, `jobs`, resumable state, and S3 upload are done.)

@@ -213,7 +213,12 @@ pub enum MirrorCmd {
 #[derive(Debug, Subcommand)]
 pub enum CatalogCmd {
     /// Create a new catalog through the configured backend.
-    Create,
+    Create {
+        /// Chia: return right after submitting the store instead of waiting
+        /// for it to confirm on chain (imports and publishes need it confirmed).
+        #[arg(long)]
+        no_wait: bool,
+    },
     /// Generate a publisher key pair (minisign format).
     Keygen {
         /// Directory for `<name>.key` and `<name>.pub` (default ~/.config/tensorseed).
@@ -246,6 +251,14 @@ pub enum CatalogCmd {
         /// Fee in mojos.
         #[arg(long)]
         fee: Option<u64>,
+    },
+    /// Subscribe the local DataLayer to the catalog store (Chia backend) so
+    /// it downloads and keeps a copy. Mirrors advertised on chain are added
+    /// automatically; `--url` adds extra ones.
+    Subscribe {
+        /// Extra DataLayer mirror URL(s) (default: chia.catalog_mirror_urls).
+        #[arg(long, num_args = 1..)]
+        url: Vec<String>,
     },
     /// Export every signed entry to a backend neutral bundle (ts.export/1).
     Export {
@@ -464,7 +477,8 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Doctor => "doctor",
-            Self::Catalog(CatalogCmd::Create) => "catalog create",
+            Self::Catalog(CatalogCmd::Create { .. }) => "catalog create",
+            Self::Catalog(CatalogCmd::Subscribe { .. }) => "catalog subscribe",
             Self::Catalog(CatalogCmd::Keygen { .. }) => "catalog keygen",
             Self::Catalog(CatalogCmd::Info { .. }) => "catalog info",
             Self::Catalog(CatalogCmd::AddMirror { .. }) => "catalog add-mirror",

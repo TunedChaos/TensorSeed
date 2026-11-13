@@ -52,7 +52,29 @@ pub async fn run(
             }
             Ok(ExitCode::SUCCESS)
         }
-        CatalogCmd::Create => create(&cfg()?).await,
+        CatalogCmd::Create { no_wait } => create(&cfg()?, *no_wait).await,
+        CatalogCmd::Subscribe { url } => {
+            let cfg = cfg()?;
+            if cfg.catalog.backend != "chia" {
+                bail!("subscribe is for the Chia backend; file catalogs sync from [file] base_url");
+            }
+            let c = chia(&cfg)?;
+            let id = store_id(&cfg)?;
+            let urls = if url.is_empty() {
+                cfg.chia.catalog_mirror_urls.clone()
+            } else {
+                url.clone()
+            };
+            c.subscribe(&id, &urls).await?;
+            println!("subscribed to DataLayer store {id}");
+            if !urls.is_empty() {
+                println!("extra mirrors: {}", urls.join(", "));
+            }
+            println!(
+                "Mirrors advertised on chain are added automatically. Check progress with `tensorseed catalog info`."
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         CatalogCmd::Info { no_wait } => info(&cfg()?, *no_wait).await,
         CatalogCmd::AddMirror { url, amount, fee } => {
             let cfg = cfg()?;
@@ -163,7 +185,7 @@ fn catalog_info(cfg: &Config) -> CatalogInfo {
     }
 }
 
-async fn create(cfg: &Config) -> anyhow::Result<ExitCode> {
+async fn create(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     match cfg.catalog.backend.as_str() {
         "file" => {
             let cat = publisher_file_catalog(cfg).await?;
@@ -203,10 +225,16 @@ async fn create(cfg: &Config) -> anyhow::Result<ExitCode> {
             let c = chia(cfg)?;
             let id = c.create_catalog().await?;
             println!("created DataLayer store {id}");
-            println!(
-                "Set chia.catalog_store_id = \"{id}\" in your config. Once the store's first root"
-            );
-            println!("confirms, the catalog info entry is written by the first import or publish.");
+            println!("Set chia.catalog_store_id = \"{id}\" in your config.");
+            if no_wait {
+                println!(
+                    "The store must confirm on chain before the first import or publish (about one to ten minutes)."
+                );
+            } else {
+                println!("waiting for the store to confirm on chain...");
+                c.wait_store_ready(&id).await?;
+                println!("store confirmed; run `tensorseed catalog import` or publish next.");
+            }
             Ok(ExitCode::SUCCESS)
         }
         other => bail!("unknown backend {other:?}"),
@@ -242,6 +270,9 @@ async fn info(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
                 "root:      {root}{}",
                 if confirmed { "" } else { " (unconfirmed)" }
             );
+            if let Some(a) = crate::backend::load_chia_anchor(cfg, &id) {
+                println!("anchor:    generation {} root {}", a.generation, a.root);
+            }
         }
     }
     if let Some(e) =
@@ -306,15 +337,20 @@ async fn import(
         "chia" => {
             let c = chia(cfg)?;
             let id = store_id(cfg)?;
-            c.stage_signed(&id, &parsed.entries).await?;
+            let changed = c.stage_signed(&id, &parsed.entries).await?;
             let p = c.commit(&id).await?;
-            println!(
-                "submitted root (tx {}); waiting for confirmation",
-                p.tx_id.as_deref().unwrap_or("?")
-            );
+            match &p.tx_id {
+                Some(tx) => println!(
+                    "staged {changed} changed entries; submitted root (tx {tx}); waiting for confirmation"
+                ),
+                None if changed == 0 && p.previous_root.is_none() => {
+                    println!("every entry is already in the store; nothing to submit")
+                }
+                None => println!("a root is already submitted; waiting for confirmation"),
+            }
             let g = c.wait_confirmed(&p).await?;
             println!(
-                "imported into DataLayer store {id}: generation {} root {}",
+                "DataLayer store {id}: generation {} root {}",
                 g.number, g.root
             );
         }
