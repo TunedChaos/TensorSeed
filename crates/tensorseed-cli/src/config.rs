@@ -1654,9 +1654,10 @@ dir = "/mnt/nas/tensorseed"
     #[test]
     fn unix_default_path_falls_back_to_home_config() {
         Jail::expect_with(|jail| {
+            // GitHub Actions and some desktops set XDG_CONFIG_HOME. Clear
+            // inherited env so this tests the $HOME/.config fallback.
+            jail.clear_env();
             jail.set_env("HOME", "/home/ts");
-            // Jail isolates the process environment. Do not set
-            // XDG_CONFIG_HOME so default_path uses $HOME/.config.
             assert!(std::env::var_os("XDG_CONFIG_HOME").is_none());
             assert_eq!(
                 default_path(),
