@@ -13,7 +13,7 @@
 //!
 //! - [`minisign`]: minisign compatible Ed25519 keys and signatures.
 //! - [`signed`]: the signed entry envelope every backend stores.
-//! - [`file`]: heads, deltas, snapshots, and [`file::ChainState`].
+//! - [`file`](mod@file): heads, deltas, snapshots, and [`file::ChainState`].
 //! - [`anchor`]: inclusion proofs, coin id and puzzle hash, and
 //!   [`anchor::check_coin_record`].
 //! - [`mirrors`]: the signed list of catalog mirrors.

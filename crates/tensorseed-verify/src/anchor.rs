@@ -18,7 +18,7 @@
 //!    DataLayer root; and the store singleton puzzle hash for
 //!    `(store id, root, owner inner puzzle hash)` is computed locally. This
 //!    step needs no network and trusts nobody.
-//! 2. [`CoinApi::check`]: one or more full node RPC compatible endpoints
+//! 2. `CoinApi::check` (in `tensorseed-catalog`): one or more full node RPC compatible endpoints
 //!    (for example a public coinset style API, or your own node) are asked
 //!    for the coin named in the proof. The coin id must hash from the
 //!    returned parent, puzzle hash, and amount; the puzzle hash must equal
@@ -118,7 +118,7 @@ fn curry_tree_hash(mod_hash: &H32, args: &[H32]) -> H32 {
 ///
 /// # Errors
 ///
-/// [`Error::Chain`] when the string is not 32 bytes of hex.
+/// [`CatalogError::Chain`] when the string is not 32 bytes of hex.
 pub fn h32(s: &str, what: &str) -> Result<H32> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     let v = hex::decode(s).map_err(|e| CatalogError::Chain(format!("{what}: bad hex: {e}")))?;
@@ -488,7 +488,7 @@ impl CoinRecord {
     ///
     /// # Errors
     ///
-    /// [`Error::Backend`] when the body is a failure other than not found, or
+    /// [`CatalogError::Backend`] when the body is a failure other than not found, or
     /// is missing required fields.
     pub fn from_rpc(v: &Value) -> Result<Option<Self>> {
         if v.get("success").and_then(Value::as_bool) != Some(true) {
@@ -566,6 +566,10 @@ pub struct CoinCheck {
 /// Build a small DataLayer style tree around the anchor leaf and return
 /// a `get_proof` style JSON value plus the tree root hex. Used by tests
 /// and by the Chia backend's unit tests.
+///
+/// # Errors
+///
+/// Returns an error if the signed entry cannot be serialized.
 pub fn fake_get_proof(
     entry: &SignedEntry,
     inner: &str,

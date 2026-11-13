@@ -32,7 +32,7 @@ pub fn revision_fingerprint(m: &Manifest) -> String {
 /// # Errors
 ///
 /// Returns an error if `hits` is empty.
-pub fn authority<'a, T>(hits: &'a [(Subscription, T)]) -> anyhow::Result<&'a (Subscription, T)> {
+pub fn authority<T>(hits: &[(Subscription, T)]) -> anyhow::Result<&(Subscription, T)> {
     hits.iter()
         .find(|(s, _)| s.is_default)
         .or_else(|| {

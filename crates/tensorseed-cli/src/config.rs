@@ -16,8 +16,6 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow;
-
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
@@ -1610,7 +1608,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
         f.sync_all()
             .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {

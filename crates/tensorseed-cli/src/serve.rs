@@ -762,9 +762,9 @@ impl Daemon {
             }
             return Ok((b, id));
         }
-        crate::mirrors::refresh(&cfg, false).await;
-        let cat = file_catalog(&cfg, None)?;
-        let r = crate::chain::sync_checked(&cfg, &cat)
+        crate::mirrors::refresh(cfg, false).await;
+        let cat = file_catalog(cfg, None)?;
+        let r = crate::chain::sync_checked(cfg, &cat)
             .await
             .context("syncing the file catalog")?;
         let st = cat.state();
@@ -977,7 +977,7 @@ impl Daemon {
                     }
                     None => {
                         match crate::consumer::catalog_manifest(
-                            &cfg,
+                            cfg,
                             &repo,
                             Some(&commit),
                             true,

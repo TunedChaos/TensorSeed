@@ -253,6 +253,12 @@ pub trait CatalogBackend: Send + Sync {
 /// Backends known to this build, as accepted by `catalog.backend` in config.
 pub const KNOWN_BACKENDS: &[&str] = &["chia", "file"];
 
+/// Deterministic key for tests only.
+#[cfg(test)]
+pub(crate) fn test_key(n: u8) -> minisign::SecretKey {
+    minisign::SecretKey::from_seed(&[n; 32])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,10 +277,4 @@ mod tests {
         fn takes(_: Option<&dyn CatalogBackend>) {}
         takes(None);
     }
-}
-
-/// Deterministic key for tests only.
-#[cfg(test)]
-pub(crate) fn test_key(n: u8) -> minisign::SecretKey {
-    minisign::SecretKey::from_seed(&[n; 32])
 }

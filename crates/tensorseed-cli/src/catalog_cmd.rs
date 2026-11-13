@@ -575,6 +575,7 @@ fn toml_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+#[allow(clippy::too_many_arguments)] // one argument per `catalog add` flag
 fn add_subscription(
     path: &Path,
     name: &str,
@@ -606,16 +607,15 @@ fn add_subscription(
         std::fs::create_dir_all(dir)?;
     }
     // If this name already exists with a different key, say so after load.
-    if path.exists() {
-        if let Ok(cfg) = crate::config::load(path)
-            && let Ok(subs) = cfg.subscriptions()
-            && let Some(s) = subs.iter().find(|s| s.name == name)
-            && s.publisher_pubkey != publisher_pubkey
-        {
-            bail!(
-                "catalog {name:?} is already subscribed with a different publisher key; remove it first"
-            );
-        }
+    if path.exists()
+        && let Ok(cfg) = crate::config::load(path)
+        && let Ok(subs) = cfg.subscriptions()
+        && let Some(s) = subs.iter().find(|s| s.name == name)
+        && s.publisher_pubkey != publisher_pubkey
+    {
+        bail!(
+            "catalog {name:?} is already subscribed with a different publisher key; remove it first"
+        );
     }
     body.push('\n');
     body.push_str("[[catalogs]]\n");

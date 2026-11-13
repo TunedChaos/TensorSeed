@@ -1384,10 +1384,9 @@ async fn list_across(
         }
     }
     // Group by repo + commit.
-    let mut groups: std::collections::BTreeMap<
-        (String, String),
-        Vec<(crate::config::Subscription, IndexEntry, Option<String>)>,
-    > = std::collections::BTreeMap::new();
+    type Hit = (crate::config::Subscription, IndexEntry, Option<String>);
+    let mut groups: std::collections::BTreeMap<(String, String), Vec<Hit>> =
+        std::collections::BTreeMap::new();
     for (id, commit, sub, ix, fp) in rows {
         groups.entry((id, commit)).or_default().push((sub, ix, fp));
     }
