@@ -272,6 +272,10 @@ pub fn router(status: SharedStatus) -> Router {
 }
 
 /// Serve the health endpoint until `shutdown` resolves.
+///
+/// # Errors
+///
+/// Any I/O error from accepting connections.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     status: SharedStatus,

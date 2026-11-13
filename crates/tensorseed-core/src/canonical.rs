@@ -14,12 +14,21 @@ use crate::Result;
 /// Values are first converted to `serde_json::Value`, whose object map is a
 /// `BTreeMap` (the `preserve_order` feature is not enabled), so keys come out
 /// sorted at every nesting level.
+///
+/// # Errors
+///
+/// [`Error::Json`](crate::Error::Json) if `value` cannot be represented as JSON
+/// (for example a map with non string keys).
 pub fn to_canonical_vec<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     let v = serde_json::to_value(value)?;
     Ok(serde_json::to_vec(&v)?)
 }
 
 /// Serialize `value` to a canonical JSON string.
+///
+/// # Errors
+///
+/// Same as [`to_canonical_vec`].
 pub fn to_canonical_string<T: Serialize + ?Sized>(value: &T) -> Result<String> {
     let v = serde_json::to_value(value)?;
     Ok(serde_json::to_string(&v)?)

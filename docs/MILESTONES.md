@@ -1,7 +1,7 @@
 # Tensorseed milestones
 
 Derived from [SPEC.md](SPEC.md) section 16. Current milestone: **M0** (the Chia
-testnet run and the BitTorrent spike are done; Chia mainnet is next); much of
+testnet run, the BitTorrent spike, and the Chia mainnet anchor are done); much of
 the HTTP side of M1 and M2 is already done.
 
 ## Done
@@ -65,7 +65,7 @@ the HTTP side of M1 and M2 is already done.
 - [ ] `takedown` (tombstone plus webseed deletion on every storage target)
 - [x] `torrent` storage targets (seeding roots)
 - [ ] Torrent mirrors in `mirrors.toml` (catalog snapshot torrents)
-- [ ] Testnet end to end, then mainnet
+- [x] Testnet end to end, then mainnet (official store anchored and checked strictly by default)
 
 ## M2: Pull
 - [x] Torrent fetching alongside webseeds (`--swarm`, then HTTP fills gaps)

@@ -1,0 +1,353 @@
+# Run a Tensorseed mirror
+
+Tensorseed keeps open models from Hugging Face available by spreading copies
+across many independent machines, the same way BitTorrent keeps popular files
+alive. Every volunteer who seeds a few revisions adds redundancy, and nobody
+has to trust anyone: each client checks the catalog against the Chia
+blockchain and every byte against the signed manifest before using it. A
+broken or malicious mirror can only be slow or missing, never wrong.
+
+This guide covers running `tensorseed serve`, the long running seeder, and
+optionally publishing your copy as an HTTP webseed or S3 compatible mirror.
+The design behind it is in [SPEC.md](SPEC.md) (sections 6.14, 8.3, 10.1).
+
+Contents:
+
+1. [Install](#1-install)
+2. [Configure the chain checked client](#2-configure-the-chain-checked-client)
+3. [Choose what to seed](#3-choose-what-to-seed)
+4. [Network: ports and port mapping](#4-network-ports-and-port-mapping)
+5. [Run it](#5-run-it)
+6. [Optional: HTTP webseed and catalog mirror](#6-optional-http-webseed-and-catalog-mirror)
+7. [Optional: S3 compatible storage](#7-optional-s3-compatible-storage)
+8. [Getting your mirror listed](#8-getting-your-mirror-listed)
+9. [Run it as a service (systemd)](#9-run-it-as-a-service-systemd)
+10. [Monitoring: the health endpoint](#10-monitoring-the-health-endpoint)
+11. [Operating notes](#11-operating-notes)
+
+## 1. Install
+
+### Prebuilt binaries
+
+Release archives are built with `just dist` (see
+[CONTRIBUTING.md](../CONTRIBUTING.md)) for:
+
+| Target | Runs on |
+|---|---|
+| `x86_64-unknown-linux-musl` | Any x86_64 Linux (static, no glibc needed) |
+| `aarch64-unknown-linux-musl` | Any 64 bit ARM Linux, including Raspberry Pi 4 and 5 (static) |
+| `x86_64-unknown-linux-gnu` | x86_64 Linux with glibc 2.17 or newer |
+| `x86_64-pc-windows-gnu` | 64 bit Windows 10 and 11 |
+| `aarch64-pc-windows-gnullvm` | Windows on ARM |
+
+Each archive is named `tensorseed-<version>-<target>.tar.gz` (`.zip` on
+Windows) and ships with a `SHA256SUMS` file and its minisign signature
+`SHA256SUMS.minisig`. Check both before running anything, using the release
+public key published with the release:
+
+```sh
+minisign -Vm SHA256SUMS -p tensorseed-release.pub
+sha256sum -c --ignore-missing SHA256SUMS
+tar xzf tensorseed-0.1.0-x86_64-unknown-linux-musl.tar.gz
+install -m 0755 tensorseed-0.1.0-x86_64-unknown-linux-musl/tensorseed ~/.local/bin/
+tensorseed --version
+```
+
+### From source
+
+Requires Rust (installed with [rustup](https://rustup.rs); the repo pins the
+toolchain):
+
+```sh
+cargo install --locked --path crates/tensorseed-cli
+```
+
+## 2. Configure the chain checked client
+
+Create `~/.config/tensorseed/tensorseed.toml` (or `/etc/tensorseed/tensorseed.toml`
+for the systemd unit). This is the minimum to follow the official catalog
+with strict chain checking:
+
+```toml
+[catalog]
+backend = "file"
+name = "tensorseed"
+publisher_pubkey = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd"
+chain_check = "strict"           # refuse any catalog head the Chia store does not anchor
+
+[file]
+base_url = "https://catalog.tensorseed.dev/"
+
+[chia]
+catalog_store_id = "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76"
+chain_source = "light"           # verify the published proof locally; no Chia software needed
+coin_api_urls = ["https://api.coinset.org"]
+```
+
+What this does:
+
+- **`publisher_pubkey`** pins the catalog signing key (minisign key id
+  `CE1E0E3D543DFFB8`). Every catalog entry, delta, snapshot, head, and the
+  mirror list must be signed by it.
+- **`catalog_store_id`** is the official Chia DataLayer store on mainnet. The
+  on-chain root is the source of truth; the files at `base_url` (and every
+  mirror, including yours) are only a cache.
+- **`chain_check = "strict"`** makes the client verify, on every sync, that
+  the file catalog head is the one the chain anchors. `warn` logs a mismatch
+  but continues; `off` skips the check. Volunteers should stay on `strict`.
+- **`coin_api_urls`** are read only full node RPC compatible endpoints used to
+  ask one question: does the store's current coin still exist? They cannot
+  make a forged catalog pass, because the root is proven locally against
+  the publisher's signature. The worst a bad endpoint can do is make you lag
+  behind, and clients never accept an older revision than one they have
+  already seen. List several endpoints, or your own Chia node, to spread
+  trust.
+
+Check the setup:
+
+```sh
+tensorseed config show                 # merged configuration
+tensorseed catalog chain-status        # file catalog vs. chain, every value printed
+tensorseed list                        # what the catalog contains
+```
+
+Secrets never go in this file. If you need a Hugging Face token (only for
+gated repos, which the official catalog does not carry), set `HF_TOKEN` in
+the environment or point `[huggingface] token_file` at a file with mode 0600.
+
+## 3. Choose what to seed
+
+The `[serve]` section decides which catalog revisions you keep. Everything is
+optional; these are the knobs most volunteers touch:
+
+```toml
+[serve]
+select = ["*"]                   # repo id globs: "*", "org/*", "org/name"; [] seeds nothing
+exclude = ["org/huge-*"]         # never seed these
+types = []                       # "model", "dataset"; [] = both
+license_classes = []             # "open", "attribution", "restricted", "unknown"; [] = any
+latest_only = true               # only each repo's newest revision
+max_bytes = 200_000_000_000      # total disk budget (here 200 GB; 0 = unlimited)
+max_revision_bytes = 0           # skip single revisions larger than this (0 = no cap)
+fetch = true                     # download selected revisions you do not have yet
+fetch_swarm = true               # download from peers first, then webseeds and mirrors
+prune = true                     # delete your copy when a revision is taken down or deselected
+sync_interval_secs = 300         # catalog sync period; takedowns apply within one period
+data_dir = "~/.local/share/tensorseed/serve"
+```
+
+How selection works: a revision must match a `select` glob and no `exclude`
+glob. Revisions are ranked by the first `select` pattern they match (earlier
+patterns first), then latest revisions and newer publications first. In that
+order, `latest_only`, `types`, `license_classes`, and `max_revision_bytes`
+filter them, and revisions are added until `max_bytes` is reached. Anything that does not fit is reported as
+skipped in the health document, with the reason.
+
+Bandwidth caps (KiB per second, 0 = unlimited):
+
+```toml
+[torrent]
+upload_limit_kbps = 0            # global swarm upload cap
+[serve]
+upload_limit_kbps = 0            # serve specific swarm cap (0 = use torrent.upload_limit_kbps)
+download_limit_kbps = 0          # swarm download cap
+http_upload_limit_kbps = 0       # cap for the optional HTTP webseed
+```
+
+Takedowns: when the publisher tombstones a revision, every seeder stops
+serving it at its next sync and (with `prune = true`) deletes its copy.
+
+## 4. Network: ports and port mapping
+
+Seeding works best when other peers can connect to you.
+
+| Port | Protocol | Purpose | Open to the internet? |
+|---|---|---|---|
+| `torrent.listen_port` (default 6881) | TCP | BitTorrent peer connections | Yes |
+| `torrent.listen_port` (default 6881) | UDP | uTP peer connections and DHT | Yes |
+| `serve.http_listen` (for example 8080) | TCP | Optional HTTP webseed and catalog mirror | Only if you run it (section 6) |
+| `serve.health_listen` (default 6880) | TCP | Health endpoint | **No**, keep it on 127.0.0.1 |
+
+Three ways to make the torrent port reachable:
+
+1. **Forward it on your router**: TCP and UDP, external 6881 to your
+   machine's 6881. Most reliable.
+2. **Let the daemon ask the router**: set `[serve] port_mapping = true`.
+   Tensorseed tries NAT-PMP first, then UPnP IGD, renews the lease
+   (`port_mapping_lease_secs`, default one hour), and removes the mapping on
+   a clean shutdown. It is off by default because it opens a port on your
+   router; many routers ignore or disable these protocols, and the health
+   document reports whether it worked.
+3. **Do nothing**: you still upload to peers you connect to, but peers behind
+   NAT cannot reach you. This still helps, just less.
+
+On a host firewall, allow inbound TCP and UDP on the listen port, for
+example `ufw allow 6881` (both protocols).
+
+## 5. Run it
+
+```sh
+tensorseed serve                 # seed what is on disk and selected
+tensorseed serve --fetch         # also download newly selected revisions
+tensorseed serve --for 2h        # stop after two hours
+```
+
+The first sync verifies the catalog against the chain, then every selected
+revision is checked piece by piece before it is announced, so you only ever
+seed bytes that match the signed manifest. Stop with Ctrl-C or SIGTERM;
+state is saved in `<data_dir>/serve-state.json` and a restart resumes
+seeding before the first sync.
+
+## 6. Optional: HTTP webseed and catalog mirror
+
+BitTorrent needs peers; HTTP webseeds work with zero peers and carry most
+bytes for first downloads. If you have spare bandwidth and a public address:
+
+```sh
+tensorseed serve --fetch --http 0.0.0.0:8080 --serve-catalog
+```
+
+or in the config:
+
+```toml
+[serve]
+http_listen = "0.0.0.0:8080"
+serve_catalog = true
+```
+
+- `--http` serves your verified revisions in the BEP 19 webseed layout:
+  `/t/<content name>/<path>` with byte ranges, and
+  `/t/<content name>.torrent`. Only revisions that passed verification and
+  have the size the manifest promises are served.
+- `--serve-catalog` also mirrors the signed catalog files (head, deltas,
+  snapshots, signatures, `chain-proof.json`, `mirrors.toml`) and serves them
+  under `/<catalog>/`, for example `/tensorseed/head.json`. Clients still
+  verify every file and check the head against the chain, so your copy is
+  just another cache.
+
+For a public mirror, put a TLS terminating reverse proxy (Caddy, nginx,
+Cloudflare Tunnel) in front of the HTTP port and publish the HTTPS URL.
+Keep long cache lifetimes only for `/t/<content name>/...` payloads (they
+are immutable); `head.json`, `chain-proof.json`, `mirrors.toml`, and
+`.torrent` files change and must not be cached for long.
+
+## 7. Optional: S3 compatible storage
+
+If you have object storage with free or cheap egress (Cloudflare R2,
+Backblaze B2 behind a CDN, Wasabi, Vultr, MinIO, any S3 compatible service),
+you can host a mirror without keeping a machine online. A mirror is a static
+tree with the same layout as `serve`'s data directory:
+
+```
+<public base URL>/t/<content name>/<files>      payload, immutable
+<public base URL>/t/<content name>.torrent      torrent, mutable
+<public base URL>/tensorseed/...                signed catalog files (optional)
+```
+
+The simplest setup runs `tensorseed serve --fetch --serve-catalog` (with
+`http_listen` set, even on 127.0.0.1) and copies its data directory to the
+bucket on a timer, for example with rclone:
+
+```sh
+D=~/.local/share/tensorseed/serve
+rclone sync "$D/t" r2:my-bucket/t \
+  --header-upload "Cache-Control: public, max-age=31536000, immutable" --exclude "*.torrent"
+rclone copy "$D/t" r2:my-bucket/t --include "*.torrent" \
+  --header-upload "Cache-Control: public, max-age=300"
+rclone sync "$D/catalog/tensorseed" r2:my-bucket/tensorseed \
+  --header-upload "Cache-Control: public, max-age=60"
+```
+
+Run the copy at least daily so the mirrored `head.json` stays fresh (heads
+expire after 7 days unless the publisher re-signs them; clients simply skip
+an expired or stale head and try the next source). Credentials stay in
+rclone's own config or environment, never in `tensorseed.toml`.
+
+If you also publish your own catalog, use `[[storage.target]]` blocks
+instead: `tensorseed harvest` and `publish` upload to every enabled target.
+See `config/tensorseed.example.toml` and SPEC section 10.1.
+
+## 8. Getting your mirror listed
+
+There are two kinds of listing, and only HTTP mirrors need one:
+
+- **BitTorrent seeders need no listing.** Peers find you through the DHT, any
+  trackers listed in the torrents, and peer exchange. Just keep `serve`
+  running with the port open.
+- **HTTP and S3 mirrors** are listed in the publisher signed
+  `tensorseed/mirrors.toml`, which every client fetches, verifies against
+  the pinned key, and uses to rank download sources. To be added, open an
+  issue or pull request on the project repository with:
+  - the public base URL (HTTPS, ending in `/`), whose `t/` and, if you serve
+    it, `tensorseed/` paths follow the layout above;
+  - a short name and region (for example `eu-west-1`);
+  - what you carry (everything, or which `select` globs) and roughly how
+    much bandwidth you can offer;
+  - a contact for outages.
+
+  The catalog owner checks the mirror (for example by adding it to a local
+  list and running `tensorseed pull <repo> --no-hf-fallback`), then adds it
+  with
+  `tensorseed mirror add <url> --name <name> --priority <n>` and signs a new
+  list with `tensorseed mirror publish`. Clients pick it up at their next
+  sync.
+
+Anyone can also use an unlisted mirror right away by adding it to their own
+local list (`tensorseed mirror add <url>`); it is verified exactly like a
+listed one.
+
+## 9. Run it as a service (systemd)
+
+[`contrib/systemd/`](../contrib/systemd/) has a hardened unit and a minimal
+config that follows the official catalog with strict chain checking:
+
+```sh
+sudo install -m 0755 tensorseed /usr/local/bin/tensorseed
+sudo install -d -m 0755 /etc/tensorseed
+sudo install -m 0644 contrib/systemd/tensorseed.toml /etc/tensorseed/tensorseed.toml
+sudo install -m 0644 contrib/systemd/tensorseed-serve.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tensorseed-serve
+journalctl -u tensorseed-serve -f
+```
+
+The unit runs as a dynamic user with a private `/var/lib/tensorseed` state
+directory, a read only root filesystem, and a restricted system call set.
+Edit `/etc/tensorseed/tensorseed.toml` for your selection rules and disk
+budget; if you seed a tree outside the state directory, add a
+`ReadOnlyPaths=` (or `ReadWritePaths=`) line as the unit's comments explain.
+
+## 10. Monitoring: the health endpoint
+
+`serve` answers on `serve.health_listen` (default `127.0.0.1:6880`):
+
+```sh
+curl -s http://127.0.0.1:6880/health | jq .
+curl -s http://127.0.0.1:6880/healthz      # "ok" or "degraded"
+```
+
+`/health` returns a `ts.serve.health/1` JSON document: uptime; catalog
+revision, root, head expiry, and last sync result; swarm listen address,
+uTP and DHT state, bytes up and down, peers, and limits; every seeded
+torrent with its info hash, size, uploaded bytes, and peers; disk used
+against the budget; downloads in progress; skipped revisions with reasons;
+takedowns applied; HTTP counters; and port mapping state. Both endpoints
+answer 503 when the last sync failed and the head has expired, which makes
+them easy to wire into uptime checks. Keep the endpoint on localhost; it is
+meant for you, not the internet.
+
+## 11. Operating notes
+
+- **Disk**: revisions are stored as plain files under
+  `<data_dir>/t/<content name>/`, so you can inspect them, and
+  `tensorseed verify <dir>` re-hashes any copy.
+- **Updates**: replace the binary and restart; `serve` resumes from
+  `serve-state.json`.
+- **Pickle files** (`.bin`, `.pt`, ...) are skipped on download unless
+  explicitly allowed, and gated repos are not mirrored.
+- **Legal**: the catalog only carries repos whose licenses allow
+  redistribution, and takedowns propagate automatically. You are still
+  responsible for what you serve where you live; use `exclude`, `types`,
+  and `license_classes` to narrow it.
+- **Help**: `tensorseed doctor` (when implemented) and
+  `tensorseed serve -v` for debug logs; issues on the project repository.

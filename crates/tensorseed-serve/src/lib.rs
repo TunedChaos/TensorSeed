@@ -15,6 +15,33 @@
 //!
 //! The daemon loop itself lives in the CLI, which owns the configuration,
 //! the catalog backends, and the pull pipeline.
+//!
+//! # Where this fits
+//!
+//! `tensorseed serve` is how volunteers add redundancy: it syncs the
+//! chain checked catalog, picks revisions with [`select::Rules`], downloads
+//! and verifies them, and seeds them over BitTorrent, optionally also over
+//! HTTP. See `docs/RUN-A-MIRROR.md` for the operator guide.
+//!
+//! # Examples
+//!
+//! Selection rules decide what a seeder keeps:
+//!
+//! ```
+//! use tensorseed_serve::select::{glob_match, Rules};
+//!
+//! assert!(glob_match("TunedChaos/*", "TunedChaos/some-model"));
+//! let rules = Rules {
+//!     select: vec!["org/*".into()],
+//!     exclude: vec!["org/huge-*".into()],
+//!     ..Rules::default()
+//! };
+//! assert_eq!(rules.rank("org/small"), Some(0));
+//! assert_eq!(rules.rank("org/huge-model"), None);
+//! ```
+
+#![warn(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links)]
 
 pub mod health;
 pub mod http;

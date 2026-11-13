@@ -170,6 +170,11 @@ pub struct MirrorList {
 
 impl MirrorList {
     /// Parse and validate TOML.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] for invalid TOML, an unknown schema, or a
+    /// mirror with an invalid name or URL.
     pub fn parse(text: &str) -> Result<Self> {
         if text.len() > MAX_MIRRORS_BYTES {
             return Err(bad("mirror list larger than 1 MiB".into()));
@@ -193,11 +198,19 @@ impl MirrorList {
     }
 
     /// Serialize to TOML.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] if serialization fails.
     pub fn to_toml(&self) -> Result<String> {
         toml::to_string_pretty(self).map_err(|e| bad(format!("mirror list: {e}")))
     }
 
     /// Add or replace (by name, else by URL) a mirror.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] if the mirror's name or URL is invalid.
     pub fn upsert(&mut self, m: Mirror) -> Result<()> {
         m.validate()?;
         let pos = self.mirrors.iter().position(|x| {
@@ -229,6 +242,11 @@ pub fn list_comment(catalog: &str, body: &[u8]) -> String {
 
 /// Sign a published list: returns (TOML body, minisign signature). The list
 /// must name `catalog`.
+///
+/// # Errors
+///
+/// [`CatalogError::Config`] when `list` names a different catalog or cannot be
+/// serialized, and [`CatalogError::Signature`] if signing fails.
 pub fn sign_list(sk: &SecretKey, catalog: &str, list: &MirrorList) -> Result<(Vec<u8>, String)> {
     let mut l = list.clone();
     l.schema = Some(MIRRORS_SCHEMA.into());
@@ -240,6 +258,12 @@ pub fn sign_list(sk: &SecretKey, catalog: &str, list: &MirrorList) -> Result<(Ve
 }
 
 /// Verify a published list against the pinned key and catalog name.
+///
+/// # Errors
+///
+/// [`CatalogError::Signature`] for a bad or foreign signature or wrong context,
+/// and [`CatalogError::Config`] for an invalid body or a list for another
+/// catalog.
 pub fn verify_list(pk: &PublicKey, catalog: &str, body: &[u8], sig: &str) -> Result<MirrorList> {
     let tc = pk.verify(body, sig)?;
     if tc != list_comment(catalog, body) {

@@ -128,6 +128,8 @@ impl NatPmp {
         self.gateway
     }
 
+    /// Send a NAT-PMP request and wait for the matching response, doubling the
+    /// timeout after each try as RFC 6886 recommends.
     async fn request(&self, req: &[u8], op: u8, len: usize) -> anyhow::Result<Vec<u8>> {
         let bind: SocketAddr = if self.gateway.is_ipv4() {
             (Ipv4Addr::UNSPECIFIED, 0).into()
@@ -166,6 +168,11 @@ impl NatPmp {
     }
 
     /// The router's external IPv4 address.
+    ///
+    /// # Errors
+    ///
+    /// When the gateway does not answer in time or answers with a NAT-PMP error
+    /// code.
     pub async fn external_ip(&self) -> anyhow::Result<Ipv4Addr> {
         let r = self.request(&[0, 0], 0, 12).await?;
         Ok(Ipv4Addr::new(r[8], r[9], r[10], r[11]))
@@ -173,6 +180,10 @@ impl NatPmp {
 
     /// Map `internal` (asking for `external`) for `lifetime_secs`. Returns
     /// the external port and lifetime the router granted.
+    ///
+    /// # Errors
+    ///
+    /// When the gateway does not answer in time or refuses the mapping.
     pub async fn map(
         &self,
         proto: Protocol,
@@ -196,6 +207,10 @@ impl NatPmp {
     }
 
     /// Delete the mapping of `internal`.
+    ///
+    /// # Errors
+    ///
+    /// When the gateway does not answer in time or refuses the request.
     pub async fn unmap(&self, proto: Protocol, internal: u16) -> anyhow::Result<()> {
         self.map(proto, internal, 0, 0).await.map(|_| ())
     }
@@ -261,6 +276,11 @@ impl Upnp {
     }
 
     /// Find an internet gateway on the local network with SSDP.
+    ///
+    /// # Errors
+    ///
+    /// When no gateway answers within `timeout` or its device description
+    /// cannot be fetched or parsed.
     pub async fn discover(timeout: Duration) -> anyhow::Result<Self> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (a, b) = tokio::join!(
@@ -306,6 +326,7 @@ impl Upnp {
         bail!("no usable UPnP gateway: {}", errors.join("; "))
     }
 
+    /// Call a UPnP IGD action with SOAP and return the response body.
     async fn soap(&self, action: &str, args: &[(&str, String)]) -> anyhow::Result<String> {
         let mut inner = String::new();
         for (k, v) in args {
@@ -338,12 +359,20 @@ impl Upnp {
     }
 
     /// The router's external address.
+    ///
+    /// # Errors
+    ///
+    /// When the SOAP request fails or the response has no address.
     pub async fn external_ip(&self) -> anyhow::Result<String> {
         let t = self.soap("GetExternalIPAddress", &[]).await?;
         xml_text(&t, "NewExternalIPAddress").context("no NewExternalIPAddress in the answer")
     }
 
     /// Map `external` to our `internal` port for `lease_secs`.
+    ///
+    /// # Errors
+    ///
+    /// When the SOAP request fails or the router returns a fault.
     pub async fn add(
         &self,
         proto: Protocol,
@@ -370,6 +399,10 @@ impl Upnp {
     }
 
     /// Delete the mapping of `external`.
+    ///
+    /// # Errors
+    ///
+    /// When the SOAP request fails or the router returns a fault.
     pub async fn delete(&self, proto: Protocol, external: u16) -> anyhow::Result<()> {
         self.soap(
             "DeletePortMapping",
@@ -457,6 +490,8 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Map every protocol through NAT-PMP on the default gateway. Returns the
+/// active mappings, the status to report, and the shortest granted lease.
 async fn try_natpmp(o: &PortMapOptions) -> anyhow::Result<(Active, PortMapStatus, u32)> {
     let gw = match o.natpmp_gateway {
         Some(g) => g,
@@ -486,6 +521,8 @@ async fn try_natpmp(o: &PortMapOptions) -> anyhow::Result<(Active, PortMapStatus
     Ok((Active::NatPmp(c, maps), st, lease))
 }
 
+/// Map every protocol through UPnP IGD, reusing a gateway found earlier.
+/// Returns the active mappings, the status to report, and the lease.
 async fn try_upnp(
     o: &PortMapOptions,
     cache: &mut Option<Upnp>,

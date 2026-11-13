@@ -68,6 +68,9 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+# Public fallible functions document their errors and panics (`# Errors`, `# Panics`).
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
 
 # scrypt (encrypted publisher keys) is unusably slow without optimization.
 [profile.dev.package.scrypt]

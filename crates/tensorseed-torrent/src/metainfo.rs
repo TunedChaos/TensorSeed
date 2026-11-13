@@ -88,6 +88,15 @@ fn valid_piece_length(pl: u64) -> bool {
 ///
 /// `threads` bounds how many files are hashed at once (0 means the number
 /// of CPUs). Files must exist with the given lengths.
+///
+/// # Errors
+///
+/// [`TorrentError::Io`] when a file cannot be read or has an unexpected length,
+/// and [`TorrentError::Invalid`] for invalid parameters or paths.
+///
+/// # Panics
+///
+/// Only if a hashing worker thread panics, which would be a bug.
 pub fn build_torrent(
     dir: &Path,
     files: &[InputFile],
@@ -311,6 +320,16 @@ fn bad(msg: impl Into<String>) -> TorrentError {
 impl Metainfo {
     /// Parse and validate a v2 or hybrid torrent. v1 only torrents are
     /// rejected: Tensorseed needs the per file Merkle roots.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Invalid`] for malformed bencode, a v1 only torrent, or
+    /// inconsistent piece layers and file trees.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the `info` lookup only runs after the decoder found
+    /// the key.
     pub fn parse(bytes: &[u8]) -> Result<Self, TorrentError> {
         if bytes.len() > MAX_TORRENT_BYTES {
             return Err(bad("torrent file too large"));
@@ -510,6 +529,10 @@ impl Metainfo {
     /// name, paths, and sizes; Merkle roots and info hashes equal wherever the
     /// manifest records them. Paged manifests must pass their files in
     /// `files`.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Invalid`] describing the first difference found.
     pub fn check_manifest(
         &self,
         m: &Manifest,
@@ -560,6 +583,11 @@ impl Metainfo {
     }
 
     /// Re-hash a file on disk and compare it with this torrent's Merkle root.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Invalid`] when `path` is not in this torrent, and
+    /// [`TorrentError::Io`] when the file cannot be read.
     pub fn verify_file(&self, path: &str, on_disk: &Path) -> Result<bool, TorrentError> {
         let f = self
             .file(path)
@@ -582,6 +610,8 @@ impl Metainfo {
     }
 }
 
+/// Flatten a BEP 52 `file tree` into files, rejecting unsafe or empty path
+/// components and trees nested deeper than 32 levels.
 fn walk_tree(
     d: &BTreeMap<Vec<u8>, Value>,
     prefix: &mut Vec<String>,

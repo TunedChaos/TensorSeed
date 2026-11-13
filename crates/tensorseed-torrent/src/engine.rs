@@ -8,7 +8,7 @@
 //! such as libtorrent 2.x in the same hybrid swarm (verified in the M0
 //! spike). It does not use BEP 19 webseeds, so webseed bytes come from
 //! `tensorseed-fetch`, and it cannot open v2 only torrents, so
-//! [`Engine::add`] refuses them. Downloads land in place; callers must check
+//! `Engine::add` refuses them. Downloads land in place; callers must check
 //! each finished file against the signed manifest (SHA-256) and, if wanted,
 //! [`Metainfo::verify_file`] before trusting it.
 
@@ -162,6 +162,11 @@ fn v1_indices(t: &Metainfo, paths: &[String]) -> Result<Vec<usize>, TorrentError
 
 impl Engine {
     /// Start a session.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Engine`] when librqbit cannot start (for example the
+    /// listen port is taken).
     pub async fn start(o: EngineOptions) -> Result<Self, TorrentError> {
         let session = Session::new_with_opts(
             o.default_dir.clone(),
@@ -209,6 +214,8 @@ impl Engine {
         self.session.listen_addr()
     }
 
+    /// Add a hybrid torrent to librqbit by its v1 side, with files already in
+    /// `dir`, optional extra peers, and an optional subset of files.
     async fn add(
         &self,
         t: &Metainfo,
@@ -250,6 +257,12 @@ impl Engine {
     /// Seed `t` from `content_dir`, where the files already are (nothing is
     /// copied). Waits until librqbit has checked every selected piece; fails
     /// if any is missing or wrong.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Engine`] if librqbit rejects the torrent, and
+    /// [`TorrentError::Invalid`] when the initial check finds missing or wrong
+    /// pieces or does not finish within `check_timeout`.
     pub async fn seed(
         &self,
         t: &Metainfo,
@@ -286,6 +299,11 @@ impl Engine {
     /// Download `t` into `out_dir` from the swarm. Returns when done or when
     /// `timeout` passes (then `finished` is false and the partial pieces stay
     /// on disk for the HTTP fallback to replace).
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Engine`] if librqbit rejects the torrent or the download
+    /// fails. A timeout is not an error.
     pub async fn download(
         &self,
         t: &Metainfo,
@@ -303,6 +321,10 @@ impl Engine {
     }
 
     /// Stop and forget a torrent (files stay on disk).
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Engine`] if librqbit fails to remove the torrent.
     pub async fn remove(&self, h: &Handle) -> Result<(), TorrentError> {
         self.session
             .delete(TorrentIdOrHash::Id(h.handle.id()), false)

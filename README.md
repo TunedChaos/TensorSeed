@@ -8,11 +8,13 @@ Website: [tensorseed.dev](https://tensorseed.dev)
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
 > v1+v2 torrents, `seed` serves them, `serve` keeps seeding whatever the
-> catalog says, and `pull --swarm` / `--seed-after` use the swarm. The Chia
-> backend has run end to end on Chia testnet11 (not mainnet yet), clients can
-> check the file catalog against the Chia store (the source of truth once a
-> store id is configured), and `takedown` and `doctor` still print "not
-> implemented yet". Expect breaking changes.
+> catalog says, and `pull --swarm` / `--seed-after` use the swarm. The
+> official catalog is anchored on Chia mainnet, and clients check the file
+> catalog against the Chia store by default (strict). `takedown` and `doctor`
+> still print "not implemented yet". Expect breaking changes.
+
+**Want to help keep models available?** Run a mirror or seeder: see
+[docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md).
 
 ## What it is
 
@@ -38,8 +40,10 @@ original host goes away, and lets anyone check that a copy is genuine.
 - **Trust the hashes, not the host.** Any peer, webseed, or mirror can serve bytes,
   because the client checks them against the catalog before accepting them.
 
-Read the full design in [docs/SPEC.md](docs/SPEC.md) and the plan in
-[docs/MILESTONES.md](docs/MILESTONES.md).
+Read the full design in [docs/SPEC.md](docs/SPEC.md), the plan in
+[docs/MILESTONES.md](docs/MILESTONES.md), and the volunteer guide in
+[docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md). API docs: `cargo doc
+--workspace --no-deps --open`.
 
 ## Use it
 
@@ -95,6 +99,10 @@ curl -s http://127.0.0.1:6880/health              # JSON: bytes, peers, torrents
 - A hardened systemd unit and a minimal config are in
   [`contrib/systemd/`](contrib/systemd/).
 
+The full volunteer guide (ports, selection rules, disk budget, webseeds,
+S3 compatible storage, systemd, health checks, and how to get a mirror
+listed) is [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md).
+
 Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and
 gated repos are refused unless `--allow-gated`. Publishing uses a strict license
 allowlist; `--allow-license <id>` or a watchlist entry
@@ -127,7 +135,8 @@ the chain (spec section 6.14):
 # chain_check = "strict"        # "strict" | "warn" | "off"; default strict once a store id is set
 
 [chia]
-catalog_store_id = "<published store id>"   # empty: no chain check (today's default)
+# The official mainnet store; empty disables the chain check (with a notice).
+catalog_store_id = "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76"
 chain_source = "light"          # or "datalayer" to use your own Chia DataLayer node
 coin_api_urls = ["https://api.coinset.org"]
 ```

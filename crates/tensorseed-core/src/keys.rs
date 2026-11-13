@@ -65,6 +65,11 @@ pub struct RepoRef {
 
 impl RepoRef {
     /// Validate and build a repo reference.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] when `id` is not of the form
+    /// `org/name` with allowed characters.
     pub fn new(repo_type: RepoType, id: impl Into<String>) -> Result<Self> {
         let id = id.into();
         let mut parts = id.split('/');
@@ -98,12 +103,22 @@ impl RepoRef {
     }
 
     /// `ts/v1/repo/{type}/{org}/{name}/rev/{commit}`
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] when `commit` is not a full
+    /// commit SHA (see [`check_commit`]).
     pub fn manifest_key(&self, commit: &str) -> Result<String> {
         check_commit(commit)?;
         Ok(format!("{}/rev/{commit}", self.base()))
     }
 
     /// `ts/v1/repo/{type}/{org}/{name}/rev/{commit}/files/{page:06}`
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] when `commit` is not a full
+    /// commit SHA (see [`check_commit`]).
     pub fn file_page_key(&self, commit: &str, page: u32) -> Result<String> {
         Ok(format!("{}/files/{page:06}", self.manifest_key(commit)?))
     }
@@ -130,6 +145,21 @@ pub fn index_prefix() -> String {
 }
 
 /// Check that `commit` is a full 40 character lowercase hex HF commit SHA.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for any other length or character
+/// set.
+///
+/// # Examples
+///
+/// ```
+/// use tensorseed_core::keys::check_commit;
+///
+/// assert!(check_commit("0123456789abcdef0123456789abcdef01234567").is_ok());
+/// assert!(check_commit("main").is_err());
+/// assert!(check_commit("0123456789ABCDEF0123456789ABCDEF01234567").is_err());
+/// ```
 pub fn check_commit(commit: &str) -> Result<()> {
     if is_lower_hex(commit, 40) {
         Ok(())

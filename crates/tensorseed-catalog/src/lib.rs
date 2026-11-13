@@ -10,6 +10,57 @@
 //! entry in every backend is a [`signed::SignedEntry`] signed by the same
 //! publisher key, so catalogs can move between backends with
 //! [`export::export`] and import.
+//!
+//! # Where this fits
+//!
+//! The catalog is what makes a mirror trustworthy. Publishers write signed
+//! manifests here; clients and seeders (`tensorseed pull`, `tensorseed
+//! serve`) read them. When a Chia store id is configured, the Chia
+//! DataLayer root is the source of truth and the file catalog (on any web
+//! host, object store, or `serve --serve-catalog` mirror) is a cache that
+//! must match it: [`anchor`] holds the proofs and the light chain check
+//! (spec section 6.14). Clients pin the publisher's minisign public key
+//! ([`minisign::PublicKey`]), so no mirror can forge content.
+//!
+//! - [`signed`]: the signed entry envelope every backend stores.
+//! - [`minisign`]: minisign compatible Ed25519 keys and signatures.
+//! - [`file`](mod@file): the signed static file catalog (heads, deltas, snapshots).
+//! - [`chia`]: the Chia DataLayer RPC backend.
+//! - [`anchor`]: inclusion proofs and coin lookups tying the file catalog
+//!   to the chain.
+//! - [`mirrors`]: the signed list of catalog mirrors.
+//! - [`sink`]: upload targets (local directory, S3 compatible storage).
+//! - [`export`]: verified bundles for moving a catalog between backends.
+//!
+//! # Examples
+//!
+//! Sign and verify one catalog entry with a fresh key:
+//!
+//! ```
+//! use tensorseed_catalog::minisign::SecretKey;
+//! use tensorseed_catalog::signed::SignedEntry;
+//!
+//! let sk = SecretKey::generate()?;
+//! let pk = sk.public_key();
+//! let entry = SignedEntry::sign(&sk, "tensorseed", "ts/v1/catalog", br#"{"a":1}"#)?;
+//! entry.verify(&pk, "tensorseed")?;
+//! // The same entry does not verify for another catalog name.
+//! assert!(entry.verify(&pk, "other").is_err());
+//! # Ok::<(), tensorseed_catalog::CatalogError>(())
+//! ```
+//!
+//! Pin the official publisher key:
+//!
+//! ```
+//! use tensorseed_catalog::minisign::PublicKey;
+//!
+//! let pk = PublicKey::parse("RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd")?;
+//! assert_eq!(pk.key_id_hex(), "CE1E0E3D543DFFB8");
+//! # Ok::<(), tensorseed_catalog::CatalogError>(())
+//! ```
+
+#![warn(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links)]
 
 use async_trait::async_trait;
 

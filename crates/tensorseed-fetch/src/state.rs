@@ -148,6 +148,11 @@ pub struct StateDb {
 
 impl StateDb {
     /// Open (creating if needed) the database at `path`.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -158,6 +163,11 @@ impl StateDb {
     }
 
     /// In-memory database (tests).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory().map_err(db_err)?)
     }
@@ -180,6 +190,11 @@ impl StateDb {
     }
 
     /// Create or refresh a job.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn upsert_job(&self, id: &str, label: &str, out_dir: &str, files_total: u64) -> Result<()> {
         let t = now();
         self.conn()
@@ -195,6 +210,11 @@ impl StateDb {
     }
 
     /// Set a job's final status.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn set_job_status(&self, id: &str, st: &str, error: Option<&str>) -> Result<()> {
         self.conn()
             .execute(
@@ -207,6 +227,11 @@ impl StateDb {
 
     /// Register a file. If its expected size or digest changed, any previous
     /// progress is discarded.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn upsert_file(&self, job: &str, path: &str, size: u64, digest: &str) -> Result<()> {
         self.conn()
             .execute(
@@ -224,6 +249,11 @@ impl StateDb {
     }
 
     /// Read one file row.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn file(&self, job: &str, path: &str) -> Result<Option<FileRecord>> {
         self.conn()
             .query_row(
@@ -237,6 +267,11 @@ impl StateDb {
     }
 
     /// Record progress.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn file_progress(&self, job: &str, path: &str, bytes_done: u64) -> Result<()> {
         self.conn()
             .execute(
@@ -249,6 +284,11 @@ impl StateDb {
     }
 
     /// Record a verified, renamed file.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn file_done(
         &self,
         job: &str,
@@ -268,6 +308,11 @@ impl StateDb {
     }
 
     /// Record a failure.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn file_failed(&self, job: &str, path: &str, error: &str) -> Result<()> {
         self.conn()
             .execute(
@@ -280,6 +325,11 @@ impl StateDb {
     }
 
     /// All jobs, most recently updated first.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn jobs(&self) -> Result<Vec<JobRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -308,6 +358,11 @@ impl StateDb {
     }
 
     /// Files of one job, sorted by path.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn job_files(&self, job: &str) -> Result<Vec<FileRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -321,6 +376,11 @@ impl StateDb {
     }
 
     /// Record the outcome of harvesting a revision (`done` or `failed`).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn harvest_set(
         &self,
         repo_type: &str,
@@ -343,6 +403,11 @@ impl StateDb {
     }
 
     /// The record for one revision.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn harvest_get(
         &self,
         repo_type: &str,
@@ -361,6 +426,11 @@ impl StateDb {
     }
 
     /// Every harvest record, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn harvest_list(&self) -> Result<Vec<HarvestRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -374,6 +444,11 @@ impl StateDb {
     }
 
     /// Bytes held by finished harvests (for the disk budget).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn harvest_bytes_done(&self) -> Result<u64> {
         let n: i64 = self
             .conn()
@@ -387,6 +462,11 @@ impl StateDb {
     }
 
     /// Delete a job and its file rows. Returns true if it existed.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
     pub fn clear_job(&self, job: &str) -> Result<bool> {
         let n = self
             .conn()

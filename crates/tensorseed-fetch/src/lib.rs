@@ -15,6 +15,31 @@
 //! Swarm downloads (`pull --swarm`, `tensorseed-torrent`) run first and
 //! write in place; a fetcher run afterwards hashes those files and keeps
 //! only the ones that match.
+//!
+//! # Where this fits
+//!
+//! `tensorseed pull`, `harvest`, and `serve` hand this crate a
+//! [`JobSpec`] and the list of files with their expected digests (from a
+//! signed manifest via `tensorseed-catalog`, or from the Hub via
+//! `tensorseed-hf`). The fetcher never trusts a source: bytes only land in
+//! the output directory after they hash to the expected value.
+//!
+//! # Examples
+//!
+//! Job state is kept in a small SQLite database ([`state::StateDb`]):
+//!
+//! ```
+//! use tensorseed_fetch::state::StateDb;
+//!
+//! let db = StateDb::open_in_memory()?;
+//! db.upsert_job("job1", "model org/name@abc", "/tmp/out", 2)?;
+//! let jobs = db.jobs()?;
+//! assert_eq!(jobs[0].files_total, 2);
+//! # Ok::<(), tensorseed_fetch::FetchError>(())
+//! ```
+
+#![warn(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links)]
 
 pub mod state;
 
@@ -215,6 +240,10 @@ pub struct Fetcher {
 
 impl Fetcher {
     /// Build a fetcher. `db` enables resumable job records.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::Http`] if the HTTP client cannot be built.
     pub fn new(db: Option<Arc<StateDb>>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
@@ -225,6 +254,13 @@ impl Fetcher {
     }
 
     /// Download and verify every file of a job.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::Io`] when the output directory cannot be prepared,
+    /// [`FetchError::Invalid`] for unsafe paths, and [`FetchError::State`] when
+    /// the job database fails. Per file download or hash failures are reported
+    /// in the [`FetchReport`].
     pub async fn run(
         &self,
         job: &JobSpec,
@@ -283,6 +319,10 @@ impl Fetcher {
         Ok(report)
     }
 
+    /// Fetch one file: skip it if a verified copy is already in place, then try
+    /// each source in order until one delivers bytes with the right size and
+    /// digest. Sources that serve wrong bytes are dropped for this file;
+    /// transient errors are retried with backoff.
     async fn fetch_one(&self, job: &JobSpec, f: FileJob, opts: FetchOptions) -> Result<FileResult> {
         let final_path =
             safe_join(&job.out_dir, &f.path).map_err(|e| FetchError::Invalid(e.to_string()))?;
@@ -389,6 +429,10 @@ impl Fetcher {
         Ok(ok)
     }
 
+    /// One download attempt from one source into the partial file `part`.
+    /// Resumes with a range request when part of the file is already there,
+    /// hashes while streaming, and classifies failures as transient (retry
+    /// the same source) or bad source (give up on it for this file).
     async fn attempt(
         &self,
         job: &JobSpec,

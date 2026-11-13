@@ -41,6 +41,11 @@ pub struct ExportBundle {
 impl ExportBundle {
     /// Verify every entry against the pinned key and catalog name, and check
     /// that keys are unique and sorted.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if any entry fails verification, and
+    /// [`CatalogError::Chain`] when keys are duplicated or out of order.
     pub fn verify(&self, pinned: &PublicKey) -> Result<()> {
         if self.schema != EXPORT_SCHEMA {
             return Err(CatalogError::Backend(format!(
@@ -65,6 +70,11 @@ impl ExportBundle {
 }
 
 /// Read every `ts/` entry from `backend` and build a verified bundle.
+///
+/// # Errors
+///
+/// Any error from the backend's list and get calls, and the verification errors
+/// of [`ExportBundle::verify`].
 pub async fn export(
     backend: &dyn CatalogBackend,
     source: &CatalogId,

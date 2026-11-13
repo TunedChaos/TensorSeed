@@ -184,6 +184,10 @@ pub struct SignedFile {
 
 /// Hash of a set of entries: SHA-256 of the canonical JSON array of
 /// `[key, sha256(canonical entry bytes)]` pairs sorted by key.
+///
+/// # Errors
+///
+/// [`CatalogError::Core`] if an entry cannot be encoded as canonical JSON.
 pub fn state_hash(entries: &BTreeMap<String, SignedEntry>) -> Result<String> {
     let mut pairs = Vec::with_capacity(entries.len());
     for (k, e) in entries {
@@ -193,6 +197,10 @@ pub fn state_hash(entries: &BTreeMap<String, SignedEntry>) -> Result<String> {
 }
 
 /// Root of a revision.
+///
+/// # Errors
+///
+/// [`CatalogError::Core`] if canonical JSON encoding fails.
 pub fn compute_root(
     catalog: &str,
     revision: u64,
@@ -274,6 +282,11 @@ pub struct ChainState {
 
 impl ChainState {
     /// Empty state before revision 1.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] if `catalog` is not a valid catalog name or
+    /// encoding fails.
     pub fn empty(catalog: &str) -> Result<Self> {
         check_catalog_name(catalog)?;
         Ok(Self {
@@ -287,6 +300,13 @@ impl ChainState {
 
     /// Check a signed head against local state. Detects rollback, forks, and
     /// stale heads.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] for a bad signature,
+    /// [`CatalogError::Rollback`] for a head older than local state,
+    /// [`CatalogError::Fork`] for a different root at an accepted revision, and
+    /// [`CatalogError::Chain`] for a malformed or expired head.
     pub fn check_head(
         &self,
         pk: &PublicKey,
@@ -332,6 +352,12 @@ impl ChainState {
 
     /// Verify and apply the next delta. Every entry signature, the state
     /// hash, and the root are recomputed.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] when the delta or any entry is not signed by
+    /// `pk`, and [`CatalogError::Chain`] when the delta does not follow the
+    /// current revision or its state hash or root does not match.
     pub fn apply_delta(&mut self, pk: &PublicKey, file: &SignedFile) -> Result<()> {
         let delta: Delta = verify_artifact(pk, file, ArtifactKind::Delta, |d: &Delta| {
             (d.catalog.as_str(), d.revision, d.root.as_str())
@@ -391,6 +417,12 @@ impl ChainState {
 
     /// Load a verified snapshot. Callers that already trust a higher revision
     /// must not go backwards; this is checked against `self`.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] for a bad signature, [`CatalogError::Chain`]
+    /// when the recomputed root does not match, and [`CatalogError::Rollback`]
+    /// when the snapshot is older than `self`.
     pub fn load_snapshot(&mut self, pk: &PublicKey, file: &SignedFile) -> Result<()> {
         let snap: Snapshot = verify_artifact(pk, file, ArtifactKind::Snapshot, |s: &Snapshot| {
             (s.catalog.as_str(), s.revision, s.root.as_str())
@@ -430,6 +462,11 @@ impl ChainState {
 
     /// Publisher side: build and sign the next delta from already signed ops,
     /// without changing `self`.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] if encoding fails and [`CatalogError::Signature`]
+    /// if signing fails.
     pub fn build_delta(&self, sk: &SecretKey, ops: Vec<DeltaOp>) -> Result<SignedFile> {
         let mut entries = self.entries.clone();
         for op in &ops {
@@ -465,6 +502,11 @@ impl ChainState {
     }
 
     /// Publisher side: sign a head for the current state.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] if encoding fails and [`CatalogError::Signature`]
+    /// if signing fails.
     pub fn build_head(
         &self,
         sk: &SecretKey,
@@ -491,6 +533,11 @@ impl ChainState {
     }
 
     /// Publisher side: sign a full snapshot of the current state.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] if encoding fails and [`CatalogError::Signature`]
+    /// if signing fails.
     pub fn build_snapshot(&self, sk: &SecretKey) -> Result<SignedFile> {
         let snap = Snapshot {
             schema: SNAPSHOT_SCHEMA.into(),
@@ -661,6 +708,12 @@ fn normalize_base(b: &str) -> String {
 impl FileCatalog {
     /// Build a read only (subscriber) backend. Loads and re-verifies the
     /// persisted state when `state_dir` is set.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] for invalid settings, and [`CatalogError::Io`],
+    /// [`CatalogError::Json`], or verification errors when the persisted state
+    /// cannot be loaded.
     pub fn new(cfg: FileCatalogConfig) -> Result<Self> {
         let mut state = ChainState::empty(&cfg.catalog)?;
         let mut last_snapshot = None;
@@ -696,6 +749,11 @@ impl FileCatalog {
     }
 
     /// Attach the publisher key. It must match the pinned public key.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if `sk` does not match the pinned public
+    /// key.
     pub fn with_signer(mut self, sk: SecretKey) -> Result<Self> {
         if sk.public_key() != self.cfg.publisher {
             return Err(CatalogError::Config(
@@ -757,6 +815,11 @@ impl FileCatalog {
 
     /// Stage already signed entries (for `catalog import`). Every entry is
     /// verified against the pinned key first; signatures are kept as is.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if any entry fails verification; nothing is
+    /// staged in that case.
     pub fn stage_signed(&self, entries: &[SignedEntry]) -> Result<()> {
         for e in entries {
             reject_reserved(&e.key)?;
@@ -772,6 +835,10 @@ impl FileCatalog {
     }
 
     /// Apply a verified delta fetched from a mirror (subscriber side).
+    ///
+    /// # Errors
+    ///
+    /// The verification errors of [`ChainState::apply_delta`].
     pub fn apply_remote_delta(&self, file: &SignedFile) -> Result<()> {
         lock(&self.state).apply_delta(&self.cfg.publisher, file)?;
         self.persist()
@@ -780,6 +847,11 @@ impl FileCatalog {
     /// The state the staged changes would produce, without committing or
     /// uploading anything: `(next state, staged ops)`. The publisher uses it
     /// to write the chain anchor for the next revision first (spec 6.14).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Backend`] when nothing is staged, and
+    /// [`CatalogError::Core`] if encoding fails.
     pub fn preview_staged(&self) -> Result<(ChainState, Vec<DeltaOp>)> {
         let ops = lock(&self.staged).clone();
         if ops.is_empty() {
@@ -815,6 +887,11 @@ impl FileCatalog {
     }
 
     /// Upload `chain-proof.json` now (mutable, short cache).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] without an upload destination, and any error from
+    /// the sink.
     pub async fn upload_chain_proof(&self, body: Vec<u8>) -> Result<()> {
         let key = format!("{}/{CHAIN_PROOF_PATH}", self.cfg.catalog);
         self.sink()?
@@ -823,11 +900,21 @@ impl FileCatalog {
     }
 
     /// Fetch `chain-proof.json` from one source. `Ok(None)` on 404.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Http`] on transport failure and
+    /// [`CatalogError::Backend`] for a non success status other than 404.
     pub async fn fetch_chain_proof(&self, base: &str) -> Result<Option<Vec<u8>>> {
         self.fetch(&normalize_base(base), CHAIN_PROOF_PATH).await
     }
 
     /// Write the verified state and trust anchor to `state_dir` (atomic).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Io`] or [`CatalogError::Json`] if the state cannot be
+    /// written.
     pub fn persist(&self) -> Result<()> {
         let Some(path) = Self::state_file(&self.cfg) else {
             return Ok(());
@@ -924,11 +1011,21 @@ impl FileCatalog {
     /// Bring the local state up to the newest valid head, trying `base_url`
     /// and then each mirror. Rollback, stale, unsigned, or unreachable
     /// sources are skipped; a fork (two signed chains) aborts.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Fork`] when two validly signed chains disagree,
+    /// [`CatalogError::NotFound`] when no source serves a head at all, and
+    /// [`CatalogError::Backend`] when no offered head is usable.
     pub async fn sync(&self) -> Result<SyncReport> {
         self.sync_at(unix_now()).await
     }
 
     /// [`Self::sync`] with an explicit clock (tests).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::sync`].
     pub async fn sync_at(&self, now_unix: u64) -> Result<SyncReport> {
         let from = self.state().revision;
         let mut skipped = Vec::new();
@@ -978,6 +1075,12 @@ impl FileCatalog {
         )))
     }
 
+    /// Verify `head_file` from `base` and walk the local state forward to it,
+    /// fetching deltas (or a snapshot when the gap is too large) from the same
+    /// source. Works on a copy and only swaps it in once the whole chain
+    /// verified, so a bad source never leaves half applied state. When the
+    /// chain check pinned an expected head, any other head is refused.
+    /// Returns the revision reached.
     async fn advance_from(&self, base: &str, head_file: &SignedFile, now_unix: u64) -> Result<u64> {
         let pk = &self.cfg.publisher;
         let mut work = self.state();
@@ -1022,6 +1125,11 @@ impl FileCatalog {
     }
 
     /// Fetch and check the newest head without applying anything.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::NotFound`] when no source serves a head, and the
+    /// verification errors of [`ChainState::check_head`].
     pub async fn remote_status(&self) -> Result<SyncStatus> {
         let now = unix_now();
         let local = self.state();
@@ -1058,6 +1166,10 @@ impl FileCatalog {
     /// serves a head at all (never published, or local only storage that
     /// nothing exposes at `base_url`), continue from the verified local
     /// state. Any other error, including a fork, stops publishing.
+    ///
+    /// # Errors
+    ///
+    /// Any sync error except a missing head, including [`CatalogError::Fork`].
     pub async fn sync_for_publish(&self) -> Result<()> {
         match self.sync().await {
             Ok(_) => Ok(()),
@@ -1104,11 +1216,20 @@ impl FileCatalog {
 
     /// Publisher: re-sign `head.json` for the current revision with a fresh
     /// expiry and upload it. Run this before `head_ttl_secs` lapses.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] without a publisher key or upload destination, and any signing
+    /// or upload error.
     pub async fn resign_head(&self) -> Result<Head> {
         self.resign_head_at(unix_now()).await
     }
 
     /// [`Self::resign_head`] with an explicit clock (tests).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::resign_head`].
     pub async fn resign_head_at(&self, now_unix: u64) -> Result<Head> {
         let sk = self.signer()?;
         let st = self.state();
@@ -1124,6 +1245,11 @@ impl FileCatalog {
 
     /// Publisher: write a snapshot of the current revision now, then a head
     /// that points at it.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] without a publisher key or upload destination, and any signing
+    /// or upload error.
     pub async fn snapshot_now(&self) -> Result<SnapshotRef> {
         let sk = self.signer()?;
         let st = self.state();
@@ -1149,6 +1275,9 @@ impl FileCatalog {
     }
 }
 
+/// Parse a persisted state file and re-verify it from scratch: every entry
+/// signature, the state hash, and the root. A tampered state directory is
+/// treated like any other untrusted source.
 fn load_state(cfg: &FileCatalogConfig, bytes: &[u8]) -> Result<(ChainState, Option<SnapshotRef>)> {
     let doc: PersistedState = serde_json::from_slice(bytes)?;
     if doc.schema != STATE_SCHEMA || doc.catalog != cfg.catalog {

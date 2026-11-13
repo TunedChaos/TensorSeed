@@ -181,6 +181,11 @@ pub fn datalayer_leaf_hash(key: &[u8], value: &[u8]) -> H32 {
 /// Hash a leaf up the proof layers to the DataLayer root, checking every
 /// layer's combined hash on the way (`ProofOfInclusion.valid` in the
 /// reference client).
+///
+/// # Errors
+///
+/// [`CatalogError::Chain`] when a layer's recorded combined hash does not match
+/// the hash computed from its children.
 pub fn fold_proof(leaf: H32, layers: &[ProofLayer]) -> Result<H32> {
     let mut cur = leaf;
     for (i, l) in layers.iter().enumerate() {
@@ -233,11 +238,22 @@ impl FileAnchor {
     }
 
     /// Sign it as the [`FILE_HEAD_KEY`] entry.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] if the anchor cannot be encoded as canonical
+    /// JSON, or [`CatalogError::Signature`] if signing fails.
     pub fn sign(&self, sk: &SecretKey) -> Result<SignedEntry> {
         SignedEntry::sign(sk, &self.catalog, FILE_HEAD_KEY, &to_canonical_vec(self)?)
     }
 
     /// Verify a [`FILE_HEAD_KEY`] entry and parse its anchor.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if the entry is not signed by `pk` for
+    /// `catalog` or carries the wrong key, and [`CatalogError::Json`] or
+    /// [`CatalogError::Chain`] if the value is not a well formed anchor.
     pub fn from_entry(entry: &SignedEntry, pk: &PublicKey, catalog: &str) -> Result<Self> {
         if entry.key != FILE_HEAD_KEY {
             return Err(CatalogError::Chain(format!(
@@ -321,6 +337,12 @@ pub struct VerifiedProof {
 impl ChainProof {
     /// Build from a DataLayer `get_proof` response for [`FILE_HEAD_KEY`]
     /// and the stored entry.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Backend`] or [`CatalogError::Chain`] when the response
+    /// is missing fields, carries malformed hex, or proves a different key or
+    /// value than `entry`.
     pub fn from_get_proof(resp: &Value, entry: SignedEntry) -> Result<Self> {
         let bad = |m: &str| CatalogError::Backend(format!("get_proof response: {m}"));
         let proof = resp.get("proof").ok_or_else(|| bad("no proof"))?;
@@ -370,11 +392,20 @@ impl ChainProof {
     }
 
     /// Canonical JSON bytes for publishing.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] if canonical JSON encoding fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(to_canonical_vec(self)?)
     }
 
     /// Parse published bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Json`] if `bytes` is not a valid chain proof document,
+    /// or [`CatalogError::Chain`] if its schema is not recognised.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_CHAIN_PROOF_BYTES {
             return Err(CatalogError::Chain("chain proof too large".into()));
@@ -391,6 +422,12 @@ impl ChainProof {
 
     /// Offline verification: signature, inclusion, and the puzzle hash the
     /// store coin must have. Needs no network.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] for a bad or foreign signature, and
+    /// [`CatalogError::Chain`] when the inclusion proof does not fold to the
+    /// claimed root or the store id does not match `store_id`.
     pub fn verify(&self, pk: &PublicKey, catalog: &str, store_id: &str) -> Result<VerifiedProof> {
         let want = norm_hex(store_id);
         if norm_hex(&self.store_id) != want {
@@ -502,6 +539,12 @@ impl CoinApi {
     }
 
     /// The coin record, or `None` when the endpoint says it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Http`] on transport failure and
+    /// [`CatalogError::Backend`] when the endpoint answers with an error or an
+    /// unexpected body.
     pub async fn coin_record(&self, base: &str, coin: &str) -> Result<Option<CoinRecord>> {
         let v = self
             .call(
@@ -550,6 +593,12 @@ impl CoinApi {
     }
 
     /// Current peak height.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Http`] on transport failure and
+    /// [`CatalogError::Backend`] when the endpoint answers with an error or an
+    /// unexpected body.
     pub async fn peak_height(&self, base: &str) -> Result<u64> {
         let v = self.call(base, "get_blockchain_state", json!({})).await?;
         v.pointer("/blockchain_state/peak/height")
@@ -563,6 +612,11 @@ impl CoinApi {
     /// reached are skipped; if none answers the result is
     /// [`CatalogError::ChainUnreachable`]. When endpoints disagree about
     /// whether the coin is spent, the most conservative answer wins.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Chain`] when any reachable endpoint contradicts the
+    /// proof, and [`CatalogError::ChainUnreachable`] when no endpoint answers.
     pub async fn check(&self, proof: &VerifiedProof, grace_blocks: u64) -> Result<CoinCheck> {
         if self.urls.is_empty() {
             return Err(CatalogError::Config(

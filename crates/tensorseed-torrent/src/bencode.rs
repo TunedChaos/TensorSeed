@@ -132,6 +132,24 @@ fn encode_bytes(b: &[u8], out: &mut Vec<u8>) {
 }
 
 /// Decode exactly one value spanning all of `data`.
+///
+/// # Errors
+///
+/// [`DecodeError`] for malformed input or trailing bytes.
+///
+/// # Examples
+///
+/// ```
+/// use tensorseed_torrent::bencode::{decode, Value};
+///
+/// let v = decode(b"d3:fooi42ee")?;
+/// assert_eq!(v.get("foo").and_then(Value::as_int), Some(42));
+/// assert_eq!(v.encode(), b"d3:fooi42ee");
+/// // Non canonical integers and trailing bytes are rejected.
+/// assert!(decode(b"i042e").is_err());
+/// assert!(decode(b"i1ex").is_err());
+/// # Ok::<(), tensorseed_torrent::bencode::DecodeError>(())
+/// ```
 pub fn decode(data: &[u8]) -> Result<Value, DecodeError> {
     let mut p = Parser { data, pos: 0 };
     let v = p.value(0)?;
@@ -143,6 +161,11 @@ pub fn decode(data: &[u8]) -> Result<Value, DecodeError> {
 
 /// Decode a top level dictionary and return the raw byte span of `key`'s
 /// value along with the decoded value.
+///
+/// # Errors
+///
+/// [`DecodeError`] for malformed input or when the top level value is not a
+/// dictionary.
 pub fn decode_with_span<'a>(
     data: &'a [u8],
     key: &str,
@@ -199,6 +222,8 @@ impl Parser<'_> {
             .ok_or_else(|| self.err("unexpected end"))
     }
 
+    /// Decode one value at the cursor. Integers must be canonical (no leading
+    /// zeros, no `-0`) and nesting is capped at [`MAX_DEPTH`].
     fn value(&mut self, depth: usize) -> Result<Value, DecodeError> {
         if depth > MAX_DEPTH {
             return Err(self.err("nested too deeply"));

@@ -152,6 +152,11 @@ impl FileEntry {
     }
 
     /// Validate field rules from spec section 6.4.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] naming the first field that
+    /// breaks a rule.
     pub fn validate(&self) -> Result<()> {
         if self.path.is_empty()
             || self.path.starts_with('/')
@@ -273,6 +278,11 @@ pub struct Manifest {
 impl Manifest {
     /// Validate structural rules from spec section 6.4. File pages, if any,
     /// must be validated separately.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] naming the first field that
+    /// breaks a rule.
     pub fn validate(&self) -> Result<()> {
         if self.schema != SCHEMA_MANIFEST {
             return Err(Error::invalid(
@@ -346,6 +356,11 @@ impl Manifest {
     }
 
     /// Parse and validate a manifest from JSON bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Json`] for malformed JSON and
+    /// [`Error::Invalid`] when validation fails.
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
         let m: Self = serde_json::from_slice(bytes)?;
         m.validate()?;
@@ -353,6 +368,10 @@ impl Manifest {
     }
 
     /// Canonical JSON bytes for storage in the catalog.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Json`] if encoding fails.
     pub fn to_canonical_json(&self) -> Result<Vec<u8>> {
         crate::canonical::to_canonical_vec(self)
     }

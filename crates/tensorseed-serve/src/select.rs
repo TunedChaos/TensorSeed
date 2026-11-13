@@ -15,6 +15,16 @@ use serde::Serialize;
 
 /// `*` matches any run of characters (including `/`), `?` one character.
 /// Matching is case sensitive, like Hugging Face repo ids in URLs.
+///
+/// # Examples
+///
+/// ```
+/// use tensorseed_serve::select::glob_match;
+///
+/// assert!(glob_match("org/*", "org/model"));
+/// assert!(glob_match("*-GGUF", "org/model-GGUF"));
+/// assert!(!glob_match("org/*", "Org/model"));
+/// ```
 pub fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();

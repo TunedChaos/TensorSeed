@@ -221,6 +221,11 @@ pub struct S3Settings {
 impl S3Config {
     /// Build from settings, reading the two credentials from the named
     /// environment variables.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] when either environment variable is unset or
+    /// the settings are invalid.
     pub fn from_env(s: &S3Settings) -> Result<Self> {
         let var = |name: &str| {
             std::env::var(name)
@@ -258,6 +263,9 @@ impl S3Config {
     }
 }
 
+/// An [`ObjectSink`] that writes to an S3 compatible bucket (AWS S3,
+/// Cloudflare R2, MinIO, Backblaze B2, and similar), optionally under a
+/// key prefix. Build it with [`S3Sink::new`] from an [`S3Config`].
 #[derive(Debug, Clone)]
 pub struct S3Sink {
     store: Arc<AmazonS3>,
@@ -275,6 +283,11 @@ impl S3Sink {
     }
 
     /// Connect (no network traffic until the first put).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] when the endpoint, bucket, or credentials are
+    /// rejected by the S3 client builder.
     pub fn new(cfg: S3Config) -> Result<Self> {
         let mut b = AmazonS3Builder::new();
         if !cfg.endpoint.is_empty() {
@@ -397,6 +410,10 @@ pub struct MultiSink {
 
 impl MultiSink {
     /// Fan out to `sinks` (at least one).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Config`] when `sinks` is empty.
     pub fn new(sinks: Vec<Arc<dyn ObjectSink>>) -> Result<Self> {
         if sinks.is_empty() {
             return Err(CatalogError::Config("no storage targets".into()));

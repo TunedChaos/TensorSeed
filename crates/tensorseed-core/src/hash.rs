@@ -34,6 +34,10 @@ pub struct HashOutput {
 }
 
 /// Hash everything from `reader` with SHA-256 using a buffer of `buf_size` bytes.
+///
+/// # Errors
+///
+/// Any I/O error from `reader`.
 pub fn sha256_reader_with_buf<R: Read>(mut reader: R, buf_size: usize) -> io::Result<HashOutput> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; buf_size.max(1)];
@@ -55,16 +59,33 @@ pub fn sha256_reader_with_buf<R: Read>(mut reader: R, buf_size: usize) -> io::Re
 }
 
 /// Hash everything from `reader` with SHA-256 using [`DEFAULT_BUF_SIZE`].
+///
+/// # Errors
+///
+/// Any I/O error from `reader`.
 pub fn sha256_reader<R: Read>(reader: R) -> io::Result<HashOutput> {
     sha256_reader_with_buf(reader, DEFAULT_BUF_SIZE)
 }
 
 /// Hash a file on disk with SHA-256.
+///
+/// # Errors
+///
+/// Any I/O error opening or reading `path`.
 pub fn sha256_file(path: impl AsRef<Path>) -> io::Result<HashOutput> {
     sha256_reader(File::open(path)?)
 }
 
 /// Hash a byte slice with SHA-256 and return the lowercase hex digest.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     tensorseed_core::hash::sha256_bytes(b"abc"),
+///     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+/// );
+/// ```
 pub fn sha256_bytes(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
@@ -72,6 +93,11 @@ pub fn sha256_bytes(data: &[u8]) -> String {
 /// Hash `path` and compare with `expected` (hex, case insensitive).
 ///
 /// Returns the hash output on success, or [`Error::HashMismatch`].
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for a malformed `expected`, [`Error::Io`] when the file
+/// cannot be read, and [`Error::HashMismatch`] when the digest differs.
 pub fn verify_file_sha256(path: impl AsRef<Path>, expected: &str) -> Result<HashOutput> {
     let path = path.as_ref();
     let out = sha256_file(path)?;
@@ -111,6 +137,11 @@ impl ExpectedDigest {
     }
 
     /// Validate the hex length for the algorithm and lowercase it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] when the digest is not hex or has the wrong length
+    /// for its algorithm.
     pub fn normalized(self) -> Result<Self> {
         let (len, field) = match &self {
             Self::Sha256(_) => (64, "sha256"),
@@ -184,6 +215,10 @@ impl StreamHasher {
 ///
 /// For git blob ids the header uses `size`, the size the file should have;
 /// a different actual length then yields a mismatching digest, as it should.
+///
+/// # Errors
+///
+/// Any I/O error from `reader`.
 pub fn digest_reader<R: Read>(
     mut reader: R,
     expected: &ExpectedDigest,
@@ -206,6 +241,16 @@ pub fn digest_reader<R: Read>(
 }
 
 /// Git blob id of a byte slice (what `git hash-object` prints).
+///
+/// # Examples
+///
+/// ```
+/// // Same as `printf 'hello\n' | git hash-object --stdin`.
+/// assert_eq!(
+///     tensorseed_core::hash::git_blob_sha1_bytes(b"hello\n"),
+///     "ce013625030ba8dba906f756967f9e9ca394464a"
+/// );
+/// ```
 pub fn git_blob_sha1_bytes(data: &[u8]) -> String {
     let mut h = ExpectedDigest::GitBlobSha1(String::new()).hasher(data.len() as u64);
     h.update(data);

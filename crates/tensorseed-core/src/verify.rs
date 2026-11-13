@@ -143,6 +143,24 @@ impl Default for VerifyOptions {
 
 /// Join a manifest relative path onto `dir`, refusing anything that could
 /// escape it (absolute paths, `..`, empty components, backslashes).
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for any path that is absolute or
+/// contains `..`, empty components, or backslashes.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use tensorseed_core::verify::safe_join;
+///
+/// let dir = Path::new("out");
+/// assert_eq!(safe_join(dir, "a/b.bin")?, Path::new("out/a/b.bin"));
+/// assert!(safe_join(dir, "../etc/passwd").is_err());
+/// assert!(safe_join(dir, "/abs").is_err());
+/// # Ok::<(), tensorseed_core::Error>(())
+/// ```
 pub fn safe_join(dir: &Path, rel: &str) -> Result<PathBuf> {
     let bad = || Error::invalid("file path", format!("unsafe path {rel:?}"));
     if rel.is_empty() || rel.starts_with('/') || rel.contains('\\') || rel.contains('\0') {
@@ -196,6 +214,11 @@ pub fn verify_file(path: &Path, expected: &ExpectedFile) -> FileStatus {
 }
 
 /// Verify every expected file under `dir`.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for an unsafe path. Missing or
+/// mismatching files are reported in the [`VerifyReport`], not as errors.
 pub fn verify_dir(
     dir: &Path,
     expected: &[ExpectedFile],

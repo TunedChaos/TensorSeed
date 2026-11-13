@@ -4,7 +4,7 @@
 //! BEP 52 per file Merkle trees, plus the aligned v1 piece hashes a hybrid
 //! torrent needs, plus the plain SHA-256 of the file, all in one pass.
 //!
-//! Rules (https://www.bittorrent.org/beps/bep_0052.html):
+//! Rules (<https://www.bittorrent.org/beps/bep_0052.html>):
 //! - Leaves are SHA-256 of each 16 KiB block; the last block of a file may be
 //!   short and is hashed as is.
 //! - The leaf layer is padded with zero hashes to a power of two. For a file
@@ -87,6 +87,10 @@ pub fn zero_piece_root(piece_length: usize) -> Hash32 {
 impl FileHasher {
     /// New hasher. `piece_length` must be a power of two and at least 16 KiB.
     /// With `v1`, also compute aligned v1 piece hashes.
+    ///
+    /// # Panics
+    ///
+    /// If `piece_length` is not a power of two or is smaller than 16 KiB.
     pub fn new(piece_length: u64, v1: bool) -> Self {
         let piece_length = piece_length as usize;
         assert!(piece_length >= BLOCK && piece_length.is_power_of_two());
@@ -196,6 +200,10 @@ impl FileHasher {
 }
 
 /// Hash a whole reader.
+///
+/// # Errors
+///
+/// Any I/O error from `r`.
 pub fn hash_reader<R: std::io::Read>(
     mut r: R,
     piece_length: u64,

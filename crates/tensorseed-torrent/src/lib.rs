@@ -13,6 +13,41 @@
 //!   Tensorseed publishes hybrid torrents, downloads webseeds with its own
 //!   verified HTTP fetcher, and checks every finished file against the signed
 //!   manifest (SHA-256) and the torrent's v2 Merkle root.
+//!
+//! # Where this fits
+//!
+//! Publishers build one torrent per (repo, commit) with [`build_torrent`];
+//! its info hashes go into the signed manifest, so a torrent fetched from
+//! any mirror can be checked with [`Metainfo::check_manifest`]. Volunteer
+//! seeders (`tensorseed serve`) and swarm downloads (`pull --swarm`) run
+//! through [`engine`], which keeps files in place and re-verifies them.
+//!
+//! # Examples
+//!
+//! Build a hybrid torrent for a directory and parse it back:
+//!
+//! ```
+//! use tensorseed_torrent::{BuildParams, metainfo::{InputFile, Metainfo, build_torrent}};
+//!
+//! let dir = tempfile::tempdir()?;
+//! std::fs::write(dir.path().join("weights.bin"), vec![7u8; 100_000])?;
+//! let params = BuildParams {
+//!     name: "org__name@0123456789ab".into(),
+//!     piece_length: 64 * 1024,
+//!     hybrid: true,
+//!     trackers: vec![],
+//!     webseeds: vec!["https://mirror.example.org/t/".into()],
+//! };
+//! let files = [InputFile { path: "weights.bin".into(), length: 100_000 }];
+//! let t = build_torrent(dir.path(), &files, &params, 1)?;
+//! let parsed = Metainfo::parse(&t.bytes)?;
+//! assert_eq!(parsed.info_hash_v2, t.info_hash_v2);
+//! assert!(t.magnet().starts_with("magnet:?"));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+
+#![warn(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links)]
 
 pub mod bencode;
 #[cfg(feature = "engine")]
@@ -57,6 +92,11 @@ pub struct BuildParams {
 
 impl BuildParams {
     /// Validate parameters.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Invalid`] when the piece length is not a power of two of
+    /// at least 16 KiB or a webseed base does not end in `/`.
     pub fn validate(&self) -> Result<(), TorrentError> {
         if self.piece_length < MIN_PIECE_LENGTH || !self.piece_length.is_power_of_two() {
             return Err(TorrentError::Invalid(
@@ -73,6 +113,15 @@ impl BuildParams {
 }
 
 /// BEP 19 object path for a file: `<base><torrent name>/<relative path>`.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     tensorseed_torrent::webseed_url("https://m.example.org/t/", "org__name@0123456789ab", "a/b.bin"),
+///     "https://m.example.org/t/org__name@0123456789ab/a/b.bin"
+/// );
+/// ```
 pub fn webseed_url(base: &str, torrent_name: &str, rel_path: &str) -> String {
     format!("{base}{torrent_name}/{rel_path}")
 }

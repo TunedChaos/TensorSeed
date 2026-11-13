@@ -158,6 +158,10 @@ pub fn router(cfg: HttpConfig) -> Router {
 }
 
 /// Serve `router` on `listener` until `shutdown` resolves.
+///
+/// # Errors
+///
+/// Any I/O error from accepting connections.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     router: Router,
@@ -299,6 +303,9 @@ async fn handle(
     resp
 }
 
+/// Map a request path onto the webseed library (`t/...`) or the mirrored
+/// catalog files. Paths are percent decoded and checked component by
+/// component, so nothing outside the served directories is reachable.
 async fn route(cfg: &HttpConfig, path: &str, headers: &HeaderMap, head: bool) -> Response {
     let not_found = || plain(StatusCode::NOT_FOUND, "not found\n");
     if path == "/" {
@@ -386,6 +393,9 @@ fn bytes_response(cfg: &HttpConfig, b: Bytes, ctype: &'static str, head: bool) -
     r
 }
 
+/// Stream a file, honouring a single `Range` header. `expected` is the size
+/// the manifest promises; a file with any other size (for example a
+/// partial download) is not served.
 async fn file_response(
     cfg: &HttpConfig,
     path: &Path,

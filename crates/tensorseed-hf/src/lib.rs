@@ -32,6 +32,36 @@
 //! blob ids), its own output layout, streaming verification, and resumable
 //! jobs, which take only a few small calls over `reqwest`. Xet stored files
 //! are still served by the plain resolve endpoint.
+//!
+//! # Where this fits
+//!
+//! Only publishers (`tensorseed harvest`, `mirror`, `pull --from-hf`) talk
+//! to the Hub. They turn a repo's tree into a signed manifest; [`policy`]
+//! decides whether a revision may be mirrored at all (license and gating).
+//! Clients of a catalog never need the Hub, which is the point: the
+//! content stays available if the Hub copy is lost.
+//!
+//! # Examples
+//!
+//! Look up a repo's files at a commit (needs network):
+//!
+//! ```no_run
+//! use tensorseed_core::keys::{RepoRef, RepoType};
+//! use tensorseed_hf::{DEFAULT_ENDPOINT, HfClient};
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let hf = HfClient::from_env(DEFAULT_ENDPOINT, "HF_TOKEN")?;
+//! let repo = RepoRef::new(RepoType::Model, "org/name")?;
+//! let info = hf.repo_info(&repo, None).await?;
+//! for f in hf.files(&repo, &info.sha).await? {
+//!     println!("{} {} bytes", f.path, f.content_size());
+//! }
+//! # Ok(())
+//! # }
+//! ```
+
+#![warn(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links)]
 
 pub mod policy;
 
@@ -213,6 +243,11 @@ impl TreeEntry {
 
     /// What the content must hash to: LFS SHA-256 when present, otherwise
     /// the git blob SHA-1.
+    ///
+    /// # Errors
+    ///
+    /// [`HfError::Invalid`] when the entry has neither a valid LFS SHA-256 nor
+    /// a git blob id.
     pub fn expected_digest(&self) -> Result<ExpectedDigest> {
         let d = match (&self.lfs, &self.oid) {
             (Some(lfs), _) => ExpectedDigest::Sha256(lfs.oid.clone()),
@@ -318,6 +353,11 @@ pub fn next_link(header: &str) -> Option<String> {
 impl HfClient {
     /// Create a client. `token` is read by the caller from the env var named
     /// in config (`huggingface.token_env`, default `HF_TOKEN`).
+    ///
+    /// # Errors
+    ///
+    /// [`HfError::Arg`] for an invalid endpoint URL and [`HfError::Http`] if
+    /// the HTTP client cannot be built.
     pub fn new(endpoint: &str, token: Option<String>) -> Result<Self> {
         let mut endpoint = reqwest::Url::parse(endpoint)
             .map_err(|e| HfError::Arg(format!("bad Hub endpoint {endpoint:?}: {e}")))?;
@@ -345,6 +385,10 @@ impl HfClient {
     }
 
     /// Create a client reading the token from env var `token_env`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`].
     pub fn from_env(endpoint: &str, token_env: &str) -> Result<Self> {
         Self::new(endpoint, std::env::var(token_env).ok())
     }
@@ -415,6 +459,9 @@ impl HfClient {
         )
     }
 
+    /// GET a Hub URL with the token, retrying 429 and 5xx responses. Refuses
+    /// any URL outside the configured endpoint's origin so the token never
+    /// leaks to another host.
     async fn get(&self, url: &str) -> Result<reqwest::Response> {
         if !self.is_endpoint_origin(url) {
             return Err(HfError::Invalid(format!(
@@ -459,6 +506,11 @@ impl HfClient {
 
     /// List repos of a type by author, optionally requiring tags, sorted by
     /// downloads (highest first), up to `limit` entries.
+    ///
+    /// # Errors
+    ///
+    /// [`HfError::Http`] on transport failure, [`HfError::Status`] for an error
+    /// response, and [`HfError::Invalid`] for an unexpected body.
     pub async fn list_repos(
         &self,
         repo_type: RepoType,
@@ -503,6 +555,12 @@ impl HfClient {
     }
 
     /// Fetch repo info.
+    ///
+    /// # Errors
+    ///
+    /// [`HfError::NotAccessible`] for a missing, private, or gated repo,
+    /// [`HfError::Status`] for other error responses, and [`HfError::Http`] or
+    /// [`HfError::Invalid`] for transport or shape problems.
     pub async fn repo_info(&self, repo: &RepoRef, revision: Option<&str>) -> Result<RepoInfo> {
         let url = self.info_url(repo, revision);
         let info: RepoInfo = self.get(&url).await?.json().await?;
@@ -516,6 +574,11 @@ impl HfClient {
     }
 
     /// Fetch the full recursive tree at `commit`, following pagination.
+    ///
+    /// # Errors
+    ///
+    /// The same errors as [`Self::repo_info`], plus [`HfError::Arg`] for an
+    /// invalid commit.
     pub async fn tree(&self, repo: &RepoRef, commit: &str) -> Result<Vec<TreeEntry>> {
         let mut url = self.tree_url(repo, commit);
         let mut out = Vec::new();
@@ -540,6 +603,11 @@ impl HfClient {
     }
 
     /// Files only (no directories), sorted by path, with safe paths.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::tree`], plus [`HfError::Invalid`] when a path is
+    /// unsafe.
     pub async fn files(&self, repo: &RepoRef, commit: &str) -> Result<Vec<TreeEntry>> {
         let mut files: Vec<TreeEntry> = self
             .tree(repo, commit)

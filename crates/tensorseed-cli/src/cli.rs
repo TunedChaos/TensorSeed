@@ -2,6 +2,13 @@
 // Copyright 2026 Tuned Chaos
 
 //! Command line definition (spec section 9).
+//!
+//! The `///` comments on these types double as clap's `--help` text, so
+//! they use the placeholder style of a terminal (`<dir>`, `org/name[@rev]`)
+//! instead of Markdown. The rustdoc lints that would flag those
+//! placeholders as HTML tags or links are allowed for this module only.
+
+#![allow(rustdoc::invalid_html_tags, rustdoc::broken_intra_doc_links)]
 
 use std::path::PathBuf;
 

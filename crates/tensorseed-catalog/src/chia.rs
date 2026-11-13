@@ -94,6 +94,11 @@ fn read(path: &Path) -> Result<Vec<u8>> {
 
 impl ChiaDataLayer {
     /// Build the backend and its mTLS HTTP client.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Io`] or [`CatalogError::Http`] when the mTLS certificate
+    /// and key cannot be read or loaded.
     pub fn new(cfg: ChiaConfig) -> Result<Self> {
         let mut pem = read(&cfg.ssl_cert)?;
         pem.push(b'\n');
@@ -131,6 +136,11 @@ impl ChiaDataLayer {
     }
 
     /// Attach the publisher key used to sign staged values.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if `sk` does not match the pinned publisher
+    /// key.
     pub fn with_signer(mut self, sk: SecretKey) -> Result<Self> {
         let (_, pk) = self.binding()?;
         if sk.public_key() != *pk {
@@ -166,6 +176,12 @@ impl ChiaDataLayer {
     }
 
     /// POST a DataLayer RPC call and return the JSON response, checking `success`.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Http`] on transport failure, [`CatalogError::Json`] on
+    /// an unparsable body, and [`CatalogError::Backend`] when the RPC reports
+    /// `success: false`.
     pub async fn rpc(&self, method: &str, body: Value) -> Result<Value> {
         let url = format!("{}/{method}", self.cfg.rpc_url.trim_end_matches('/'));
         let resp: Value = self.http.post(url).json(&body).send().await?.json().await?;
@@ -218,6 +234,11 @@ impl ChiaDataLayer {
     }
 
     /// Raw stored bytes under `key` at the local root, without unwrapping.
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], plus [`CatalogError::Backend`] for
+    /// malformed hex in the response.
     pub async fn raw_value(&self, catalog: &CatalogId, key: &str) -> Result<Option<Vec<u8>>> {
         let resp = match self
             .rpc(
@@ -253,6 +274,11 @@ impl ChiaDataLayer {
     /// Wait until the newest entry of the store's root history is confirmed.
     /// Only the newest entry counts: after a wallet resync the launcher's
     /// zero root can show up as an old unconfirmed entry (seen on testnet11).
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], and [`CatalogError::Backend`] when the
+    /// root stays unconfirmed past the confirm policy's timeout.
     pub async fn wait_no_pending(&self, catalog: &CatalogId) -> Result<()> {
         let deadline = tokio::time::Instant::now() + self.timeout;
         loop {
@@ -293,6 +319,11 @@ impl ChiaDataLayer {
 
     /// Stage already signed entries unchanged (for `catalog import`).
     /// Returns how many entries differed from the store and were staged.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if an entry fails verification against the
+    /// pinned key, or any RPC error from [`Self::rpc`].
     pub async fn stage_signed(
         &self,
         catalog: &CatalogId,
@@ -310,6 +341,11 @@ impl ChiaDataLayer {
     /// Stage already signed entries plus deletes in one changelist (the
     /// chain side of a file catalog revision, spec 6.14). Every entry is
     /// verified against the pinned key. Returns how many changes were staged.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if an entry fails verification against the
+    /// pinned key, or any RPC error from [`Self::rpc`].
     pub async fn stage_signed_with_deletes(
         &self,
         catalog: &CatalogId,
@@ -329,6 +365,11 @@ impl ChiaDataLayer {
     }
 
     /// DataLayer `get_proof` for one key at the node's current root.
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], for example when the key is not in the
+    /// store.
     pub async fn get_proof(&self, catalog: &CatalogId, key: &str) -> Result<Value> {
         self.rpc(
             "get_proof",
@@ -339,6 +380,11 @@ impl ChiaDataLayer {
 
     /// The verified file anchor stored under [`crate::anchor::FILE_HEAD_KEY`],
     /// if any.
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], and the verification errors of
+    /// [`FileAnchor::from_entry`].
     pub async fn file_anchor(&self, catalog: &CatalogId) -> Result<Option<FileAnchor>> {
         let (name, pk) = self.binding()?;
         match self.get_signed(catalog, FILE_HEAD_KEY).await? {
@@ -349,6 +395,11 @@ impl ChiaDataLayer {
 
     /// Build the publishable [`ChainProof`] for the anchor at the node's
     /// current root, or `None` when the store has no anchor yet.
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], and the parse errors of
+    /// [`ChainProof::from_get_proof`].
     pub async fn chain_proof(&self, catalog: &CatalogId) -> Result<Option<ChainProof>> {
         let Some(raw) = self.raw_value(catalog, FILE_HEAD_KEY).await? else {
             return Ok(None);
@@ -364,6 +415,11 @@ impl ChiaDataLayer {
     }
 
     /// `add_mirror` with an explicit coin amount and fee.
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], for example when the wallet cannot
+    /// cover `amount` plus `fee`.
     pub async fn add_mirror_with(
         &self,
         catalog: &CatalogId,
@@ -382,6 +438,11 @@ impl ChiaDataLayer {
     /// Wait until a newly created store's launcher is confirmed on chain.
     /// Until then DataLayer refuses `batch_update` ("Already have a pending
     /// root waiting for confirmation"). Polls with the confirm policy.
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], and [`CatalogError::Backend`] when the
+    /// launcher is not confirmed before the confirm policy's timeout.
     pub async fn wait_store_ready(&self, catalog: &CatalogId) -> Result<()> {
         let deadline = tokio::time::Instant::now() + self.timeout;
         loop {
@@ -400,6 +461,11 @@ impl ChiaDataLayer {
 
     /// Confirmed root hashes, oldest first, as reported by the wallet's
     /// singleton history. DataLayer collapses consecutive equal roots.
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], and [`CatalogError::Backend`] for a
+    /// malformed history.
     pub async fn root_history(&self, catalog: &CatalogId) -> Result<Vec<String>> {
         let r = self
             .rpc("get_root_history", json!({ "id": catalog.0 }))
@@ -418,6 +484,13 @@ impl ChiaDataLayer {
     /// accepted anchor and return the new anchor. Rejects a generation lower
     /// than the anchor (rollback) and a history that no longer contains the
     /// anchored root, or a different root at the same generation (fork).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Rollback`] when the on-chain generation is lower than
+    /// `previous`, [`CatalogError::Fork`] when the anchored root is missing
+    /// from history or replaced at the same generation, and any RPC error from
+    /// [`Self::rpc`].
     pub async fn check_anchor(
         &self,
         catalog: &CatalogId,
@@ -459,6 +532,11 @@ impl ChiaDataLayer {
     }
 
     /// Latest root: (hash, confirmed).
+    ///
+    /// # Errors
+    ///
+    /// Any RPC error from [`Self::rpc`], and [`CatalogError::Backend`] for a
+    /// malformed response.
     pub async fn root(&self, catalog: &CatalogId) -> Result<(String, bool)> {
         let r = self.rpc("get_root", json!({ "id": catalog.0 })).await?;
         let hash = r
@@ -478,6 +556,11 @@ impl ChiaDataLayer {
 pub const MAX_BATCH_RAW_BYTES: usize = 8 << 20;
 
 /// Validate the `success` flag that Chia RPC responses carry.
+///
+/// # Errors
+///
+/// [`CatalogError::Backend`] carrying the RPC's `error` text when `success` is
+/// not `true`.
 pub fn check_success(resp: Value) -> Result<Value> {
     if resp.get("success").and_then(Value::as_bool) == Some(true) {
         Ok(resp)
@@ -497,6 +580,10 @@ pub fn to_hex(bytes: &[u8]) -> String {
 }
 
 /// Decode a hex string from DataLayer, accepting an optional `0x` prefix.
+///
+/// # Errors
+///
+/// [`CatalogError::Backend`] when `s` is not valid hex.
 pub fn from_hex(s: &str) -> Result<Vec<u8>> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     hex::decode(s).map_err(|e| CatalogError::Backend(format!("bad hex from DataLayer: {e}")))
@@ -677,6 +764,8 @@ impl CatalogBackend for ChiaDataLayer {
         })
     }
 
+    /// Poll until the store's root equals the pending commit's root and is
+    /// confirmed, or the timeout passes.
     async fn wait_confirmed(&self, pending: &PendingCommit) -> Result<Generation> {
         let deadline = tokio::time::Instant::now() + self.timeout;
         loop {
@@ -717,6 +806,8 @@ impl CatalogBackend for ChiaDataLayer {
         Ok(())
     }
 
+    /// DataLayer's view of how far the local copy of a store is behind the
+    /// chain, with a clearer error for stores the node has never seen.
     async fn sync_status(&self, catalog: &CatalogId) -> Result<SyncStatus> {
         let r = match self
             .rpc("get_sync_status", json!({ "id": catalog.0 }))

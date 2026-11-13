@@ -39,6 +39,11 @@ pub struct SignedEntry {
 }
 
 /// Validate a logical catalog name: 1 to 64 of `[a-z0-9-]`.
+///
+/// # Errors
+///
+/// [`CatalogError::Config`] when `name` is empty, longer than 64 bytes, or
+/// contains other characters.
 pub fn check_catalog_name(name: &str) -> Result<()> {
     let ok = !name.is_empty()
         && name.len() <= 64
@@ -76,6 +81,11 @@ impl SignedEntry {
     ///
     /// The value must already be canonical JSON (see
     /// `tensorseed_core::canonical`); this is checked.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] when `value` is not canonical JSON, and
+    /// [`CatalogError::Signature`] if signing fails.
     pub fn sign(sk: &SecretKey, catalog: &str, key: &str, value: &[u8]) -> Result<Self> {
         check_catalog_name(catalog)?;
         check_key(key)?;
@@ -93,6 +103,11 @@ impl SignedEntry {
     }
 
     /// Verify against the pinned publisher key and logical catalog name.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] when the signature does not verify or its
+    /// trusted comment names another catalog, key, or value hash.
     pub fn verify(&self, pk: &PublicKey, catalog: &str) -> Result<()> {
         if self.schema != SIGNED_ENTRY_SCHEMA {
             return Err(CatalogError::Signature(format!(
@@ -112,11 +127,19 @@ impl SignedEntry {
     }
 
     /// Canonical JSON bytes of the whole envelope (what backends store).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Core`] if canonical JSON encoding fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(to_canonical_vec(self)?)
     }
 
     /// Parse an envelope from stored bytes. Does not verify.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Json`] when `bytes` is not a signed entry envelope.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         Ok(serde_json::from_slice(bytes)?)
     }

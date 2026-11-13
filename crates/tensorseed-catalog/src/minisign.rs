@@ -60,6 +60,11 @@ pub struct PublicKey {
 impl PublicKey {
     /// Parse the base64 line of a minisign public key (for example `RWS...`),
     /// or a full `.pub` file whose second line is that base64 string.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] when the text is not a valid Ed25519
+    /// minisign public key.
     pub fn parse(text: &str) -> Result<Self> {
         let line = text
             .lines()
@@ -99,6 +104,12 @@ impl PublicKey {
     ///
     /// Returns the trusted comment on success. Callers must check that the
     /// trusted comment carries the context they expect.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] for a malformed signature file, a key id
+    /// that does not match, or a signature (global or over the trusted comment)
+    /// that does not verify.
     pub fn verify(&self, data: &[u8], sig_text: &str) -> Result<String> {
         let parsed = SignatureBox::parse(sig_text)?;
         if parsed.key_id != self.key_id {
@@ -149,6 +160,11 @@ impl KdfLimits {
     };
 
     /// libsodium `pickparams`: (log2 N, r, p).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] when the stored limits are outside what
+    /// libsodium would accept.
     pub fn scrypt_params(self) -> Result<(u8, u32, u32)> {
         let opslimit = self.opslimit.max(32_768);
         let r: u64 = 8;
@@ -228,6 +244,10 @@ impl SecretKey {
     }
 
     /// Generate a new random key with a random key id (as minisign does).
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if the operating system random source fails.
     pub fn generate() -> Result<Self> {
         let seed = random_bytes::<32>()?;
         let key_id = random_bytes::<8>()?;
@@ -243,6 +263,10 @@ impl SecretKey {
     }
 
     /// True if a minisign secret key file is password protected.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if `text` is not a minisign secret key file.
     pub fn file_is_encrypted(text: &str) -> Result<bool> {
         let raw = decode_secret_file(text)?;
         Ok(raw[2..4] == KDF_SCRYPT)
@@ -251,6 +275,10 @@ impl SecretKey {
     /// Serialize as a minisign secret key file. With a password the key is
     /// encrypted with scrypt at `limits`; without one it is stored in the
     /// clear like `minisign -W`.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if randomness or key derivation fails.
     pub fn to_minisign_file(&self, password: Option<&[u8]>, limits: KdfLimits) -> Result<String> {
         let mut keynum = Vec::with_capacity(104);
         keynum.extend_from_slice(&self.key_id);
@@ -296,6 +324,11 @@ impl SecretKey {
 
     /// Load a minisign secret key file. `password` is required when the
     /// file is encrypted; a wrong password fails the checksum.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] for a malformed file, a missing or wrong
+    /// password (checksum mismatch), or unsupported algorithms.
     pub fn from_minisign_file(text: &str, password: Option<&[u8]>) -> Result<Self> {
         let raw = decode_secret_file(text)?;
         let kdf = [raw[2], raw[3]];
@@ -350,6 +383,10 @@ impl SecretKey {
     /// Produce a minisign signature file (prehashed `ED` mode) over `data`.
     ///
     /// `trusted_comment` must be a single line.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Signature`] if `trusted_comment` contains a line break.
     pub fn sign(&self, data: &[u8], trusted_comment: &str) -> Result<String> {
         if trusted_comment.contains(['\n', '\r']) {
             return Err(sig_err("trusted comment must be one line"));
@@ -410,6 +447,9 @@ struct SignatureBox {
 }
 
 impl SignatureBox {
+    /// Split a minisign signature file into its four lines: untrusted comment,
+    /// signature (algorithm, key id, signature), trusted comment, and global
+    /// signature over the signature plus trusted comment.
     fn parse(text: &str) -> Result<Self> {
         let mut lines = text.lines();
         let first = lines.next().ok_or_else(|| sig_err("empty signature"))?;
