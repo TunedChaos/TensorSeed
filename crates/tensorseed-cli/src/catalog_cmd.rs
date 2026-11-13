@@ -138,6 +138,7 @@ pub async fn run(
             );
             Ok(ExitCode::SUCCESS)
         }
+        CatalogCmd::UpdateInfo { dry_run } => update_info(&cfg()?, *dry_run).await,
         CatalogCmd::Anchor => anchor(&cfg()?).await,
         CatalogCmd::ChainStatus { no_wait, catalog } => {
             chain_status(&cfg()?, *no_wait, catalog.as_deref()).await
@@ -269,6 +270,56 @@ async fn create(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
         }
         other => bail!("unknown backend {other:?}"),
     }
+}
+
+async fn update_info(cfg: &Config, dry_run: bool) -> anyhow::Result<ExitCode> {
+    if cfg.catalog.backend != "file" {
+        bail!("this command is for the file backend (catalog.backend = \"file\")");
+    }
+    let pk = pinned_key(cfg)?;
+    let (b, id) = open_reader(cfg, None, false).await?;
+    let current =
+        crate::backend::read_verified(b.as_dyn(), &id, &catalog_info_key(), &pk, &cfg.catalog.name)
+            .await?
+            .map(|e| serde_json::from_str::<CatalogInfo>(&e.value))
+            .transpose()
+            .context("parsing the current ts/v1/catalog value")?;
+    let Some(current) = current else {
+        bail!(
+            "catalog {:?} has no ts/v1/catalog entry; run `tensorseed catalog create` first",
+            cfg.catalog.name
+        );
+    };
+    let mut next = catalog_info(cfg);
+    next.created_at = current.created_at.clone();
+    let cur_bytes = tensorseed_core::canonical::to_canonical_vec(&current)?;
+    let value = tensorseed_core::canonical::to_canonical_vec(&next)?;
+    println!("current:  {}", String::from_utf8_lossy(&cur_bytes));
+    println!("proposed: {}", String::from_utf8_lossy(&value));
+    if cur_bytes == value {
+        println!("no change; nothing to publish");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if dry_run {
+        println!("dry run: nothing signed or uploaded");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let (cat, chain) = publisher_file_catalog(cfg).await?;
+    cat.stage(
+        &id,
+        &[CatalogOp::Upsert {
+            key: catalog_info_key(),
+            value,
+        }],
+    )
+    .await?;
+    let g = crate::chain::commit_file(&cat, &id, chain.as_ref()).await?;
+    println!(
+        "updated catalog info for {:?}: revision {} root {}",
+        cfg.catalog.name, g.number, g.root
+    );
+    println!("written to {}", crate::backend::describe_storage(cfg));
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn anchor(cfg: &Config) -> anyhow::Result<ExitCode> {

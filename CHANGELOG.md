@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `tensorseed catalog update-info` rewrites the signed catalog info
+  (`ts/v1/catalog`) from the config, so a publisher can set or change
+  `publisher_contact`, `publisher_policy_url`, webseed bases, and trackers
+  after `catalog create`. `--dry-run` shows the current and proposed values
+  without signing.
+- mirror.tensorseed.dev landing and not found pages (`site/mirror/`).
+
 ## 0.2.0
 
 Tensorseed mirrors open Hugging Face models and datasets for preservation.

@@ -117,6 +117,13 @@ Replace the pubkey with the contents of your `.pub` file (one `RW...`
 line). Put your own contact and policy URLs in. The examples above are
 placeholders, not real hosts.
 
+These publisher fields are written into the signed catalog info entry
+(`ts/v1/catalog`) by `catalog create`. To change them later, edit the
+config and run `tensorseed catalog update-info --dry-run` to compare the
+current and proposed values, then `tensorseed catalog update-info` to
+sign and publish them as a new revision (file backend; anchor it on
+Chia as usual afterwards).
+
 After the store exists (section 3), switch the same file to the
 recommended operating setup:
 

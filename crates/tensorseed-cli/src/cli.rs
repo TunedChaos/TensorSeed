@@ -353,6 +353,14 @@ pub enum CatalogCmd {
     },
     /// Re-sign head.json with a fresh expiry and upload it (file backend).
     ResignHead,
+    /// Publisher: rewrite the signed catalog info (ts/v1/catalog) from the
+    /// current config, for example after changing `publisher_contact` or
+    /// `publisher_policy_url` (file backend). Keeps the original `created_at`.
+    UpdateInfo {
+        /// Print the current and proposed values without signing or uploading.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Write a full snapshot now and point head.json at it (file backend).
     Snapshot,
     /// Publisher: make the Chia store (chia.catalog_store_id) anchor the
@@ -625,6 +633,7 @@ impl Command {
             Self::Catalog(CatalogCmd::Export { .. }) => "catalog export",
             Self::Catalog(CatalogCmd::Import { .. }) => "catalog import",
             Self::Catalog(CatalogCmd::ResignHead) => "catalog resign-head",
+            Self::Catalog(CatalogCmd::UpdateInfo { .. }) => "catalog update-info",
             Self::Catalog(CatalogCmd::Snapshot) => "catalog snapshot",
             Self::Catalog(CatalogCmd::Anchor) => "catalog anchor",
             Self::Catalog(CatalogCmd::ChainStatus { .. }) => "catalog chain-status",
