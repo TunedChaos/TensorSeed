@@ -147,3 +147,46 @@ chia wallet show                    # sync status and balance
 chia rpc data_layer get_root_history '{"id": "<store id>"}'
 chia stop -d all                    # stops every service and the daemon
 ```
+
+## 6. Mainnet publishing wallet setup (2026-11-12)
+
+The mainnet publishing wallet runs on the publisher host with the same
+2.7.5 install, in its own root and keyring so nothing is shared with the
+testnet roots:
+
+```sh
+# ~/opt/chia-mainnet.env
+export CHIA_ROOT="$HOME/.chia/mainnet"
+export CHIA_KEYS_ROOT="$HOME/.chia_keys_mainnet"
+export PATH="$HOME/opt/chia-venv/bin:$PATH"
+```
+
+Steps that were used:
+
+1. `chia init`, then `chia keys generate --label <label>` for a new key used
+   only for publishing. The mnemonic lives only in
+   `$CHIA_KEYS_ROOT/keyring.yaml`; keep that directory 0700 and its files
+   0600, and never print the mnemonic. Without a keyring passphrase the file
+   is only protected by file permissions, so set one with
+   `chia passphrase set` once unattended restarts are not needed, and keep an
+   offline backup of the mnemonic.
+2. Peers: on hosts whose resolver returns placeholder addresses, resolve the
+   mainnet seeders listed under `dns_servers` in `config.yaml` through a
+   public DNS over HTTPS resolver, check which answer on TCP 8444, and list
+   about a dozen of them in `wallet.full_node_peers` (port 8444). Set
+   `wallet.target_peer_count` to 5 or more so one slow peer cannot stall
+   confirmations.
+3. Keep every listener on localhost: `self_hostname: localhost` (the
+   default) keeps the daemon (55400), wallet RPC (9256), and DataLayer RPC
+   (8562) local, and `data_layer.host_ip: 127.0.0.1` keeps the
+   `data_layer_http` file server (8575) local until a public mirror is set up
+   behind a reverse proxy.
+4. `chia start wallet data data_layer_http`; `chia wallet show` reached
+   `Synced` within two minutes as a light wallet, with no full node.
+5. Fund the wallet from any XCH wallet. 0.01 XCH (10,000,000,000 mojos) covers
+   the store (1 mojo), a mirror coin, and thousands of updates at a
+   1,000,000 mojo fee.
+6. Only then run `tensorseed catalog create` against this root (section 3).
+
+`DataLayerWallet not available` in the log before the first DataLayer
+action is normal; the DataLayer wallet is created on first use.
