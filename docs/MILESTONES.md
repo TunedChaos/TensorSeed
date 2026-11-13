@@ -80,7 +80,8 @@ side of M1 and M2 is already done.
 - [x] Auto fetch of newly selected revisions through the pull pipeline (`serve.fetch`)
 - [x] uTP (librqbit 9.1, on by default in `serve`) and opt in NAT-PMP / UPnP IGD port mapping (`serve.port_mapping`)
 - [x] HTTP webseed serving with ranges, `--serve-catalog`, health endpoint, state file resume, systemd unit
-- [ ] Measure throughput between two real hosts (needs one reachable port)
+- [x] Throughput between two real hosts over SSH port forwards (about 11.8 MB/s server to home, 3 MB/s home upstream; SPEC 8.3)
+- [ ] Direct connection between two real hosts with an open or mapped port (both test hosts were firewalled)
 - [ ] Free disk space check before fetching (today only the byte budget applies)
 - [ ] Catalog `.dat` torrent (Chia) and snapshot torrent seeding (file)
 
