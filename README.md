@@ -53,6 +53,7 @@ tensorseed list
 tensorseed pull org/name            # webseeds first, the Hub as fallback
 tensorseed verify org/name          # against the signed manifest; exit 3 on mismatch
 tensorseed pull org/name --swarm --seed-after 2h   # peers first, HTTP fills gaps, then seed
+tensorseed pull org/name --swarm-only --peer host:6881   # peers only: checks that a seeder works
 
 # Publisher side:
 tensorseed catalog keygen           # minisign compatible, password protected

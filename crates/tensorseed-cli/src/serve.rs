@@ -424,9 +424,15 @@ impl Daemon {
                 .await
                 .with_context(|| format!("binding serve.http_listen {}", sc.http_listen))?;
             let a = l.local_addr()?;
-            println!("http     http://{a}/ (webseed base http://{a}/t/)");
+            // Wildcard binds: show the shape, the public name is not known here.
+            let shown = if a.ip().is_unspecified() {
+                format!("<this host>:{}", a.port())
+            } else {
+                a.to_string()
+            };
+            println!("http     http://{a}/ (webseed base http://{shown}/t/)");
             if sc.serve_catalog {
-                println!("catalog  http://{a}/{}/", cfg.catalog.name);
+                println!("catalog  http://{shown}/{}/", cfg.catalog.name);
             }
             {
                 let mut w = status.write().unwrap_or_else(|e| e.into_inner());
@@ -1384,6 +1390,7 @@ async fn fetch_revision(
         no_wait: true,
         ignore_tombstone: false,
         swarm: cfg.serve.fetch_swarm,
+        swarm_only: false,
         peer: Vec::new(),
         seed_after: None,
     };

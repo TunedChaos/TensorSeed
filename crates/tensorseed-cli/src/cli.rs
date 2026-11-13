@@ -356,6 +356,10 @@ pub struct PullArgs {
     /// checked against the manifest either way.
     #[arg(long)]
     pub swarm: bool,
+    /// Like --swarm, but never download over HTTP or from the Hub: files the
+    /// swarm does not deliver fail (exit 3). Useful to test seeders.
+    #[arg(long, conflicts_with = "from_hf")]
+    pub swarm_only: bool,
     /// Extra peer to dial (`host:port`), repeatable; implies nothing without
     /// --swarm.
     #[arg(long)]

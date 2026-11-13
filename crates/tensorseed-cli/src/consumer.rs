@@ -350,7 +350,8 @@ fn state_db(cfg: &Config) -> anyhow::Result<Arc<StateDb>> {
 
 /// `tensorseed pull`.
 pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
-    let wants_torrent = args.swarm || args.seed_after.is_some();
+    let use_swarm = args.swarm || args.swarm_only;
+    let wants_torrent = use_swarm || args.seed_after.is_some();
     if wants_torrent && args.from_hf {
         bail!("--swarm and --seed-after need a Tensorseed manifest with a torrent, not --from-hf");
     }
@@ -491,19 +492,23 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             if ef.pickle_risk && !args.allow_pickle {
                 skipped.push(ef.path.clone());
             } else {
-                let mut sources: Vec<Source> = seeds
-                    .webseed_file_urls(&f.path)
-                    .into_iter()
-                    .map(|url| Source {
-                        url,
-                        kind: SourceKind::Webseed,
-                        bearer: None,
-                    })
-                    .collect();
-                if !args.no_hf_fallback {
+                let mut sources: Vec<Source> = if args.swarm_only {
+                    Vec::new()
+                } else {
+                    seeds
+                        .webseed_file_urls(&f.path)
+                        .into_iter()
+                        .map(|url| Source {
+                            url,
+                            kind: SourceKind::Webseed,
+                            bearer: None,
+                        })
+                        .collect()
+                };
+                if !args.no_hf_fallback && !args.swarm_only {
                     sources.push(hf_source(&commit, &f.path));
                 }
-                if sources.is_empty() {
+                if sources.is_empty() && !args.swarm_only {
                     bail!("{} has no webseeds and --no-hf-fallback was given", f.path);
                 }
                 files.push(FileJob {
@@ -540,9 +545,7 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
     // pass finds already present was written by the swarm (and is verified
     // by that pass like everything else).
     let mut before_swarm: Option<std::collections::HashSet<String>> = None;
-    if args.swarm
-        && let Some(t) = &torrent
-    {
+    if use_swarm && let Some(t) = &torrent {
         before_swarm = Some(
             files
                 .iter()
@@ -587,6 +590,12 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
                 println!("ok     {} (swarm)", f.path);
             }
             Outcome::AlreadyPresent => println!("ok     {} (already present)", f.path),
+            Outcome::Failed if args.swarm_only => {
+                println!(
+                    "FAILED {} (the swarm did not deliver it; --swarm-only)",
+                    f.path
+                );
+            }
             Outcome::Failed => {
                 println!("FAILED {}", f.path);
                 for e in &f.errors {
@@ -685,14 +694,15 @@ async fn swarm_download(
                 p.have,
                 p.total,
                 t0.elapsed().as_secs_f64(),
-                if p.finished {
-                    ""
-                } else {
-                    " (HTTP sources fill the rest)"
+                match (p.finished, args.swarm_only) {
+                    (true, _) => "",
+                    (false, true) => " (--swarm-only: the rest fails)",
+                    (false, false) => " (HTTP sources fill the rest)",
                 }
             );
             let _ = engine.remove(&h).await;
         }
+        Err(e) if args.swarm_only => println!("swarm  unavailable ({e})"),
         Err(e) => println!("swarm  unavailable ({e}); using HTTP sources"),
     }
     engine.stop().await;

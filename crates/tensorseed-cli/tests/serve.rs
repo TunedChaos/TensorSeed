@@ -469,8 +469,7 @@ async fn serve_fetches_seeds_serves_and_drops_takedowns() {
         &[
             "pull",
             "org/a",
-            "--no-hf-fallback",
-            "--swarm",
+            "--swarm-only",
             "--peer",
             &peer,
             "--out",
