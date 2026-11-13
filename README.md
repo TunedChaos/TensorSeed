@@ -1,6 +1,8 @@
 # Tensorseed
 
-**Verifiable, chain anchored mirrors of open Hugging Face models, shared over BitTorrent v2.**
+**A decentralized, verifiable package manager for open AI models and datasets.**
+
+Verifiable, chain anchored mirrors of open Hugging Face models and datasets, shared over BitTorrent v2.
 
 Website: [tensorseed.dev](https://tensorseed.dev).
 Catalog explorer: [explore.tensorseed.dev](https://explore.tensorseed.dev).
