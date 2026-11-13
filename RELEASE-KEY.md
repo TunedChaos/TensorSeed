@@ -38,7 +38,8 @@ id is the catalog key id `CE1E0E3D543DFFB8`.
 
 ## Verifying a release
 
-Download the archive for your platform, `SHA256SUMS`, and
+Download the archive for your platform (or the source archive,
+`tensorseed-<version>-src.tar.gz` or `.zip`), `SHA256SUMS`, and
 `SHA256SUMS.minisig` from the same release, then:
 
 ```sh
@@ -105,7 +106,8 @@ update all four plus the website in one commit.
 ## Signing a release
 
 ```sh
-just dist                                         # archives and SHA256SUMS in dist/
+just dist                                         # binaries, source archives, and SHA256SUMS in dist/
+just dist-src v0.1.0                              # source archives only, from that tag
 just sign ~/.tensorseed-release/tensorseed-release.key
 just verify-dist ~/.tensorseed-release/tensorseed-release.pub
 ```

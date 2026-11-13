@@ -57,6 +57,11 @@ Prebuilt archives:
 There is no macOS build. macOS users can build from source with
 `cargo install` or `cargo build --release` (Rust 1.87 or newer).
 
+Signed source archives (`tensorseed-0.1.0-src.tar.gz` and
+`tensorseed-0.1.0-src.zip`) were added to this release after the initial
+publication. They contain the tracked files from tag `v0.1.0`, are listed
+in `SHA256SUMS`, and are signed with the same release key.
+
 ### Verify a release
 
 Release archives ship with `SHA256SUMS` and `SHA256SUMS.minisig`, signed

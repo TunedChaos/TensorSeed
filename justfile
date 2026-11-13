@@ -10,7 +10,8 @@
 #   cargo install --locked just cargo-zigbuild
 #   pip install ziglang            # or install zig 0.13+ from ziglang.org
 #   just targets                   # rustup target add for every dist target
-#   just dist                      # release archives and SHA256SUMS in dist/
+#   just dist                      # binaries, source archives, and SHA256SUMS in dist/
+#   just dist-src [ref]            # tensorseed-<version>-src.tar.gz and .zip from <ref>
 #
 # On Windows, run the recipes from Git Bash (shebang recipes need bash), or
 # skip just entirely and build natively with MSVC: `cargo build --release`.
@@ -81,7 +82,25 @@ dist: (clean-dist)
         esac
         rm -rf "$stage"
     done
+    just dist-src
     (cd {{ dist_dir }} && sha256sum {{ bin }}-* > SHA256SUMS && cat SHA256SUMS)
+
+# Writes dist/tensorseed-<version>-src.tar.gz and .zip with prefix tensorseed-<version>/.
+# `just dist` runs this before writing SHA256SUMS.
+# Source archives from <ref> (default: tag on HEAD, or HEAD) via git archive.
+dist-src ref="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ref="{{ ref }}"
+    if [ -z "$ref" ]; then
+        ref="$(git describe --tags --exact-match HEAD 2>/dev/null || git rev-parse HEAD)"
+    fi
+    prefix="{{ bin }}-{{ version }}"
+    out="{{ dist_dir }}/${prefix}-src"
+    mkdir -p {{ dist_dir }}
+    git archive --format=tar.gz --prefix="${prefix}/" -o "${out}.tar.gz" "$ref"
+    git archive --format=zip --prefix="${prefix}/" -o "${out}.zip" "$ref"
+    echo "wrote ${out}.tar.gz and ${out}.zip from ${ref}"
 
 # Key id of the catalog publisher key. Release signing must never use it.
 catalog_key_id := "CE1E0E3D543DFFB8"

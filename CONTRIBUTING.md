@@ -70,13 +70,18 @@ cargo install --locked just cargo-zigbuild
 pip install ziglang          # or a zig release from ziglang.org on PATH
 just targets                 # rustup target add for every target above
 just build x86_64-pc-windows-gnu      # one target, into target/<triple>/dist/
-just dist                    # all targets: dist/tensorseed-<version>-<target>.tar.gz or .zip, plus SHA256SUMS
+just dist                    # all targets plus source archives, and SHA256SUMS
+just dist-src v0.1.0         # source only: dist/tensorseed-<version>-src.tar.gz and .zip from that ref
 just sign ~/.tensorseed-release/tensorseed-release.key   # release key only, see RELEASE-KEY.md
 just verify-dist             # uses keys/tensorseed-release.pub
 ```
 
-Archives contain the binary, LICENSE, README.md, the volunteer guide, the
-example configs, and (Linux) the systemd unit. `dist/` is ignored by git.
+Binary archives contain the binary, LICENSE, README.md, the volunteer guide,
+the example configs, and (Linux) the systemd unit. `just dist` also writes
+source archives (`tensorseed-<version>-src.tar.gz` and `.zip`) with `git
+archive` of the current tag or HEAD (tracked files only, prefix
+`tensorseed-<version>/`). `just dist-src <ref>` builds only those, from a
+chosen tag or commit. `dist/` is ignored by git.
 
 ### On Windows
 
