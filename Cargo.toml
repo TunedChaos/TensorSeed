@@ -3,7 +3,9 @@ resolver = "3"
 members = [
     "crates/tensorseed-core",
     "crates/tensorseed-hf",
+    "crates/tensorseed-verify",
     "crates/tensorseed-catalog",
+    "crates/tensorseed-wasm",
     "crates/tensorseed-torrent",
     "crates/tensorseed-fetch",
     "crates/tensorseed-serve",
@@ -22,7 +24,9 @@ homepage = "https://tensorseed.dev"
 [workspace.dependencies]
 tensorseed-core = { path = "crates/tensorseed-core", version = "0.1.0" }
 tensorseed-hf = { path = "crates/tensorseed-hf", version = "0.1.0" }
+tensorseed-verify = { path = "crates/tensorseed-verify", version = "0.1.0" }
 tensorseed-catalog = { path = "crates/tensorseed-catalog", version = "0.1.0" }
+tensorseed-wasm = { path = "crates/tensorseed-wasm", version = "0.1.0" }
 tensorseed-torrent = { path = "crates/tensorseed-torrent", version = "0.1.0" }
 tensorseed-fetch = { path = "crates/tensorseed-fetch", version = "0.1.0" }
 tensorseed-serve = { path = "crates/tensorseed-serve", version = "0.1.0" }

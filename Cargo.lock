@@ -3481,6 +3481,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tensorseed-core",
+ "tensorseed-verify",
  "thiserror 2.0.21",
  "tokio",
  "toml",
@@ -3595,6 +3596,36 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "tensorseed-verify"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "blake2",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hex",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tensorseed-core",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "tensorseed-wasm"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "tensorseed-core",
+ "tensorseed-verify",
+ "wasm-bindgen",
 ]
 
 [[package]]

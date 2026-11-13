@@ -1,0 +1,28 @@
+[package]
+name = "tensorseed-wasm"
+description = "WebAssembly bindings for Tensorseed catalog verification."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+tensorseed-core = { workspace = true, default-features = false }
+tensorseed-verify = { workspace = true, default-features = false }
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+# Key generation is only used by native unit tests.
+tensorseed-verify = { workspace = true, features = ["keygen"] }
+
+[lints]
+workspace = true

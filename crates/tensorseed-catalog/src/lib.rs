@@ -131,6 +131,27 @@ pub enum CatalogError {
     NotImplemented(&'static str),
 }
 
+impl From<tensorseed_verify::Error> for CatalogError {
+    fn from(err: tensorseed_verify::Error) -> Self {
+        use tensorseed_verify::Error as E;
+        match err {
+            E::Json(e) => Self::Json(e),
+            E::Io(e) => Self::Io(e),
+            E::Backend(s) => Self::Backend(s),
+            E::Config(s) => Self::Config(s),
+            E::Core(e) => Self::Core(e),
+            E::Signature(s) => Self::Signature(s),
+            E::Chain(s) => Self::Chain(s),
+            E::Rollback { seen, offered } => Self::Rollback { seen, offered },
+            E::Fork { revision } => Self::Fork { revision },
+            E::ChainUnreachable(s) => Self::ChainUnreachable(s),
+            E::NotFound(s) => Self::NotFound(s),
+            E::Unsupported(s) => Self::Unsupported(s),
+            E::NotImplemented(s) => Self::NotImplemented(s),
+        }
+    }
+}
+
 /// Result alias for catalog operations.
 pub type Result<T, E = CatalogError> = std::result::Result<T, E>;
 
@@ -250,4 +271,10 @@ mod tests {
         fn takes(_: Option<&dyn CatalogBackend>) {}
         takes(None);
     }
+}
+
+/// Deterministic key for tests only.
+#[cfg(test)]
+pub(crate) fn test_key(n: u8) -> minisign::SecretKey {
+    minisign::SecretKey::from_seed(&[n; 32])
 }

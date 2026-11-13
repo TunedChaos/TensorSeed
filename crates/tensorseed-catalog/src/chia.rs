@@ -926,7 +926,7 @@ mod tests {
             .unwrap();
         let inner = "11".repeat(32);
         let coin = "22".repeat(32);
-        let (proof, root) = crate::anchor::tests::fake_get_proof(&entry, &inner, &coin, STORE);
+        let (proof, root) = crate::anchor::fake_get_proof(&entry, &inner, &coin, STORE).unwrap();
         rpc_ok(
             &server,
             "get_value",

@@ -111,7 +111,7 @@ mod tests {
     use super::*;
     use crate::CatalogOp;
     use crate::file::{FileCatalog, FileCatalogConfig};
-    use crate::minisign::tests::test_key;
+    use crate::test_key;
 
     fn backend(seed: u8) -> FileCatalog {
         let sk = test_key(seed);

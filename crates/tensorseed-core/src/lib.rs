@@ -16,7 +16,9 @@
 //! |---|---|
 //! | `tensorseed-core` | Schemas, key layout, canonical JSON, hashing, local verification (no network). |
 //! | `tensorseed-hf` | Hugging Face Hub client: repo info, file trees, license and gating policy. |
+//! | `tensorseed-verify` | Minisign signatures, signed-file chain, and chain proofs (no network). |
 //! | `tensorseed-catalog` | Signed catalog backends: Chia DataLayer (source of truth) and signed static files (cache). |
+//! | `tensorseed-wasm` | WebAssembly bindings used by the browser explorer. |
 //! | `tensorseed-torrent` | BitTorrent v2 and hybrid torrent creation, parsing, and the librqbit swarm engine. |
 //! | `tensorseed-fetch` | Verified, resumable HTTP downloads from webseeds, mirrors, and the Hub. |
 //! | `tensorseed-serve` | Building blocks for the long running seeder: webseed HTTP, health, port mapping, selection. |
@@ -67,6 +69,7 @@ pub mod hash;
 pub mod keys;
 pub mod manifest;
 pub mod time;
+#[cfg(feature = "fs")]
 pub mod verify;
 
 pub use error::{Error, Result};
