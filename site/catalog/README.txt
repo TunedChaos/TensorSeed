@@ -7,12 +7,38 @@ described in docs/SPEC.md section 6.8 (file backend) and 6.12 (mirror lists).
   base_url = https://catalog.tensorseed.dev/
   catalog  = tensorseed
 
-The catalog is live at head revision 3. The first entry is
-TunedChaos/ChaosNexus_Tuned_v1-GGUF at commit
-b43d53d2b9755c4b3c554ba66f7c31d3cf35114d, license recorded as unknown
-(upstream tag "other", allowed by an explicit publisher override).
-Revision 3 adds the official HTTP webseed
+The catalog is live at head revision 4, anchored on Chia mainnet
+(DataLayer generation 2). Revision 3 added the official HTTP webseed
 https://mirror.tensorseed.dev/t/ (Cloudflare R2, bucket tensorseed-mirror).
+Revision 4 adds eight official entries (seven models and one dataset),
+all ungated, Apache-2.0 or MIT. Together with the existing first entry
+they are:
+
+  TunedChaos/ChaosNexus_Tuned_v1-GGUF
+    commit b43d53d2b9755c4b3c554ba66f7c31d3cf35114d, 5.36 GB,
+    license recorded as unknown (upstream tag "other", allowed by an
+    explicit publisher override)
+  openai/gsm8k (dataset)
+    commit 740312add88f781978c0658806c59bc2815b9866, 5.90 MB, mit
+  BAAI/bge-small-en-v1.5
+    commit 5c38ec7c405e, 0.27 GB, mit
+  sentence-transformers/all-MiniLM-L6-v2
+    commit 1110a243fdf4, 0.77 GB, apache-2.0
+  openai/whisper-small
+    commit 973afd24965f, 2.91 GB, apache-2.0
+  TinyLlama/TinyLlama-1.1B-Chat-v1.0
+    commit fe8a4ea1ffed, 2.20 GB, apache-2.0
+  google-bert/bert-base-uncased
+    commit 86b5e0934494, 2.48 GB, apache-2.0
+  openai-community/gpt2
+    commit 607a30d783df, 5.08 GB, mit
+  Qwen/Qwen2.5-1.5B-Instruct-GGUF
+    commit 91cad51170dc, 13.32 GB, apache-2.0
+
+Use the full commit from `tensorseed list` or `show` when pinning. The
+byte counts above are the published file totals, which can be smaller
+than Hugging Face usedStorage when a Hub repo also carries other
+exports not included here.
 
 Pin this publisher public key (minisign, key id CE1E0E3D543DFFB8):
 
@@ -63,7 +89,9 @@ Webseeds and torrent files (SPEC 7.1, 7.2, 10.1)
 
 Content name form: {org}__{name}@{commit[0:12]}
 
-The first torrent is:
+Torrents for every official revision live under /t/ on this host and
+on the object mirror, named {org}__{name}@{commit[0:12]}.torrent. The
+first entry remains:
 
   https://catalog.tensorseed.dev/t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent
   https://mirror.tensorseed.dev/t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent
