@@ -464,6 +464,86 @@ async fn pull_include_exclude_then_verify_partial() {
     );
 }
 
+fn append_toml(path: &Path, extra: &str) {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(f, "\n{extra}").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_source_order_hub_before_mirrors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let fx = Fixture::new();
+    let m = manifest(&fx, "org/tiny", C, &format!("{}/t/", server.uri()));
+    let pubdir = tmp.path().join("srv");
+    publish_catalog(&pubdir, &tmp.path().join("pstate"), &m, false).await;
+    mount_dir(&server, &pubdir).await;
+    let name = m.content_name();
+    for pth in ["config.json", "model.safetensors"] {
+        serve(&server, &format!("/t/{name}/{pth}"), fx.get(pth)).await;
+        serve(
+            &server,
+            &format!("/org/tiny/resolve/{C}/{pth}"),
+            fx.get(pth),
+        )
+        .await;
+    }
+    let pk = key().public_key().to_base64();
+    let cfg = write_config(tmp.path(), &server.uri(), &pk, "");
+    let o = run(&cfg, &["pull", "org/tiny", "--no-swarm"], &[]).await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let s = stdout(&o);
+    assert!(s.contains("ok     config.json (huggingface)"), "{s}");
+    assert!(s.contains("ok     model.safetensors (huggingface)"), "{s}");
+
+    let dir2 = tmp.path().join("mfirst");
+    std::fs::create_dir_all(&dir2).unwrap();
+    let cfg2 = write_config(&dir2, &server.uri(), &pk, "");
+    append_toml(
+        &cfg2,
+        "[fetch]\nsource_order = [\"swarm\", \"mirrors\", \"hub\"]",
+    );
+    let o = run(&cfg2, &["pull", "org/tiny", "--no-swarm"], &[]).await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let s = stdout(&o);
+    assert!(s.contains("ok     config.json (webseed)"), "{s}");
+    assert!(s.contains("ok     model.safetensors (webseed)"), "{s}");
+
+    // A 401 from the Hub must fall through to the webseed quickly.
+    let gated = MockServer::start().await;
+    let m2 = manifest(&fx, "org/tiny", C, &format!("{}/t/", gated.uri()));
+    let pub2 = tmp.path().join("srv2");
+    publish_catalog(&pub2, &tmp.path().join("pstate2"), &m2, false).await;
+    mount_dir(&gated, &pub2).await;
+    let name2 = m2.content_name();
+    serve(
+        &gated,
+        &format!("/t/{name2}/config.json"),
+        fx.get("config.json"),
+    )
+    .await;
+    serve(
+        &gated,
+        &format!("/t/{name2}/model.safetensors"),
+        fx.get("model.safetensors"),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path_regex(format!("^/org/tiny/resolve/{C}/")))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&gated)
+        .await;
+    let dir3 = tmp.path().join("gated");
+    std::fs::create_dir_all(&dir3).unwrap();
+    let cfg3 = write_config(&dir3, &gated.uri(), &pk, "");
+    let o = run(&cfg3, &["pull", "org/tiny", "--no-swarm"], &[]).await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let s = stdout(&o);
+    assert!(s.contains("ok     config.json (webseed)"), "{s}");
+    assert!(s.contains("ok     model.safetensors (webseed)"), "{s}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn tombstoned_repo_is_refused() {
     let tmp = tempfile::tempdir().unwrap();

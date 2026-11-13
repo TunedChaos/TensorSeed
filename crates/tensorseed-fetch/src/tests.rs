@@ -510,6 +510,46 @@ async fn not_found_does_not_mark_origin_dead() {
 }
 
 #[tokio::test]
+async fn unauthorized_or_forbidden_does_not_mark_origin_dead() {
+    let a_src = MockServer::start().await;
+    let b_src = MockServer::start().await;
+    let a = data(800, 6);
+    let b = data(800, 7);
+    status(&a_src, "/ws/a.bin", 401).await;
+    status(&a_src, "/ws/b.bin", 403).await;
+    serve(&b_src, "/ws/a.bin", &a).await;
+    serve(&b_src, "/ws/b.bin", &b).await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(StateDb::open_in_memory().unwrap());
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let j = job(dir.path());
+    let mut opts = fast();
+    opts.concurrency = 1;
+    let report = f
+        .run(
+            &j,
+            vec![
+                fj(
+                    "a.bin",
+                    &a,
+                    vec![src(&a_src, "/ws/a.bin"), src(&b_src, "/ws/a.bin")],
+                ),
+                fj(
+                    "b.bin",
+                    &b,
+                    vec![src(&a_src, "/ws/b.bin"), src(&b_src, "/ws/b.bin")],
+                ),
+            ],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert!(report.skipped_dead.is_empty(), "{report:?}");
+    assert!(db.dead_mirror(&a_src.uri()).unwrap().is_none());
+}
+
+#[tokio::test]
 async fn cooldown_expiry_retries_and_flag_overrides() {
     let dead = MockServer::start().await;
     let body = data(400, 5);

@@ -92,10 +92,13 @@ swarm_timeout_secs = 600         # overall cap on the swarm pass, then HTTP fill
 # HTTP downloads (spec 8.2). A connect failure or repeated transient
 # failures marks a mirror origin dead in general.state_db. Later files and
 # later runs skip it until this cooldown expires, a download from that
-# origin succeeds, or you pass --retry-dead-mirrors. A 404 is not a dead
-# mirror. Hugging Face is tracked the same way.
+# origin succeeds, or you pass --retry-dead-mirrors. A 404, 401, or 403
+# is not a dead mirror (gated or missing Hub files fall through). Hugging
+# Face is tracked the same way.
 [fetch]
 dead_mirror_cooldown_secs = 3600 # 0 disables persistence; in-run marks still apply
+# Byte sources, in order: "swarm", "hub", "mirrors". No duplicates.
+source_order = ["swarm", "hub", "mirrors"]
 
 # Where published objects go: signed catalog files under "<catalog name>/" and,
 # for webseeds, model files under "t/". Default is local disk only: no account
@@ -109,8 +112,9 @@ local_priority = 100             # webseed order of local_public_base_url (lower
 
 # Optional remote copies: named, repeatable [[storage.target]] blocks. Publish
 # (catalog files, and harvested model files) writes to local_dir plus every
-# target with enabled = true and upload = true. Pull tries webseeds and
-# mirrors by priority (lower first), then the Hub. Several blocks may use the
+# target with enabled = true and upload = true. After the swarm, pull tries
+# the Hub, then webseeds and mirrors by priority (lower first), unless
+# fetch.source_order says otherwise. Several blocks may use the
 # same provider (different buckets, regions, or accounts).
 #
 # Common fields: name (unique), provider, enabled (true), priority (100),

@@ -266,7 +266,7 @@ enum AttemptError {
     Drop {
         /// Message.
         msg: String,
-        /// True for HTTP 404/410: the origin is up but lacks this file.
+        /// True for HTTP 404/410/401/403: the origin is up but lacks this file (or refused it).
         not_found: bool,
     },
 }
@@ -650,7 +650,13 @@ impl Fetcher {
             ));
         } else if status.is_server_error() || status.as_u16() == 429 {
             return Err(AttemptError::transient(format!("HTTP {status}")));
-        } else if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
+        } else if status == reqwest::StatusCode::NOT_FOUND
+            || status == reqwest::StatusCode::GONE
+            || status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            // Missing or gated on this origin: try the next source. Do not
+            // mark the host dead (a 401 on the Hub is not a downed mirror).
             return Err(AttemptError::not_found(format!("HTTP {status}")));
         } else {
             return Err(AttemptError::drop_src(format!("HTTP {status}")));

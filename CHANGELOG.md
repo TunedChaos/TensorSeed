@@ -15,6 +15,12 @@
   match; missing unselected files fail only with `--strict`. `serve` and
   `--seed-after` seed the selected subset with `only_files`, and do not
   announce missing files as a complete torrent.
+- Default download order is the BitTorrent swarm, then Hugging Face,
+  then HTTP mirrors. `[fetch] source_order` is a list of `"swarm"`,
+  `"hub"`, and `"mirrors"` (validated, no duplicates) and applies to
+  `pull` and `serve` auto-fetch. `--no-swarm`, `--swarm-only`, and
+  dead-mirror memory are unchanged. A 401, 403, or 404 from the Hub
+  falls through to the mirrors without marking the host dead.
 
 ## 0.1.0
 

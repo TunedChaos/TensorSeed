@@ -60,9 +60,9 @@ tensorseed verify --hf hf-internal-testing/tiny-random-gpt2     # re-checks agai
 
 # With a signed catalog configured (catalog.publisher_pubkey, file.base_url):
 tensorseed list
-tensorseed pull org/name            # swarm first, then HTTP mirrors, then the Hub
+tensorseed pull org/name            # swarm first, then the Hub, then HTTP mirrors
 tensorseed verify org/name          # against the signed manifest; exit 3 on mismatch
-tensorseed pull org/name --no-swarm # skip the swarm; HTTP mirrors then the Hub
+tensorseed pull org/name --no-swarm # skip the swarm; the Hub then HTTP mirrors
 tensorseed pull org/name --retry-dead-mirrors  # try HTTP mirrors marked dead (clears on success)
 tensorseed pull org/name --seed-after 2h   # swarm first, then seed the verified copy
 tensorseed pull org/name --swarm-only --peer host:6881   # peers only: checks that a seeder works
@@ -78,6 +78,12 @@ tensorseed mirror add https://mirror.example.org/ts/ --name eu-1 --priority 10
 tensorseed mirror list              # merged mirror ranking
 tensorseed seed                     # seed everything under storage.local_dir (Ctrl-C to stop)
 ```
+
+The default download order is the BitTorrent swarm, then Hugging Face,
+then HTTP mirrors. Set `[fetch] source_order` to a list of `"swarm"`,
+`"hub"`, and `"mirrors"` (no duplicates) to change it. `--no-swarm` and
+`--swarm-only` still apply. A gated or missing file on the Hub falls
+through to the mirrors without marking the Hub dead.
 
 ### Run a seeder
 

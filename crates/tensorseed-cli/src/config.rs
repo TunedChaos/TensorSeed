@@ -580,14 +580,58 @@ impl Torrent {
     }
 }
 
+/// One entry in [`Fetch::source_order`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchSource {
+    /// BitTorrent swarm.
+    Swarm,
+    /// Hugging Face Hub.
+    Hub,
+    /// HTTP webseeds and configured mirrors.
+    Mirrors,
+}
+
+impl FetchSource {
+    /// Parse a config token (`swarm`, `hub`, or `mirrors`).
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "swarm" => Ok(Self::Swarm),
+            "hub" => Ok(Self::Hub),
+            "mirrors" => Ok(Self::Mirrors),
+            other => anyhow::bail!(
+                "fetch.source_order entry {other:?} is not one of swarm, hub, or mirrors"
+            ),
+        }
+    }
+
+    /// Config token.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Swarm => "swarm",
+            Self::Hub => "hub",
+            Self::Mirrors => "mirrors",
+        }
+    }
+}
+
+/// Default `[fetch] source_order`: swarm, then the Hub, then HTTP mirrors.
+pub fn default_source_order() -> Vec<String> {
+    vec![
+        FetchSource::Swarm.as_str().into(),
+        FetchSource::Hub.as_str().into(),
+        FetchSource::Mirrors.as_str().into(),
+    ]
+}
+
 /// `[fetch]`: HTTP download behaviour (spec section 8.2).
 ///
 /// Dead-mirror marks are stored in `general.state_db`. A connect failure
 /// or repeated transient failures (attempts exhausted on one file, or
 /// 5xx/network errors on two files) marks the origin dead. Later files
 /// and later runs skip it until this cooldown expires, a download from
-/// that origin succeeds, or `pull --retry-dead-mirrors` is used. A 404
-/// is not a dead mirror: it only drops that origin for the one file.
+/// that origin succeeds, or `pull --retry-dead-mirrors` is used. A 404,
+/// 401, or 403 is not a dead mirror: it only drops that origin for the
+/// one file (gated or missing Hub files fall through to mirrors).
 /// Hugging Face is tracked the same way. Torrent downloads are not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -595,13 +639,46 @@ pub struct Fetch {
     /// Seconds a dead-mirror mark is honored (0 disables persistence;
     /// in-run marks still apply). Default 3600.
     pub dead_mirror_cooldown_secs: u64,
+    /// Byte sources, in order. Each entry is `swarm`, `hub`, or
+    /// `mirrors`. No duplicates. Default: swarm, hub, mirrors.
+    pub source_order: Vec<String>,
 }
 
 impl Default for Fetch {
     fn default() -> Self {
         Self {
             dead_mirror_cooldown_secs: 3600,
+            source_order: default_source_order(),
         }
+    }
+}
+
+impl Fetch {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.source_order.is_empty() {
+            anyhow::bail!("fetch.source_order must not be empty");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for s in &self.source_order {
+            FetchSource::parse(s)?;
+            if !seen.insert(s.as_str()) {
+                anyhow::bail!("fetch.source_order has a duplicate {s:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Parsed [`source_order`](Self::source_order), in order.
+    pub fn sources(&self) -> anyhow::Result<Vec<FetchSource>> {
+        self.source_order
+            .iter()
+            .map(|s| FetchSource::parse(s))
+            .collect()
+    }
+
+    /// Whether `source` appears in [`source_order`](Self::source_order).
+    pub fn wants(&self, source: FetchSource) -> bool {
+        self.source_order.iter().any(|s| s == source.as_str())
     }
 }
 
@@ -1221,6 +1298,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     }
     tensorseed_catalog::signed::check_catalog_name(&cfg.catalog.name)?;
     cfg.huggingface.validate()?;
+    cfg.fetch.validate()?;
     cfg.storage.validate()?;
     cfg.torrent.validate()?;
     cfg.serve.validate()?;
@@ -1334,6 +1412,34 @@ mod tests {
             );
             assert!(cfg.mirrors.fetch_published);
             assert!(!cfg.targets.is_empty());
+            assert_eq!(cfg.fetch.source_order, default_source_order());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn fetch_source_order_validates() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "ok.toml",
+                "[fetch]\nsource_order = [\"hub\", \"mirrors\"]\n",
+            )?;
+            let cfg = load(Path::new("ok.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.fetch.source_order, vec!["hub", "mirrors"]);
+            assert!(cfg.fetch.wants(FetchSource::Hub));
+            assert!(!cfg.fetch.wants(FetchSource::Swarm));
+            for bad in [
+                "[fetch]\nsource_order = []\n",
+                "[fetch]\nsource_order = [\"hub\", \"hub\"]\n",
+                "[fetch]\nsource_order = [\"cdn\"]\n",
+            ] {
+                jail.create_file("bad.toml", bad)?;
+                let err = load(Path::new("bad.toml")).unwrap_err().to_string();
+                assert!(
+                    err.contains("source_order"),
+                    "expected source_order error for {bad}: {err}"
+                );
+            }
             Ok(())
         });
     }

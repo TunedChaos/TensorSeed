@@ -33,7 +33,7 @@ use tensorseed_hf::policy::Policy as HfPolicy;
 
 use crate::backend::{open_reader, pinned_key, read_verified};
 use crate::cli::{PullArgs, VerifyArgs};
-use crate::config::{Config, expand};
+use crate::config::{Config, FetchSource, expand};
 
 /// Exit code for a failed verification or download.
 pub const EXIT_VERIFY_FAILED: u8 = 3;
@@ -537,7 +537,7 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             notice = Some(format!("{} {} at {commit}\n{a}\n", repo.repo_type, repo.id));
         }
         // Publisher webseeds plus configured and published mirrors, by
-        // priority; the Hub stays the last resort.
+        // priority. HTTP source order follows `[fetch] source_order`.
         let mut seeds = m.clone();
         seeds.webseeds = crate::mirrors::webseed_bases(cfg, &m.webseeds);
         if use_swarm || args.seed_after.is_some() {
@@ -556,25 +556,8 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
                     unselected.push(ef.path.clone());
                 }
             } else {
-                let mut sources: Vec<Source> = if args.swarm_only {
-                    Vec::new()
-                } else {
-                    seeds
-                        .webseed_file_urls(&f.path)
-                        .into_iter()
-                        .map(|url| Source {
-                            url,
-                            kind: SourceKind::Webseed,
-                            bearer: None,
-                        })
-                        .collect()
-                };
-                if !args.no_hf_fallback && !args.swarm_only {
-                    sources.push(hf_source(&commit, &f.path));
-                }
-                if sources.is_empty() && !args.swarm_only {
-                    bail!("{} has no webseeds and --no-hf-fallback was given", f.path);
-                }
+                let sources =
+                    http_sources(cfg, args, &seeds, &f.path, hf_source(&commit, &f.path))?;
                 files.push(FileJob {
                     path: f.path.clone(),
                     size: f.size,
@@ -739,8 +722,47 @@ fn swarm_wanted(cfg: &Config, args: &PullArgs) -> bool {
     } else if args.swarm_only || args.swarm {
         true
     } else {
-        cfg.torrent.pull_swarm
+        cfg.torrent.pull_swarm && cfg.fetch.wants(FetchSource::Swarm)
     }
+}
+
+/// HTTP sources for one file, in `[fetch] source_order`.
+///
+/// `--swarm-only` returns no HTTP sources. `--no-hf-fallback` omits the
+/// Hub. A gated or missing file on the Hub is a 401/403/404 that the
+/// fetcher treats as "try the next source" without marking the host dead.
+fn http_sources(
+    cfg: &Config,
+    args: &PullArgs,
+    seeds: &tensorseed_core::manifest::Manifest,
+    path: &str,
+    hub: Source,
+) -> anyhow::Result<Vec<Source>> {
+    if args.swarm_only {
+        return Ok(Vec::new());
+    }
+    let mut sources = Vec::new();
+    for kind in cfg.fetch.sources()? {
+        match kind {
+            FetchSource::Swarm => {}
+            FetchSource::Hub => {
+                if !args.no_hf_fallback {
+                    sources.push(hub.clone());
+                }
+            }
+            FetchSource::Mirrors => {
+                sources.extend(seeds.webseed_file_urls(path).into_iter().map(|url| Source {
+                    url,
+                    kind: SourceKind::Webseed,
+                    bearer: None,
+                }));
+            }
+        }
+    }
+    if sources.is_empty() && !swarm_wanted(cfg, args) {
+        bail!("{path} has no HTTP sources (check fetch.source_order and --no-hf-fallback)");
+    }
+    Ok(sources)
 }
 
 /// Swarm first: let librqbit fetch what peers have, in place. The session
