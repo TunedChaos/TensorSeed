@@ -72,6 +72,7 @@ just targets                 # rustup target add for every target above
 just build x86_64-pc-windows-gnu      # one target, into target/<triple>/dist/
 just dist                    # all targets: dist/tensorseed-<version>-<target>.tar.gz or .zip, plus SHA256SUMS
 just sign ~/.tensorseed-release/tensorseed-release.key   # release key only, see RELEASE-KEY.md
+just verify-dist             # uses keys/tensorseed-release.pub
 ```
 
 Archives contain the binary, LICENSE, README.md, the volunteer guide, the

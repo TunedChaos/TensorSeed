@@ -136,7 +136,8 @@ sign release_key:
     echo "wrote $sums.minisig (release key id $kid)"
 
 # Verify dist/SHA256SUMS with the release public key (a .pub file or the base64 key line), then the archives.
-verify-dist release_pubkey:
+# Defaults to the published key in keys/tensorseed-release.pub (id F5D2D3C4C27D459D).
+verify-dist release_pubkey="keys/tensorseed-release.pub":
     #!/usr/bin/env bash
     set -euo pipefail
     k="{{ release_pubkey }}"

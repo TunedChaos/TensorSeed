@@ -112,6 +112,21 @@ coin_api_urls = ["https://api.coinset.org"]</code></pre>
     </section>
 
     <section>
+      <h2>Verify a release</h2>
+      <p>
+        Release archives ship with <code>SHA256SUMS</code> and
+        <code>SHA256SUMS.minisig</code>, signed by the
+        <strong>release key</strong> (minisign, key id F5D2D3C4C27D459D).
+        This is a different key from the catalog publisher key above.
+        Do not verify binaries with the catalog key.
+      </p>
+      <pre class="key"><code>RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P</code></pre>
+      <p>Check a download:</p>
+      <pre><code>minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
+sha256sum -c --ignore-missing SHA256SUMS</code></pre>
+    </section>
+
+    <section>
       <h2>Source and license</h2>
       <p>
         Tensorseed is licensed under

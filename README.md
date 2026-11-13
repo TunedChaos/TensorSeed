@@ -189,12 +189,15 @@ the **release key**, which is a different key from the catalog publisher key
 (key separation: the catalog key lives on an online publishing host, the
 release key stays offline, so a leaked catalog key cannot sign binaries).
 
+Release key id `F5D2D3C4C27D459D` (not the catalog publisher key
+`CE1E0E3D543DFFB8`):
+
 ```text
-Release public key: not published yet (no signed releases exist so far)
+RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 ```
 
 ```sh
-minisign -Vm SHA256SUMS -P <release public key>
+minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 

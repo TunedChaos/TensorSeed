@@ -48,14 +48,17 @@ an online publishing host, while the release key stays offline, so a
 compromised catalog key can never sign a binary. Do not verify releases
 with the catalog key.
 
+Release key id `F5D2D3C4C27D459D` (not the catalog publisher key
+`CE1E0E3D543DFFB8`):
+
 ```text
-Release public key: not published yet (no signed releases exist so far)
+RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 ```
 
 Check both files before running anything:
 
 ```sh
-minisign -Vm SHA256SUMS -P <release public key>
+minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 sha256sum -c --ignore-missing SHA256SUMS
 tar xzf tensorseed-0.1.0-x86_64-unknown-linux-musl.tar.gz
 install -m 0755 tensorseed-0.1.0-x86_64-unknown-linux-musl/tensorseed ~/.local/bin/

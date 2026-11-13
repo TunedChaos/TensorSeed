@@ -6,18 +6,19 @@ things, live in different places, and are never interchangeable.
 | Key | Signs | Public key | Where the secret lives |
 |---|---|---|---|
 | Catalog publisher key (id `CE1E0E3D543DFFB8`) | Catalog entries, deltas, snapshots, heads, `mirrors.toml`, and the Chia anchor | `RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd` | The publishing host, because the weekly head re-sign and every catalog update need it |
-| Release key | `SHA256SUMS` of the release archives (`SHA256SUMS.minisig`) | **Not published yet** (see below) | Offline only, on the maintainer's workstation and an offline backup |
+| Release key (id `F5D2D3C4C27D459D`) | `SHA256SUMS` of the release archives (`SHA256SUMS.minisig`) | `RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P` | Offline only, on the maintainer's workstation and an offline backup |
 
 ## Release public key
 
 ```
-RELEASE PUBLIC KEY: not published yet
+untrusted comment: minisign public key F5D2D3C4C27D459D
+RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 ```
 
-Until this line holds a key (`RW...`), there are no signed releases, and
-any `SHA256SUMS.minisig` claiming to be one is not genuine. The key will also
-be shown on the release page and in [README.md](README.md); all copies must
-match.
+This is the only key that may sign Tensorseed release checksums. The same
+key is in [README.md](README.md), [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md),
+and [keys/tensorseed-release.pub](keys/tensorseed-release.pub); all copies
+must match. It is not the catalog publisher key (id `CE1E0E3D543DFFB8`).
 
 ## Why two keys
 
@@ -41,7 +42,7 @@ Download the archive for your platform, `SHA256SUMS`, and
 `SHA256SUMS.minisig` from the same release, then:
 
 ```sh
-minisign -Vm SHA256SUMS -P <release public key>
+minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
@@ -49,15 +50,16 @@ On Windows (PowerShell), with minisign installed (`scoop install minisign`
 or the release from https://github.com/jedisct1/minisign/releases):
 
 ```powershell
-minisign -Vm SHA256SUMS -P <release public key>
+minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 Get-FileHash .\tensorseed-<version>-x86_64-pc-windows-gnu.zip -Algorithm SHA256
 # compare with the line for that file in SHA256SUMS
 ```
 
 The trusted comment printed by minisign names the version
 (`tensorseed <version> release SHA256SUMS`); check that it matches the
-release you downloaded. From a checkout, `just verify-dist <release public
-key>` does both steps for everything in `dist/`.
+release you downloaded. From a checkout, `just verify-dist` does both
+steps for everything in `dist/`, using [keys/tensorseed-release.pub](keys/tensorseed-release.pub).
+Pass a `.pub` path or key line to override.
 
 ## Creating the release key (maintainers)
 
@@ -85,8 +87,9 @@ directly in PowerShell with the same `-G -s ... -p ...` arguments, then
 restrict the secret key file to your user (`icacls <file> /inheritance:r
 /grant:r "%USERNAME%:F"`).
 
-Then publish the public key line in this file, README.md, and
-docs/RUN-A-MIRROR.md in one commit.
+The current public key is published in this file, README.md,
+docs/RUN-A-MIRROR.md, and keys/tensorseed-release.pub. After a rotation,
+update all four plus the website in one commit.
 
 ## Storage
 
