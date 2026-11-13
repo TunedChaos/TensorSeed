@@ -7,9 +7,7 @@ mod backend;
 mod catalog_cmd;
 mod chain;
 mod cli;
-mod config;
 mod consumer;
-mod follow;
 mod harvest;
 mod hf_auth;
 mod keys;
@@ -18,6 +16,9 @@ mod serve;
 mod torrents;
 
 use std::process::ExitCode;
+
+// Library modules, reachable as `crate::config` and so on from the CLI.
+use tensorseed_app::{config, follow};
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;

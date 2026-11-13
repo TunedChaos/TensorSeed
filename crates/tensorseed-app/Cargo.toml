@@ -1,0 +1,26 @@
+[package]
+name = "tensorseed-app"
+description = "Tensorseed application library shared by the CLI and Desktop: config, catalogs, mirrors, pull, and seed."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+figment.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tensorseed-catalog.workspace = true
+tensorseed-core.workspace = true
+tensorseed-hf.workspace = true
+tensorseed-serve.workspace = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+
+[lints]
+workspace = true

@@ -3464,6 +3464,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tensorseed-app"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "figment",
+ "serde",
+ "serde_json",
+ "tensorseed-catalog",
+ "tensorseed-core",
+ "tensorseed-hf",
+ "tensorseed-serve",
+]
+
+[[package]]
 name = "tensorseed-catalog"
 version = "0.2.0"
 dependencies = [
@@ -3506,6 +3520,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tensorseed-app",
  "tensorseed-catalog",
  "tensorseed-core",
  "tensorseed-fetch",

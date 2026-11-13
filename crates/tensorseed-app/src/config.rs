@@ -51,7 +51,7 @@ pub struct Config {
     /// Seeding daemon.
     pub seed: Seed,
     /// Long running seeder (`[serve]`, spec 8.3).
-    pub serve: crate::serve::ServeConfig,
+    pub serve: crate::serve_config::ServeConfig,
     /// Automatic harvest watchlist (`[harvest]`).
     pub harvest: Harvest,
     /// Extra catalogs to follow (`[[catalogs]]`). Empty keeps the top-level
@@ -741,12 +741,20 @@ impl HuggingFace {
     /// Resolve the token: `token_env` first, then `token_file`, then the
     /// file written by `tensorseed hf login`, then the Hugging Face CLI
     /// stored token. A token file readable by group or others is refused.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a token file cannot be read or is readable by group or others.
     pub fn resolve_token(&self) -> anyhow::Result<Option<String>> {
         Ok(self.resolve_token_source()?.map(|(t, _)| t))
     }
 
     /// Like [`Self::resolve_token`], with a label for the source that never
     /// includes the token itself.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a token file cannot be read or is readable by group or others.
     pub fn resolve_token_source(&self) -> anyhow::Result<Option<(String, TokenSource)>> {
         if let Ok(t) = std::env::var(&self.token_env)
             && !t.trim().is_empty()
@@ -780,6 +788,10 @@ impl HuggingFace {
     }
 
     /// Hub client with the resolved token.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the token cannot be resolved or the client cannot be built.
     pub fn client(&self) -> anyhow::Result<tensorseed_hf::HfClient> {
         Ok(tensorseed_hf::HfClient::new(
             &self.endpoint,
@@ -868,6 +880,10 @@ impl Torrent {
     }
 
     /// Parsed `peers`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when an entry is not a valid socket address.
     pub fn peer_addrs(&self) -> anyhow::Result<Vec<std::net::SocketAddr>> {
         use std::net::ToSocketAddrs;
         let mut out = Vec::new();
@@ -915,6 +931,10 @@ pub enum FetchSource {
 
 impl FetchSource {
     /// Parse a config token (`swarm`, `hub`, or `mirrors`).
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unknown token.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s {
             "swarm" => Ok(Self::Swarm),
@@ -991,6 +1011,10 @@ impl Fetch {
     }
 
     /// Parsed [`source_order`](Self::source_order), in order.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unknown source name.
     pub fn sources(&self) -> anyhow::Result<Vec<FetchSource>> {
         self.source_order
             .iter()
@@ -1140,6 +1164,10 @@ impl StorageTarget {
     }
 
     /// Endpoint, region and addressing derived from provider fields.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the provider fields are incomplete or contradictory.
     pub fn resolve_s3(&self) -> anyhow::Result<ResolvedS3> {
         let n = &self.name;
         let need = |v: &str, what: &str| -> anyhow::Result<String> {
@@ -1565,6 +1593,10 @@ pub fn hf_cli_token_path() -> Option<PathBuf> {
 
 /// Write `token` to [`login_token_path`] with mode 0600 on Unix and a
 /// user-only ACL on Windows.
+///
+/// # Errors
+///
+/// Fails when the file cannot be written or its permissions cannot be set.
 pub fn write_login_token(token: &str) -> anyhow::Result<PathBuf> {
     let token = token.trim();
     if token.is_empty() {
@@ -1583,6 +1615,10 @@ pub fn write_login_token(token: &str) -> anyhow::Result<PathBuf> {
 }
 
 /// Remove the file written by [`write_login_token`], if it exists.
+///
+/// # Errors
+///
+/// Fails when the file exists but cannot be removed.
 pub fn remove_login_token() -> anyhow::Result<bool> {
     let path = login_token_path();
     match std::fs::remove_file(&path) {
@@ -1620,6 +1656,10 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 /// Set mode 0600 on Unix, or a user-only ACL on Windows, on `path`.
+///
+/// # Errors
+///
+/// Fails when the permissions cannot be changed.
 pub fn set_user_only_permissions(path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -1708,7 +1748,7 @@ pub fn data_local_dir() -> PathBuf {
 /// On Unix this is a `~/.local/share/tensorseed/<rel>` form, expanded later
 /// by [`expand`]. On Windows it is an absolute path under
 /// `%LOCALAPPDATA%\tensorseed`.
-pub(crate) fn default_data_file(rel: &str) -> String {
+pub fn default_data_file(rel: &str) -> String {
     #[cfg(windows)]
     {
         data_local_dir()
@@ -1727,7 +1767,7 @@ pub(crate) fn default_data_file(rel: &str) -> String {
 ///
 /// On Unix this is a `~/.config/tensorseed/<rel>` form. On Windows it is an
 /// absolute path under `%APPDATA%\tensorseed`.
-pub(crate) fn default_config_file(rel: &str) -> String {
+pub fn default_config_file(rel: &str) -> String {
     #[cfg(windows)]
     {
         config_dir()
@@ -1777,6 +1817,10 @@ pub fn figment(path: &Path) -> Figment {
 }
 
 /// Load and validate configuration.
+///
+/// # Errors
+///
+/// Fails when the file or environment cannot be parsed or a value is invalid.
 pub fn load(path: &Path) -> anyhow::Result<Config> {
     let cfg: Config = figment(path).extract()?;
     if !tensorseed_catalog::KNOWN_BACKENDS.contains(&cfg.catalog.backend.as_str()) {
@@ -1882,7 +1926,7 @@ mod tests {
             // [serve] in the example matches the built-in defaults. The file
             // documents the Unix tilde form of data_dir, so on Windows (where
             // the default is under %LOCALAPPDATA%) only that field differs.
-            let mut expected = crate::serve::ServeConfig::default();
+            let mut expected = crate::serve_config::ServeConfig::default();
             if cfg!(windows) {
                 expected.data_dir = "~/.local/share/tensorseed/serve".into();
             }
@@ -2293,7 +2337,7 @@ dir = "/mnt/nas/tensorseed"
             );
             assert_eq!(Mirrors::default().file, "~/.config/tensorseed/mirrors.toml");
             assert_eq!(
-                crate::serve::ServeConfig::default().data_dir,
+                crate::serve_config::ServeConfig::default().data_dir,
                 "~/.local/share/tensorseed/serve"
             );
             Ok(())
@@ -2333,7 +2377,7 @@ dir = "/mnt/nas/tensorseed"
                 r"C:\Users\ts\AppData\Local\tensorseed\state.sqlite"
             );
             assert_eq!(
-                crate::serve::ServeConfig::default().data_dir,
+                crate::serve_config::ServeConfig::default().data_dir,
                 r"C:\Users\ts\AppData\Local\tensorseed\serve"
             );
             assert_eq!(

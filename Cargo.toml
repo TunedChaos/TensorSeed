@@ -9,6 +9,7 @@ members = [
     "crates/tensorseed-torrent",
     "crates/tensorseed-fetch",
     "crates/tensorseed-serve",
+    "crates/tensorseed-app",
     "crates/tensorseed-cli",
 ]
 
@@ -30,6 +31,7 @@ tensorseed-wasm = { path = "crates/tensorseed-wasm", version = "0.2.0" }
 tensorseed-torrent = { path = "crates/tensorseed-torrent", version = "0.2.0" }
 tensorseed-fetch = { path = "crates/tensorseed-fetch", version = "0.2.0" }
 tensorseed-serve = { path = "crates/tensorseed-serve", version = "0.2.0" }
+tensorseed-app = { path = "crates/tensorseed-app", version = "0.2.0" }
 
 anyhow = "1"
 # HTTP serving for `tensorseed serve` (already in the tree through librqbit).

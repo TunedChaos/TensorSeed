@@ -241,7 +241,8 @@ tensorseed completions fish | source   # fish, until the package is installed
 | `crates/tensorseed-wasm` | WebAssembly bindings for the explorer |
 | `crates/tensorseed-torrent` | BEP 52 v2 and hybrid torrent builder and parser (pure Rust), Merkle checks, librqbit seeding and swarm downloads |
 | `crates/tensorseed-serve` | Building blocks of `serve`: webseed HTTP server, health endpoint, NAT-PMP and UPnP port mapping, selection rules |
-| `crates/tensorseed-cli` | The `tensorseed` binary |
+| `crates/tensorseed-app` | Application library shared by the CLI and Desktop: config, catalog access, mirrors, torrent helpers (no argument parsing, no printing) |
+| `crates/tensorseed-cli` | The `tensorseed` binary, a front end over `tensorseed-app` |
 | `spikes/` | M0 spike programs (not built by CI), see [spikes/README.md](spikes/README.md) |
 
 ## Build
