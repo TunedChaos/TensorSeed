@@ -1,7 +1,8 @@
-# Minimal config for contrib/systemd/tensorseed-serve.service: a mirror that
-# follows the public Tensorseed catalog and seeds the TunedChaos models.
-# Copy to /etc/tensorseed/tensorseed.toml and adjust. Every key is
-# documented in config/tensorseed.example.toml.
+# Minimal config for contrib/systemd/tensorseed-serve.service: follow the
+# official catalog with strict chain checking, and seed only revisions you
+# already pulled (or copied into serve.dirs). It does not download the
+# catalog on its own. Copy to /etc/tensorseed/tensorseed.toml and adjust.
+# Every key is documented in config/tensorseed.example.toml.
 
 [catalog]
 backend = "file"
@@ -22,9 +23,12 @@ listen_port = 6881               # forward TCP and UDP on the router, or set ser
 upload_limit_kbps = 0
 
 [serve]
-select = ["TunedChaos/*"]
-fetch = true                     # download selected revisions that are not on disk
-max_bytes = 50_000_000_000       # disk budget
+select = ["*"]                   # among what is on disk, seed any catalog revision
+fetch = false                    # do not download anything you did not already pull
+# To auto-follow one org instead of pulling by hand (this can fill a disk):
+# select = ["TunedChaos/*"]
+# fetch = true
+# max_bytes = 50_000_000_000     # disk budget when fetch is on (0 = unlimited)
 http_listen = ""                 # "0.0.0.0:8080" to also act as an HTTP webseed
 serve_catalog = false            # with http_listen: mirror the signed catalog too
 port_mapping = false             # true asks the router (NAT-PMP / UPnP) to open listen_port

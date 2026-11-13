@@ -7,8 +7,8 @@ Website: [tensorseed.dev](https://tensorseed.dev)
 > **Status: pre-alpha, milestone M0.** Downloading and verifying works today
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
-> v1+v2 torrents, `seed` serves them, `serve` keeps seeding whatever the
-> catalog says, and `pull --swarm` / `--seed-after` use the swarm. The
+> v1+v2 torrents, `seed` serves them, `serve` keeps seeding what you already
+> pulled, and `pull --swarm` / `--seed-after` use the swarm. The
 > official catalog is anchored on Chia mainnet, and clients check the file
 > catalog against the Chia store by default (strict). `takedown` and `doctor`
 > still print "not implemented yet". Expect breaking changes.
@@ -74,16 +74,19 @@ tensorseed seed                     # seed everything under storage.local_dir (C
 
 ### Run a seeder
 
-`tensorseed serve` is the long running seeder anyone can run to help keep the
-catalog available. It syncs the signed catalog every few minutes, picks
-revisions with the `[serve]` rules (globs, watchlist, types, license classes,
-latest only, a disk budget), seeds the ones it has on disk, downloads new ones
-if `fetch = true`, and stops seeding anything that gets taken down at the next
-sync.
+`tensorseed serve` is the long running seeder anyone can run to help keep
+copies available. The usual setup is to `tensorseed pull` the repos you
+care about, then run `serve`. With the default `fetch = false`, it only
+seeds what is already on your disk (plus any folders in `serve.dirs`),
+syncs the signed catalog every few minutes, and stops seeding anything
+that gets taken down at the next sync. It does not download the rest of
+the catalog. Turning on `fetch` with `select` globs is an optional
+auto-follow mode; `select = ["*"]` with `fetch = true` would download the
+whole catalog up to `max_bytes`. See [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md).
 
 ```sh
-tensorseed serve                                  # seed what is on disk and selected
-tensorseed serve --fetch                          # also download newly selected revisions
+tensorseed pull org/name                          # choose what to keep
+tensorseed serve                                  # seed what you already pulled
 tensorseed serve --http 0.0.0.0:8080 --serve-catalog   # also act as a webseed and catalog mirror
 curl -s http://127.0.0.1:6880/health              # JSON: bytes, peers, torrents, catalog head, last error
 ```
@@ -99,9 +102,9 @@ curl -s http://127.0.0.1:6880/health              # JSON: bytes, peers, torrents
 - A hardened systemd unit and a minimal config are in
   [`contrib/systemd/`](contrib/systemd/).
 
-The full volunteer guide (ports, selection rules, disk budget, webseeds,
-S3 compatible storage, systemd, health checks, and how to get a mirror
-listed) is [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md).
+The full volunteer guide (ports, what to seed, optional auto-follow,
+webseeds, S3 compatible storage, systemd, health checks, and how to get a
+mirror listed) is [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md).
 
 Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and
 gated repos are refused unless `--allow-gated`. Publishing uses a strict license
@@ -205,9 +208,12 @@ Key roles, storage, and rotation: [RELEASE-KEY.md](RELEASE-KEY.md).
 Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
 Configuration: copy `config/tensorseed.example.toml` to
-`~/.config/tensorseed/tensorseed.toml`. Secrets (HF token, storage keys, the
+`~/.config/tensorseed/tensorseed.toml` (Windows:
+`%APPDATA%\tensorseed\tensorseed.toml`). Secrets (HF token, storage keys, the
 publisher key password) are only read from environment variables, never from the
-file. Check the merged result with `tensorseed config show`.
+file. Check the merged result with `tensorseed config show`. Default data
+directories are `~/.local/share/tensorseed/` on Unix and
+`%LOCALAPPDATA%\tensorseed\` on Windows.
 
 ## Contributing
 

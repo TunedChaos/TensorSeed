@@ -58,7 +58,9 @@ const FETCH_RETRY_SECS: u64 = 3600;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServeConfig {
-    /// Downloaded revisions (`t/`), the catalog mirror, and the state file.
+    /// Downloaded revisions (`t/`), the catalog mirror, and the state file
+    /// (default: `~/.local/share/tensorseed/serve` on Unix,
+    /// `%LOCALAPPDATA%\tensorseed\serve` on Windows).
     pub data_dir: String,
     /// Extra published trees (with `t/`) to seed from, next to
     /// `storage.local_dir` and torrent storage targets.
@@ -115,7 +117,7 @@ pub struct ServeConfig {
 impl Default for ServeConfig {
     fn default() -> Self {
         Self {
-            data_dir: "~/.local/share/tensorseed/serve".into(),
+            data_dir: crate::config::default_data_file("serve"),
             dirs: Vec::new(),
             sync_interval_secs: 300,
             select: vec!["*".into()],
@@ -1470,8 +1472,8 @@ mod tests {
             let cfg = crate::config::load(std::path::Path::new("tensorseed.toml"))
                 .map_err(|e| e.to_string())?;
             assert_eq!(cfg.catalog.backend, "file");
-            assert_eq!(cfg.serve.select, vec!["TunedChaos/*".to_string()]);
-            assert!(cfg.serve.fetch && !cfg.serve.port_mapping);
+            assert_eq!(cfg.serve.select, vec!["*".to_string()]);
+            assert!(!cfg.serve.fetch && !cfg.serve.port_mapping);
             assert_eq!(cfg.serve.health_listen, "127.0.0.1:6880");
             Ok(())
         });

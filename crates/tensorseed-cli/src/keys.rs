@@ -57,9 +57,10 @@ pub fn load_secret(cfg: &Config) -> anyhow::Result<SecretKey> {
     Ok(sk)
 }
 
-/// Default key directory.
+/// Default key directory (`$XDG_CONFIG_HOME/tensorseed` or
+/// `~/.config/tensorseed` on Unix, `%APPDATA%\tensorseed` on Windows).
 pub fn default_key_dir() -> PathBuf {
-    expand("~/.config/tensorseed")
+    crate::config::config_dir().join("tensorseed")
 }
 
 /// Generate a key pair. Returns (secret path, public path, key).

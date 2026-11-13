@@ -78,9 +78,10 @@ cargo install --locked --path crates/tensorseed-cli
 
 ## 2. Configure the chain checked client
 
-Create `~/.config/tensorseed/tensorseed.toml` (or `/etc/tensorseed/tensorseed.toml`
-for the systemd unit). This is the minimum to follow the official catalog
-with strict chain checking:
+Create `~/.config/tensorseed/tensorseed.toml` on Unix, or
+`%APPDATA%\tensorseed\tensorseed.toml` on Windows (or
+`/etc/tensorseed/tensorseed.toml` for the systemd unit). This is the
+minimum to follow the official catalog with strict chain checking:
 
 ```toml
 [catalog]
@@ -131,31 +132,33 @@ the environment or point `[huggingface] token_file` at a file with mode 0600.
 
 ## 3. Choose what to seed
 
-The `[serve]` section decides which catalog revisions you keep. Everything is
-optional; these are the knobs most volunteers touch:
+The usual way to help is to pull the repos you care about, then run
+`tensorseed serve`. By default `fetch` is off, so the daemon only seeds
+what is already on your disk: the trees you pulled, plus any extra
+folders listed in `dirs`. It will not download the rest of the catalog.
+
+```sh
+tensorseed pull org/name
+tensorseed serve
+```
+
+A minimum `[serve]` section (these are also the built-in defaults):
 
 ```toml
 [serve]
-select = ["*"]                   # repo id globs: "*", "org/*", "org/name"; [] seeds nothing
-exclude = ["org/huge-*"]         # never seed these
-types = []                       # "model", "dataset"; [] = both
-license_classes = []             # "open", "attribution", "restricted", "unknown"; [] = any
-latest_only = true               # only each repo's newest revision
-max_bytes = 200_000_000_000      # total disk budget (here 200 GB; 0 = unlimited)
-max_revision_bytes = 0           # skip single revisions larger than this (0 = no cap)
-fetch = true                     # download selected revisions you do not have yet
-fetch_swarm = true               # download from peers first, then webseeds and mirrors
+fetch = false                    # do not download anything you did not already pull
+select = ["*"]                   # among what is on disk, seed any catalog revision
+dirs = []                        # extra published trees (with t/) to seed from
+latest_only = true
 prune = true                     # delete your copy when a revision is taken down or deselected
-sync_interval_secs = 300         # catalog sync period; takedowns apply within one period
+sync_interval_secs = 300
+# Unix default shown; on Windows the default is %LOCALAPPDATA%\tensorseed\serve
 data_dir = "~/.local/share/tensorseed/serve"
 ```
 
-How selection works: a revision must match a `select` glob and no `exclude`
-glob. Revisions are ranked by the first `select` pattern they match (earlier
-patterns first), then latest revisions and newer publications first. In that
-order, `latest_only`, `types`, `license_classes`, and `max_revision_bytes`
-filter them, and revisions are added until `max_bytes` is reached. Anything that does not fit is reported as
-skipped in the health document, with the reason.
+`select = ["*"]` with `fetch = false` does not mean "mirror everything".
+It means "seed any on-disk revision that is still in the catalog". An
+empty `select` list seeds nothing.
 
 Bandwidth caps (KiB per second, 0 = unlimited):
 
@@ -170,6 +173,36 @@ http_upload_limit_kbps = 0       # cap for the optional HTTP webseed
 
 Takedowns: when the publisher tombstones a revision, every seeder stops
 serving it at its next sync and (with `prune = true`) deletes its copy.
+
+### Auto-follow (advanced)
+
+If you want `serve` to download new revisions on its own, turn on
+`fetch` and name specific repos or an org. `select = ["*"]` with
+`fetch = true` downloads the whole catalog, up to `max_bytes`.
+
+```toml
+[serve]
+fetch = true
+fetch_swarm = true               # download from peers first, then webseeds and mirrors
+select = ["org/name"]            # or "org/*" for one org; [] seeds nothing
+exclude = ["org/huge-model"]     # never seed these
+types = []                       # "model", "dataset"; [] = both
+license_classes = []             # "open", "attribution", "restricted", "unknown"; [] = any
+latest_only = true
+max_bytes = 50_000_000_000       # disk budget (here 50 GB; 0 = unlimited)
+max_revision_bytes = 0           # skip single revisions larger than this (0 = no cap)
+```
+
+Or pass `--fetch` on the command line, which still honors your `select`
+globs. Use a narrow `select` list if you turn this on.
+
+How selection works: a revision must match a `select` glob and no
+`exclude` glob. Revisions are ranked by the first `select` pattern they
+match (earlier patterns first), then latest revisions and newer
+publications first. In that order, `latest_only`, `types`,
+`license_classes`, and `max_revision_bytes` filter them, and revisions
+are added until `max_bytes` is reached. Anything that does not fit is
+reported as skipped in the health document, with the reason.
 
 ## 4. Network: ports and port mapping
 
@@ -201,14 +234,18 @@ example `ufw allow 6881` (both protocols).
 ## 5. Run it
 
 ```sh
-tensorseed serve                 # seed what is on disk and selected
-tensorseed serve --fetch         # also download newly selected revisions
+tensorseed serve                 # seed what you already pulled (fetch is off)
+tensorseed serve --fetch         # also download revisions matching [serve] select
 tensorseed serve --for 2h        # stop after two hours
 ```
 
+`--fetch` honors your `select` globs. With the default `select = ["*"]` it
+would download the whole catalog, up to `max_bytes`; see
+[Auto-follow (advanced)](#auto-follow-advanced) before using it.
+
 The first sync verifies the catalog against the chain, then every selected
-revision is checked piece by piece before it is announced, so you only ever
-seed bytes that match the signed manifest. Stop with Ctrl-C or SIGTERM;
+revision already on disk is checked piece by piece before it is announced,
+so you only ever seed bytes that match the signed manifest. Stop with Ctrl-C or SIGTERM;
 state is saved in `<data_dir>/serve-state.json` and a restart resumes
 seeding before the first sync.
 
@@ -218,7 +255,7 @@ BitTorrent needs peers; HTTP webseeds work with zero peers and carry most
 bytes for first downloads. If you have spare bandwidth and a public address:
 
 ```sh
-tensorseed serve --fetch --http 0.0.0.0:8080 --serve-catalog
+tensorseed serve --http 0.0.0.0:8080 --serve-catalog
 ```
 
 or in the config:
@@ -258,12 +295,13 @@ tree with the same layout as `serve`'s data directory:
 <public base URL>/tensorseed/...                signed catalog files (optional)
 ```
 
-The simplest setup runs `tensorseed serve --fetch --serve-catalog` (with
-`http_listen` set, even on 127.0.0.1) and copies its data directory to the
-bucket on a timer, for example with rclone:
+The simplest setup runs `tensorseed serve --serve-catalog` (with
+`http_listen` set, even on 127.0.0.1) on the trees you already pulled, and
+copies that data directory to the bucket on a timer, for example with
+rclone. Add `--fetch` only if you also want auto-follow (section 3).
 
 ```sh
-D=~/.local/share/tensorseed/serve
+D=~/.local/share/tensorseed/serve   # Windows: %LOCALAPPDATA%\tensorseed\serve
 rclone sync "$D/t" r2:my-bucket/t \
   --header-upload "Cache-Control: public, max-age=31536000, immutable" --exclude "*.torrent"
 rclone copy "$D/t" r2:my-bucket/t --include "*.torrent" \
@@ -295,8 +333,7 @@ There are two kinds of listing, and only HTTP mirrors need one:
   - the public base URL (HTTPS, ending in `/`), whose `t/` and, if you serve
     it, `tensorseed/` paths follow the layout above;
   - a short name and region (for example `eu-west-1`);
-  - what you carry (everything, or which `select` globs) and roughly how
-    much bandwidth you can offer;
+  - which repos you carry and roughly how much bandwidth you can offer;
   - a contact for outages.
 
   The catalog owner checks the mirror (for example by adding it to a local
@@ -327,8 +364,9 @@ journalctl -u tensorseed-serve -f
 
 The unit runs as a dynamic user with a private `/var/lib/tensorseed` state
 directory, a read only root filesystem, and a restricted system call set.
-Edit `/etc/tensorseed/tensorseed.toml` for your selection rules and disk
-budget; if you seed a tree outside the state directory, add a
+Edit `/etc/tensorseed/tensorseed.toml` for what you seed (pull first, or
+turn on auto-follow with a narrow `select` and a disk budget); if you seed
+a tree outside the state directory, add a
 `ReadOnlyPaths=` (or `ReadWritePaths=`) line as the unit's comments explain.
 
 ## 10. Monitoring: the health endpoint

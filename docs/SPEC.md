@@ -855,7 +855,7 @@ allow_gated = false
 takedown = []
 ```
 
-Secrets are only read from environment variables or a file outside the repo; never stored in the TOML. The publisher key password comes from `TENSORSEED_KEY_PASSWORD` or an interactive prompt. Default config path: `~/.config/tensorseed/tensorseed.toml` (override with `--config` or `TENSORSEED_CONFIG`). An example lives at `config/tensorseed.example.toml` in the repository.
+Secrets are only read from environment variables or a file outside the repo; never stored in the TOML. The publisher key password comes from `TENSORSEED_KEY_PASSWORD` or an interactive prompt. Default config path: `~/.config/tensorseed/tensorseed.toml` on Unix, or `%APPDATA%\tensorseed\tensorseed.toml` on Windows (override with `--config` or `TENSORSEED_CONFIG`). Default data directories are `~/.local/share/tensorseed/` on Unix and `%LOCALAPPDATA%\tensorseed\` on Windows. An example lives at `config/tensorseed.example.toml` in the repository.
 
 ---
 

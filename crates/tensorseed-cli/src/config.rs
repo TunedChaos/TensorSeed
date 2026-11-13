@@ -5,6 +5,12 @@
 //! `TENSORSEED_*` environment overrides (nested keys split on `__`, for
 //! example `TENSORSEED_CHIA__FEE_MOJOS=1000`).
 //!
+//! The default config file is `~/.config/tensorseed/tensorseed.toml` on
+//! Unix (`$XDG_CONFIG_HOME` if set) and `%APPDATA%\tensorseed\tensorseed.toml`
+//! on Windows. Default data paths live under `~/.local/share/tensorseed`
+//! on Unix and `%LOCALAPPDATA%\tensorseed` on Windows. See [`default_path`],
+//! [`expand`], [`config_dir`], and [`data_local_dir`].
+//!
 //! Secrets are never stored here. Fields ending in `_env` name the
 //! environment variable that holds the secret.
 
@@ -170,11 +176,12 @@ impl Default for Harvest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct General {
-    /// sqlite state database.
+    /// sqlite state database (default under `~/.local/share/tensorseed` on
+    /// Unix, `%LOCALAPPDATA%\tensorseed` on Windows).
     pub state_db: String,
-    /// Download staging directory.
+    /// Download staging directory (same default root as `state_db`).
     pub staging_dir: String,
-    /// Long term seeding directory.
+    /// Long term seeding directory (same default root as `state_db`).
     pub seed_dir: String,
     /// Keep files locally after upload for seeding.
     pub keep_local_seed: bool,
@@ -187,9 +194,9 @@ pub struct General {
 impl Default for General {
     fn default() -> Self {
         Self {
-            state_db: "~/.local/share/tensorseed/state.sqlite".into(),
-            staging_dir: "~/.local/share/tensorseed/staging".into(),
-            seed_dir: "~/.local/share/tensorseed/seed".into(),
+            state_db: default_data_file("state.sqlite"),
+            staging_dir: default_data_file("staging"),
+            seed_dir: default_data_file("seed"),
             keep_local_seed: true,
             max_concurrent_downloads: 2,
             download_dir: ".".into(),
@@ -245,7 +252,9 @@ pub struct FileBackend {
     pub base_url: String,
     /// Extra read mirrors (any static host) tried after `base_url`.
     pub mirror_urls: Vec<String>,
-    /// Local verified state and trust anchor.
+    /// Local verified state and trust anchor (default under
+    /// `~/.local/share/tensorseed` on Unix, `%LOCALAPPDATA%\tensorseed` on
+    /// Windows).
     pub state_dir: String,
     /// Write a full snapshot every N revisions.
     pub snapshot_every: u64,
@@ -260,7 +269,7 @@ impl Default for FileBackend {
         Self {
             base_url: "https://catalog.tensorseed.dev/".into(),
             mirror_urls: Vec::new(),
-            state_dir: "~/.local/share/tensorseed/catalog".into(),
+            state_dir: default_data_file("catalog"),
             snapshot_every: 64,
             head_ttl_secs: 7 * 24 * 3600,
             torrent: true,
@@ -566,7 +575,8 @@ impl Torrent {
 #[serde(default, deny_unknown_fields)]
 pub struct Storage {
     /// Root directory: catalog files under `<catalog name>/`, webseed copies
-    /// of model files under `t/`.
+    /// of model files under `t/` (default under `~/.local/share/tensorseed`
+    /// on Unix, `%LOCALAPPDATA%\tensorseed` on Windows).
     pub local_dir: String,
     /// Public URL of `local_dir` if a static web server exposes it (enables
     /// it as a webseed and catalog base). Empty: no webseed.
@@ -580,7 +590,7 @@ pub struct Storage {
 impl Default for Storage {
     fn default() -> Self {
         Self {
-            local_dir: "~/.local/share/tensorseed/publish".into(),
+            local_dir: default_data_file("publish"),
             local_public_base_url: String::new(),
             local_priority: 100,
             target: Vec::new(),
@@ -896,7 +906,9 @@ impl Storage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Mirrors {
-    /// Local mirror list (`[[mirror]]` blocks), edited by `tensorseed mirror`.
+    /// Local mirror list (`[[mirror]]` blocks), edited by `tensorseed mirror`
+    /// (default: `~/.config/tensorseed/mirrors.toml` on Unix,
+    /// `%APPDATA%\tensorseed\mirrors.toml` on Windows).
     pub file: String,
     /// Fetch the publisher signed `<catalog>/mirrors.toml` on sync and pull.
     pub fetch_published: bool,
@@ -905,7 +917,7 @@ pub struct Mirrors {
 impl Default for Mirrors {
     fn default() -> Self {
         Self {
-            file: "~/.config/tensorseed/mirrors.toml".into(),
+            file: default_config_file("mirrors.toml"),
             fetch_published: true,
         }
     }
@@ -1028,23 +1040,119 @@ impl Default for Seed {
     }
 }
 
-/// Expand a leading `~/` to `$HOME`.
+/// User home directory: `$HOME`, or `%USERPROFILE%` if `$HOME` is unset.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// Per-user config directory.
+///
+/// On Unix this is `$XDG_CONFIG_HOME`, or `$HOME/.config` when that is
+/// unset. On Windows it is `%APPDATA%` (the roaming profile), falling back
+/// to `%USERPROFILE%\AppData\Roaming`.
+pub fn config_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|h| h.join("AppData").join("Roaming")))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|h| h.join(".config")))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+/// Per-user data directory for state, staging, publish trees, and caches.
+///
+/// On Unix this is `$HOME/.local/share` (the same location the default
+/// `~/...` config strings expand to; `$XDG_DATA_HOME` is not consulted, so
+/// existing configs stay stable). On Windows it is `%LOCALAPPDATA%`,
+/// falling back to `%USERPROFILE%\AppData\Local`.
+// Used by default_data_file on Windows; kept as a public helper on Unix too.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn data_local_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|h| h.join("AppData").join("Local")))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+    #[cfg(not(windows))]
+    {
+        home_dir()
+            .map(|h| h.join(".local").join("share"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+/// Default path string under the per-user data directory.
+///
+/// On Unix this is a `~/.local/share/tensorseed/<rel>` form, expanded later
+/// by [`expand`]. On Windows it is an absolute path under
+/// `%LOCALAPPDATA%\tensorseed`.
+pub(crate) fn default_data_file(rel: &str) -> String {
+    #[cfg(windows)]
+    {
+        data_local_dir()
+            .join("tensorseed")
+            .join(rel)
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(not(windows))]
+    {
+        format!("~/.local/share/tensorseed/{rel}")
+    }
+}
+
+/// Default path string under the per-user config directory.
+///
+/// On Unix this is a `~/.config/tensorseed/<rel>` form. On Windows it is an
+/// absolute path under `%APPDATA%\tensorseed`.
+pub(crate) fn default_config_file(rel: &str) -> String {
+    #[cfg(windows)]
+    {
+        config_dir()
+            .join("tensorseed")
+            .join(rel)
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(not(windows))]
+    {
+        format!("~/.config/tensorseed/{rel}")
+    }
+}
+
+/// Expand a leading `~/` (or `~\`) to the user home directory.
+///
+/// Home is `$HOME`, or `%USERPROFILE%` when `$HOME` is unset. Paths that do
+/// not start with a tilde slash are returned unchanged.
 pub fn expand(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(rest))
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    match rest {
+        Some(rest) => home_dir()
+            .map(|h| h.join(rest))
             .unwrap_or_else(|| PathBuf::from(path)),
         None => PathBuf::from(path),
     }
 }
 
 /// Default config file location.
+///
+/// On Unix: `$XDG_CONFIG_HOME/tensorseed/tensorseed.toml`, or
+/// `$HOME/.config/tensorseed/tensorseed.toml`. On Windows:
+/// `%APPDATA%\tensorseed\tensorseed.toml`.
 pub fn default_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("tensorseed").join("tensorseed.toml")
+    config_dir().join("tensorseed").join("tensorseed.toml")
 }
 
 /// Build the figment: defaults, then the TOML file (if present), then env.
@@ -1159,8 +1267,14 @@ mod tests {
             assert_eq!(cfg.storage.target.len(), 9);
             assert!(cfg.storage.target.iter().all(|t| !t.enabled));
             assert_eq!(cfg.storage.upload_targets().count(), 0);
-            // [serve] in the example matches the defaults.
-            assert_eq!(cfg.serve, crate::serve::ServeConfig::default());
+            // [serve] in the example matches the built-in defaults. The file
+            // documents the Unix tilde form of data_dir, so on Windows (where
+            // the default is under %LOCALAPPDATA%) only that field differs.
+            let mut expected = crate::serve::ServeConfig::default();
+            if cfg!(windows) {
+                expected.data_dir = "~/.local/share/tensorseed/serve".into();
+            }
+            assert_eq!(cfg.serve, expected);
             assert!(cfg.storage.webseed_bases().is_empty());
             let mut enabled = cfg.clone();
             for t in &mut enabled.storage.target {
@@ -1435,6 +1549,103 @@ dir = "/mnt/nas/tensorseed"
         Jail::expect_with(|jail| {
             jail.create_file("c.toml", "[catalog]\nbackend = \"nope\"\n")?;
             assert!(load(Path::new("c.toml")).is_err());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn expand_tilde_uses_home_then_userprofile() {
+        Jail::expect_with(|jail| {
+            jail.set_env("HOME", "/home/ts");
+            jail.set_env("USERPROFILE", "C:/Users/ts");
+            assert_eq!(
+                expand("~/tensorseed/x"),
+                PathBuf::from("/home/ts/tensorseed/x")
+            );
+            assert_eq!(expand("/abs/path"), PathBuf::from("/abs/path"));
+            assert_eq!(expand("rel/path"), PathBuf::from("rel/path"));
+            Ok(())
+        });
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_default_paths_keep_tilde_forms() {
+        Jail::expect_with(|jail| {
+            jail.set_env("HOME", "/home/ts");
+            jail.set_env("XDG_CONFIG_HOME", "/xdg/config");
+            assert_eq!(
+                default_path(),
+                PathBuf::from("/xdg/config/tensorseed/tensorseed.toml")
+            );
+            assert_eq!(
+                General::default().state_db,
+                "~/.local/share/tensorseed/state.sqlite"
+            );
+            assert_eq!(
+                General::default().staging_dir,
+                "~/.local/share/tensorseed/staging"
+            );
+            assert_eq!(
+                General::default().seed_dir,
+                "~/.local/share/tensorseed/seed"
+            );
+            assert_eq!(
+                FileBackend::default().state_dir,
+                "~/.local/share/tensorseed/catalog"
+            );
+            assert_eq!(
+                Storage::default().local_dir,
+                "~/.local/share/tensorseed/publish"
+            );
+            assert_eq!(Mirrors::default().file, "~/.config/tensorseed/mirrors.toml");
+            assert_eq!(
+                crate::serve::ServeConfig::default().data_dir,
+                "~/.local/share/tensorseed/serve"
+            );
+            Ok(())
+        });
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_default_path_falls_back_to_home_config() {
+        Jail::expect_with(|jail| {
+            jail.set_env("HOME", "/home/ts");
+            // Jail isolates the process environment. Do not set
+            // XDG_CONFIG_HOME so default_path uses $HOME/.config.
+            assert!(std::env::var_os("XDG_CONFIG_HOME").is_none());
+            assert_eq!(
+                default_path(),
+                PathBuf::from("/home/ts/.config/tensorseed/tensorseed.toml")
+            );
+            Ok(())
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_path_uses_appdata() {
+        Jail::expect_with(|jail| {
+            jail.set_env("APPDATA", r"C:\Users\ts\AppData\Roaming");
+            jail.set_env("LOCALAPPDATA", r"C:\Users\ts\AppData\Local");
+            jail.set_env("USERPROFILE", r"C:\Users\ts");
+            assert_eq!(
+                default_path(),
+                PathBuf::from(r"C:\Users\ts\AppData\Roaming\tensorseed\tensorseed.toml")
+            );
+            assert_eq!(
+                General::default().state_db,
+                r"C:\Users\ts\AppData\Local\tensorseed\state.sqlite"
+            );
+            assert_eq!(
+                crate::serve::ServeConfig::default().data_dir,
+                r"C:\Users\ts\AppData\Local\tensorseed\serve"
+            );
+            assert_eq!(
+                Mirrors::default().file,
+                r"C:\Users\ts\AppData\Roaming\tensorseed\mirrors.toml"
+            );
             Ok(())
         });
     }

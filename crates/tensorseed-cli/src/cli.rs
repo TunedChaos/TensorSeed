@@ -19,7 +19,7 @@ use tensorseed_core::keys::RepoType;
 #[derive(Debug, Parser)]
 #[command(name = "tensorseed", version, about, long_about = None)]
 pub struct Cli {
-    /// Path to the config file (default: ~/.config/tensorseed/tensorseed.toml).
+    /// Path to the config file (default: ~/.config/tensorseed/tensorseed.toml, or %APPDATA%\tensorseed\tensorseed.toml on Windows).
     #[arg(long, global = true, env = "TENSORSEED_CONFIG")]
     pub config: Option<PathBuf>,
 
@@ -228,7 +228,7 @@ pub enum CatalogCmd {
     },
     /// Generate a publisher key pair (minisign format).
     Keygen {
-        /// Directory for `<name>.key` and `<name>.pub` (default ~/.config/tensorseed).
+        /// Directory for `<name>.key` and `<name>.pub` (default ~/.config/tensorseed, or %APPDATA%\tensorseed on Windows).
         #[arg(long)]
         out_dir: Option<PathBuf>,
         /// File name stem.

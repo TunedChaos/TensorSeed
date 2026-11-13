@@ -1,5 +1,10 @@
 # Tensorseed example configuration (https://tensorseed.dev).
-# Copy to ~/.config/tensorseed/tensorseed.toml and edit.
+# Copy to ~/.config/tensorseed/tensorseed.toml (Windows:
+# %APPDATA%\tensorseed\tensorseed.toml) and edit.
+# Default data directories are ~/.local/share/tensorseed/ on Unix and
+# %LOCALAPPDATA%\tensorseed\ on Windows. Path values below use the Unix
+# form; on Windows you can omit them to get the platform default, or set
+# them explicitly.
 # Secrets are NEVER stored here: fields ending in _env name the environment
 # variable that holds the secret. Any key can be overridden with
 # TENSORSEED_<SECTION>__<KEY>, for example TENSORSEED_CHIA__FEE_MOJOS=1000.
@@ -276,10 +281,18 @@ prune = true
 serve_catalog = false
 
 [serve]                          # `tensorseed serve`, the long running seeder (spec 8.3)
+# Primary setup: pull the repos you care about, then serve them. fetch is
+# off, so this does not download the rest of the catalog. select = ["*"]
+# here means "seed any on-disk revision still in the catalog".
+# To auto-follow (advanced): set fetch = true and name a repo or org, e.g.
+# select = ["org/name"] or ["org/*"], plus a max_bytes disk budget.
+# select = ["*"] with fetch = true downloads the whole catalog, up to
+# max_bytes.
 data_dir = "~/.local/share/tensorseed/serve"   # downloads (t/), catalog mirror, serve-state.json
+                                 # Windows default: %LOCALAPPDATA%\tensorseed\serve
 dirs = []                        # extra published trees (with t/) to seed from
 sync_interval_secs = 300         # catalog sync period; takedowns apply within one period
-select = ["*"]                   # repo id globs: "*", "org/*", "org/name"; [] seeds nothing
+select = ["*"]                   # with fetch = false: seed any on-disk catalog revision; [] seeds nothing
 exclude = []                     # repo id globs never seeded
 select_watchlist = false         # also select [harvest] repos and authors
 types = []                       # "model", "dataset"; [] = both
@@ -287,8 +300,8 @@ license_classes = []             # "open", "attribution", "restricted", "unknown
 latest_only = true               # only each repo's latest revision
 max_bytes = 0                    # disk budget for everything seeded (0 = unlimited)
 max_revision_bytes = 0           # skip revisions larger than this (0 = no cap)
-fetch = false                    # download selected revisions that are not on disk yet
-fetch_swarm = true               # downloads try peers first, then webseeds, mirrors, the Hub
+fetch = false                    # do not download anything you did not already pull
+fetch_swarm = true               # when fetch is on: try peers first, then webseeds, mirrors, the Hub
 prune = true                     # delete downloaded copies (under data_dir) on takedown or deselect
 upload_limit_kbps = 0            # 0 = torrent.upload_limit_kbps
 download_limit_kbps = 0          # swarm download cap (0 = unlimited)
