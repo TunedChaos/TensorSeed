@@ -36,6 +36,16 @@
   `/etc/tensorseed/tensorseed.toml.example` (copied to `tensorseed.toml`
   on first install). `just dist` includes the packages in SHA256SUMS.
 
+#### Fixed
+
+- The BitTorrent DHT binds IPv4-only when the configured listen address is
+  IPv4, and stores its routing table under Tensorseed's data directory
+  (`%LOCALAPPDATA%\tensorseed\dht.json` on Windows). A previous default
+  used librqbit's dual-stack `[::]` bind and its own cache path, which
+  failed to start the engine on Windows and aborted `pull` before HTTP
+  sources could run. If the engine still fails to start, `pull` now
+  falls back to HTTP unless `--swarm-only` is set.
+
 ## 0.1.0
 
 Tensorseed mirrors open Hugging Face models and datasets for preservation.

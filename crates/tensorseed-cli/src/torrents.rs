@@ -20,7 +20,7 @@ use tensorseed_core::verify::META_DIR;
 use tensorseed_torrent::engine::{Engine, EngineOptions};
 use tensorseed_torrent::{BuildParams, InputFile, Metainfo, build_torrent};
 
-use crate::config::{Config, expand};
+use crate::config::{Config, data_local_dir, expand};
 
 /// File name of the torrent kept in a pulled directory's `.tensorseed/`.
 pub const PULLED_TORRENT: &str = "torrent";
@@ -134,6 +134,8 @@ pub fn engine_options(cfg: &Config, listen: bool, dir: &Path) -> anyhow::Result<
         utp: false,
         tcp: true,
         default_dir: dir.to_owned(),
+        dht_persistence: Some(data_local_dir().join("tensorseed").join("dht.json")),
+        ipv4_only: ip.is_ipv4(),
     })
 }
 

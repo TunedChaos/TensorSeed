@@ -607,7 +607,12 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
                 .map(|f| f.path.clone())
                 .collect(),
         );
-        swarm_download(cfg, args, t, &out, &files).await?;
+        if let Err(e) = swarm_download(cfg, args, t, &out, &files).await {
+            if args.swarm_only {
+                return Err(e);
+            }
+            println!("swarm  unavailable ({e}); using HTTP sources");
+        }
     }
     let fetcher = Fetcher::new(Some(state_db(cfg)?))?;
     let report = fetcher

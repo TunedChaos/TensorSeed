@@ -56,6 +56,13 @@ pub struct EngineOptions {
     pub tcp: bool,
     /// Fallback output directory (every torrent here sets its own).
     pub default_dir: PathBuf,
+    /// Where to persist the DHT routing table. `None` uses librqbit's
+    /// default path. Ignored when `dht` is off.
+    pub dht_persistence: Option<PathBuf>,
+    /// Bind the DHT (and listen sockets) to IPv4 only. The default listen
+    /// address is `0.0.0.0`; dual-stack `[::]` binds fail on some Windows
+    /// hosts.
+    pub ipv4_only: bool,
 }
 
 impl EngineOptions {
@@ -71,6 +78,8 @@ impl EngineOptions {
             utp: false,
             tcp: true,
             default_dir: dir.to_owned(),
+            dht_persistence: None,
+            ipv4_only: true,
         }
     }
 }
@@ -191,10 +200,18 @@ impl Engine {
             o.default_dir.clone(),
             SessionOptions {
                 dht: if o.dht {
-                    Some(Default::default())
+                    Some(librqbit::DhtSessionConfig {
+                        bootstrap_addrs: None,
+                        port: None,
+                        persistence: Some(librqbit::dht::DhtPersistenceConfig {
+                            dump_interval: None,
+                            config_filename: o.dht_persistence.clone(),
+                        }),
+                    })
                 } else {
                     None
                 },
+                ipv4_only: o.ipv4_only,
                 listen: o.listen.map(|addr| ListenerOptions {
                     mode: match (o.tcp, o.utp) {
                         (true, true) => ListenerMode::TcpAndUtp,
