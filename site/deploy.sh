@@ -4,7 +4,7 @@
 # Required environment:
 #   CLOUDFLARE_API_TOKEN    Account Cloudflare Pages Edit, and Zone DNS Edit
 #                           for tensorseed.dev when attaching custom domains.
-#   CLOUDFLARE_ACCOUNT_ID   defaults to the Tuned Chaos account below.
+#   CLOUDFLARE_ACCOUNT_ID   the Cloudflare account that owns the Pages projects.
 #
 # This script never prints the token. It only checks that the variable is set.
 #
@@ -20,16 +20,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-REDACTED_ACCOUNT_ID}"
-export CLOUDFLARE_ACCOUNT_ID="${ACCOUNT_ID}"
 # Outside a Node project wrangler may resolve its cache to /node_modules/.cache
 # and fail with EACCES after uploading; keep the cache somewhere writable.
 export WRANGLER_CACHE_DIR="${WRANGLER_CACHE_DIR:-${TMPDIR:-/tmp}/wrangler-cache}"
 
-if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-  echo "CLOUDFLARE_API_TOKEN is not set" >&2
-  exit 1
-fi
+for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+  if [ -z "${!v:-}" ]; then
+    echo "$v is not set" >&2
+    exit 1
+  fi
+done
 echo "CLOUDFLARE_API_TOKEN is set (length ${#CLOUDFLARE_API_TOKEN})"
 echo "CLOUDFLARE_ACCOUNT_ID is set (length ${#CLOUDFLARE_ACCOUNT_ID})"
 

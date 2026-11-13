@@ -1014,8 +1014,8 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 ## 17. Open questions
 
 1. Which models and datasets first, and how many TB in year one (for example, widely used models in GGUF Q4 / MLX 4-bit / NVFP4 variants)?
-2. Do you already run a synced Chia full node and wallet? What XCH budget for fees and mirror coins?
-3. Hosting hardware, uplink speed, and whether you can open port 8575 (DataLayer) and a torrent port.
+2. ~~Chia node and XCH budget?~~ Resolved: a light wallet without a full node publishes; 0.01 XCH covers the store and thousands of updates (CHIA-RUNBOOK.md section 8). Still open: whether to run an own full node for the coin lookups.
+3. Publisher hosting: hardware, uplink speed, and whether port 8575 (DataLayer) and a torrent port can be opened.
 4. ~~R2 as primary webseed?~~ Resolved: storage is optional and provider neutral (10.1). Still open: which provider(s), if any, for the public webseed, and whether to apply for Cloudflare Project Alexandria credits.
 5. Single owner key, or CHIP-0035 delegated writers for co-maintainers?
 6. License policy: open licenses only at launch, or also Llama-style attribution licenses?
