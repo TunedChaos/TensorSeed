@@ -378,9 +378,10 @@ fn bytes_response(cfg: &HttpConfig, b: Bytes, ctype: &'static str, head: bool) -
     let h = r.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+    // t/<content name>.torrent may be rewritten when webseeds change.
     h.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
+        HeaderValue::from_static("public, max-age=60, must-revalidate"),
     );
     r
 }
@@ -605,6 +606,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 200);
+        assert_eq!(
+            r.headers()["cache-control"],
+            "public, max-age=60, must-revalidate"
+        );
         assert_eq!(r.bytes().await.unwrap().as_ref(), b"d4:infoe");
 
         for p in [

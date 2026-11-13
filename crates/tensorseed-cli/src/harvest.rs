@@ -720,11 +720,13 @@ async fn harvest_one(
             .with_context(|| format!("uploading {key} to {}", s.describe()))?;
         }
         if let Some(b) = &torrent_bytes {
+            // url-list and trackers can change in a later catalog revision of
+            // the same commit, so this path must not be cached as immutable.
             s.put(
                 &format!("t/{name}.torrent"),
                 b.clone(),
                 "application/x-bittorrent",
-                CachePolicy::Immutable,
+                CachePolicy::Mutable,
             )
             .await
             .with_context(|| format!("uploading {name}.torrent to {}", s.describe()))?;

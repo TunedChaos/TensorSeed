@@ -441,7 +441,7 @@ Decided in the M0 spike ([M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md)).
 - **Engine: librqbit** (Apache-2.0) for seeding and swarm downloads. It joins the v1 side of a hybrid swarm (SHA-1 pieces) and interoperates with v2 capable peers. It cannot open v2 only torrents, resolve `btmh` only magnets, or use webseeds; Tensorseed works around all three (hybrid torrents, hybrid magnets, its own webseed fetcher). libtorrent-rasterbar 2.x stays a possible later engine (sidecar first); switching does not change torrents or manifests.
 - **Integrity does not depend on the engine.** Swarm bytes land in place, then every file is hashed with SHA-256 against the signed manifest before it counts as present; `Metainfo::verify_file` can also recheck the BEP 52 root.
 - Trackers: a short configurable list (`torrent.trackers`, http, https, or udp) plus DHT. Private trackers are not used. Static peers (`torrent.peers`, `pull --peer`) help reach known seed boxes.
-- The `.torrent` file sits next to the content in storage, at `t/<content name>.torrent` beside `t/<content name>/` (10.1), so every webseed base also serves it; its URLs are stored in the manifest.
+- The `.torrent` file sits next to the content in storage, at `t/<content name>.torrent` beside `t/<content name>/` (10.1), so every webseed base also serves it; its URLs are stored in the manifest. A later catalog revision of the same commit may rewrite that file (for example to add webseeds or trackers) while the info dict stays the same, so `t/<content name>.torrent` must not be uploaded or served with a long-lived immutable Cache-Control. The payload under `t/<content name>/` is immutable.
 
 ### 7.2 Webseeds (BEP 19)
 

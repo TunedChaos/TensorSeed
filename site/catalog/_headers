@@ -31,9 +31,10 @@
 /tensorseed/snapshots/0000000001.json.minisig
   Cache-Control: public, max-age=31536000, immutable
 
+# The content-name torrent path can be replaced when webseeds change.
 /t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent
   Content-Type: application/x-bittorrent
-  Cache-Control: public, max-age=31536000, immutable
+  Cache-Control: public, max-age=60, must-revalidate
 
 /tensorseed/head.json.minisig
 /tensorseed/mirrors.toml.minisig
