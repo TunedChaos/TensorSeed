@@ -195,6 +195,8 @@ Details in [CONTRIBUTING.md](CONTRIBUTING.md#cross-platform-builds).
 
 ### Release signatures
 
+Release notes: [CHANGELOG.md](CHANGELOG.md).
+
 Release archives come with `SHA256SUMS` and `SHA256SUMS.minisig`, signed by
 the **release key**, which is a different key from the catalog publisher key
 (key separation: the catalog key lives on an online publishing host, the

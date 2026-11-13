@@ -1,0 +1,85 @@
+# Changelog
+
+## 0.1.0
+
+Tensorseed mirrors open Hugging Face models and datasets for preservation.
+A signed catalog lists each mirrored revision (files, sizes, SHA-256
+hashes, license, and the Hugging Face commit). The catalog is anchored on
+Chia DataLayer, and clients check the signed file catalog against the
+chain. Downloads use the BitTorrent swarm first; HTTP mirrors and Hugging
+Face are failover.
+
+This is an early release. The software works today for pulling, verifying,
+and seeding, and we are looking for volunteer seeders. Formats and
+commands may still change before 1.0.
+
+### Highlights
+
+- Strict chain checking is the default once a store id is set:
+  `tensorseed catalog chain-status` reports whether the file catalog
+  matches the on-chain head.
+- `tensorseed pull` uses the BitTorrent swarm first. HTTP mirrors and
+  Hugging Face fill only what the swarm cannot deliver. If no peer
+  connects within about 30 seconds, or the download stalls for a minute,
+  the client switches to HTTP. Pulls are outbound only and do not keep
+  seeding unless you pass `--seed-after`.
+- Dead HTTP mirrors are remembered. A connect failure or repeated
+  transient failures marks an origin dead for later files and later runs,
+  with a one hour cooldown by default (`[fetch] dead_mirror_cooldown_secs`).
+  After the cooldown it is retried automatically. `--retry-dead-mirrors`
+  retries immediately. A 404 for one file does not mark the host dead.
+  If every HTTP source for a file is marked dead, the client tries them
+  anyway.
+- Seeding is opt in per item. Pull the repos you care about, then run
+  `tensorseed serve` to share them. The daemon does not download the rest
+  of the catalog unless you turn on auto-follow.
+- Windows uses standard directories (`%APPDATA%\tensorseed` for config,
+  `%LOCALAPPDATA%\tensorseed` for data).
+- Anyone can run an independent catalog (own publisher key, own Chia
+  store, own host). See [docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md).
+  Nobody but the official publisher can write to the official
+  tensorseed.dev catalog. Following several catalogs in one process is
+  planned for 0.2.0. To request a repo in the official catalog, open a
+  "Request a catalog mirror" issue (gated and restricted-license repos
+  are refused).
+
+### Download targets
+
+Prebuilt archives:
+
+- Linux x86_64, static (`x86_64-unknown-linux-musl`)
+- Linux ARM64, static (`aarch64-unknown-linux-musl`)
+- Linux x86_64, glibc 2.17 (`x86_64-unknown-linux-gnu`)
+- Windows x86_64 (`x86_64-pc-windows-gnu`)
+- Windows ARM64 (`aarch64-pc-windows-gnullvm`); the file format is
+  confirmed, but this build has not been run on ARM Windows hardware
+
+There is no macOS build. macOS users can build from source with
+`cargo install` or `cargo build --release` (Rust 1.87 or newer).
+
+### Verify a release
+
+Release archives ship with `SHA256SUMS` and `SHA256SUMS.minisig`, signed
+by the release key (minisign, key id F5D2D3C4C27D459D). This is not the
+catalog publisher key. Do not verify binaries with the catalog key.
+
+```text
+RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
+```
+
+```sh
+minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+The public key file is also published as `tensorseed-release.pub` (and in
+`keys/tensorseed-release.pub` in the repository).
+
+### Known limitations
+
+- `pull` downloads whole revisions. A file the swarm left partial is
+  currently fetched again in full over HTTP.
+- A client follows one catalog per config file. To follow a third party
+  catalog, use a separate config and `--config`.
+- Catalog and on-disk formats may change before 1.0.
+- `takedown` and `doctor` still print "not implemented yet".
