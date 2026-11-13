@@ -63,6 +63,22 @@ pub struct EngineOptions {
     /// address is `0.0.0.0`; dual-stack `[::]` binds fail on some Windows
     /// hosts.
     pub ipv4_only: bool,
+    /// Peer connections per torrent (`None`: librqbit's default of 128).
+    /// librqbit 9.1 has no session wide connection cap.
+    pub peers_per_torrent: Option<usize>,
+    /// Outgoing peer connections through this SOCKS5 proxy
+    /// (`socks5://[user:pass@]host:port`, or `socks5h://` to resolve names
+    /// through the proxy). Listening, DHT, and uTP do not go through it.
+    pub proxy_url: Option<String>,
+    /// Bind sockets to this network interface (for example a VPN device).
+    /// Linux and macOS only; librqbit rejects it on Windows.
+    pub bind_device: Option<String>,
+    /// Torrents checked (initialized) at the same time (`None`: 3).
+    pub concurrent_init_limit: Option<usize>,
+    /// Upload cap per torrent in bytes per second (`None`: unlimited).
+    pub torrent_upload_bps: Option<u32>,
+    /// Download cap per torrent in bytes per second (`None`: unlimited).
+    pub torrent_download_bps: Option<u32>,
 }
 
 impl EngineOptions {
@@ -80,6 +96,12 @@ impl EngineOptions {
             default_dir: dir.to_owned(),
             dht_persistence: None,
             ipv4_only: true,
+            peers_per_torrent: None,
+            proxy_url: None,
+            bind_device: None,
+            concurrent_init_limit: None,
+            torrent_upload_bps: None,
+            torrent_download_bps: None,
         }
     }
 }
@@ -87,6 +109,41 @@ impl EngineOptions {
 /// A running librqbit session.
 pub struct Engine {
     session: Arc<Session>,
+    torrent_limits: LimitsConfig,
+    peers_per_torrent: Option<usize>,
+}
+
+/// A cloneable handle to change an [`Engine`]'s session caps from another
+/// task (speed schedules).
+#[derive(Clone)]
+pub struct RateHandle {
+    session: Arc<Session>,
+}
+
+impl RateHandle {
+    /// Set both session caps (bytes per second, `None` for unlimited).
+    pub fn set(&self, upload_bps: Option<u32>, download_bps: Option<u32>) {
+        self.session
+            .ratelimits
+            .set_upload_bps(upload_bps.and_then(NonZeroU32::new));
+        self.session
+            .ratelimits
+            .set_download_bps(download_bps.and_then(NonZeroU32::new));
+    }
+
+    /// Current caps (upload, download).
+    pub fn get(&self) -> (Option<u32>, Option<u32>) {
+        (
+            self.session
+                .ratelimits
+                .get_upload_bps()
+                .map(NonZeroU32::get),
+            self.session
+                .ratelimits
+                .get_download_bps()
+                .map(NonZeroU32::get),
+        )
+    }
 }
 
 /// One torrent inside an [`Engine`].
@@ -224,8 +281,12 @@ impl Engine {
                 }),
                 connect: Some(ConnectionOptions {
                     enable_tcp: o.tcp || !o.utp,
+                    proxy_url: o.proxy_url.clone(),
                     ..Default::default()
                 }),
+                bind_device_name: o.bind_device.clone(),
+                concurrent_init_limit: o.concurrent_init_limit,
+                peer_limit: o.peers_per_torrent,
                 disable_trackers: !o.trackers,
                 disable_local_service_discovery: !o.lsd,
                 fastresume: false,
@@ -242,7 +303,21 @@ impl Engine {
         )
         .await
         .map_err(eng)?;
-        Ok(Self { session })
+        Ok(Self {
+            session,
+            torrent_limits: LimitsConfig {
+                upload_bps: o.torrent_upload_bps.and_then(NonZeroU32::new),
+                download_bps: o.torrent_download_bps.and_then(NonZeroU32::new),
+            },
+            peers_per_torrent: o.peers_per_torrent,
+        })
+    }
+
+    /// A handle for changing the session caps from another task.
+    pub fn rate_handle(&self) -> RateHandle {
+        RateHandle {
+            session: self.session.clone(),
+        }
     }
 
     /// Address peers can dial, if listening.
@@ -279,6 +354,8 @@ impl Engine {
                     output_folder: Some(dir_s),
                     initial_peers: (!peers.is_empty()).then_some(peers),
                     only_files,
+                    ratelimits: self.torrent_limits,
+                    peer_limit: self.peers_per_torrent,
                     ..Default::default()
                 }),
             )
@@ -428,6 +505,39 @@ impl Engine {
             .set_upload_bps(bps.and_then(NonZeroU32::new));
     }
 
+    /// Change the download cap (bytes per second, `None` for unlimited).
+    pub fn set_download_limit(&self, bps: Option<u32>) {
+        self.session
+            .ratelimits
+            .set_download_bps(bps.and_then(NonZeroU32::new));
+    }
+
+    /// Pause a torrent: peers are dropped, nothing is uploaded or fetched,
+    /// and it stays in the session.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Engine`] if librqbit cannot pause it (for example it
+    /// is still being checked).
+    pub async fn pause(&self, h: &Handle) -> Result<(), TorrentError> {
+        if h.handle.is_paused() {
+            return Ok(());
+        }
+        self.session.pause(&h.handle).await.map_err(eng)
+    }
+
+    /// Resume a paused torrent.
+    ///
+    /// # Errors
+    ///
+    /// [`TorrentError::Engine`] if librqbit cannot restart it.
+    pub async fn resume(&self, h: &Handle) -> Result<(), TorrentError> {
+        if !h.handle.is_paused() {
+            return Ok(());
+        }
+        self.session.unpause(&h.handle).await.map_err(eng)
+    }
+
     /// Stop the session.
     pub async fn stop(&self) {
         self.session.stop().await;
@@ -446,6 +556,11 @@ impl Handle {
             live: matches!(s.state, TorrentStatsState::Live),
             error: s.error,
         }
+    }
+
+    /// True while paused by [`Engine::pause`].
+    pub fn is_paused(&self) -> bool {
+        self.handle.is_paused()
     }
 
     /// Connected peers of this torrent.
@@ -578,6 +693,43 @@ mod tests {
         let _ = h.peers();
         client.stop().await;
         seeder.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pause_resume_and_live_caps() {
+        let (d, t) = setup(true).await;
+        let content = d.path().join(NAME);
+        let mut o = EngineOptions::loopback(0, d.path());
+        o.peers_per_torrent = Some(8);
+        o.torrent_upload_bps = Some(1 << 20);
+        o.concurrent_init_limit = Some(1);
+        let e = Engine::start(o).await.unwrap();
+        let h = e
+            .seed(&t, &content, None, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(!h.is_paused());
+        e.pause(&h).await.unwrap();
+        assert!(h.is_paused());
+        e.pause(&h).await.unwrap(); // idempotent
+        e.resume(&h).await.unwrap();
+        assert!(!h.is_paused());
+        let r = e.rate_handle();
+        r.set(Some(4096), None);
+        assert_eq!(r.get(), (Some(4096), None));
+        e.set_download_limit(Some(8192));
+        assert_eq!(r.get(), (Some(4096), Some(8192)));
+        r.set(None, None);
+        assert_eq!(r.get(), (None, None));
+        e.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bad_proxy_url_is_rejected_at_start() {
+        let d = tempfile::tempdir().unwrap();
+        let mut o = EngineOptions::loopback(0, d.path());
+        o.proxy_url = Some("http://proxy.invalid:8080".into());
+        assert!(Engine::start(o).await.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
