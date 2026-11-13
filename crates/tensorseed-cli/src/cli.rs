@@ -365,6 +365,10 @@ pub struct PullArgs {
     /// Do not fall back to Hugging Face when webseeds fail.
     #[arg(long)]
     pub no_hf_fallback: bool,
+    /// Ignore cooldown marks and try every HTTP mirror this run. A
+    /// successful download from a previously dead origin clears the mark.
+    #[arg(long)]
+    pub retry_dead_mirrors: bool,
     /// Files downloaded at the same time (default: general.max_concurrent_downloads).
     #[arg(long)]
     pub jobs: Option<usize>,

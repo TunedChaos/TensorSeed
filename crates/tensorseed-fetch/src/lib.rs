@@ -16,6 +16,13 @@
 //! write in place; a fetcher run afterwards hashes those files and keeps
 //! only the ones that match.
 //!
+//! A connect failure or repeated transient failures marks an HTTP origin
+//! (including Hugging Face) dead for later files in the run and, unless
+//! `dead_mirror_cooldown` is zero, for later runs until the cooldown
+//! expires or a download from that origin succeeds. A 404 only drops the
+//! origin for that file. If every source for a file is marked dead, the
+//! fetcher tries them anyway. Torrent downloads are not tracked here.
+//!
 //! # Where this fits
 //!
 //! `tensorseed pull`, `harvest`, and `serve` hand this crate a
@@ -43,9 +50,10 @@
 
 pub mod state;
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tensorseed_core::hash::{ExpectedDigest, StreamHasher, sha256_bytes};
 use tensorseed_core::verify::{META_DIR, safe_join};
@@ -152,6 +160,12 @@ pub struct FetchOptions {
     pub attempts_per_source: u32,
     /// Delay between attempts.
     pub retry_delay: Duration,
+    /// Ignore persisted dead-mirror marks and try every origin this run.
+    /// Successful downloads still clear the mark.
+    pub retry_dead_mirrors: bool,
+    /// How long a persisted dead-mirror mark is honored. Zero disables
+    /// persistence (in-run marks still apply).
+    pub dead_mirror_cooldown: Duration,
 }
 
 impl Default for FetchOptions {
@@ -160,6 +174,8 @@ impl Default for FetchOptions {
             concurrency: 4,
             attempts_per_source: 3,
             retry_delay: Duration::from_millis(500),
+            retry_dead_mirrors: false,
+            dead_mirror_cooldown: Duration::from_secs(3600),
         }
     }
 }
@@ -200,6 +216,19 @@ pub struct FileResult {
 pub struct FetchReport {
     /// Results sorted by path.
     pub files: Vec<FileResult>,
+    /// Origins skipped because they were marked dead, one entry per origin.
+    pub skipped_dead: Vec<DeadMirrorNotice>,
+}
+
+/// A dead origin that was skipped at least once in this run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadMirrorNotice {
+    /// Origin (`scheme://host[:port]`).
+    pub origin: String,
+    /// When the mark was written (Unix seconds).
+    pub marked_unix: i64,
+    /// User facing line, including the `--retry-dead-mirrors` hint.
+    pub line: String,
 }
 
 impl FetchReport {
@@ -226,9 +255,56 @@ impl FetchReport {
 #[derive(Debug)]
 enum AttemptError {
     /// Worth retrying the same source (network error, short read, 5xx).
-    Transient(String),
+    Transient {
+        /// Message.
+        msg: String,
+        /// True when the request never got an HTTP response (DNS, connect,
+        /// TLS, or connect timeout). These mark the origin dead immediately.
+        connect: bool,
+    },
     /// Drop this source (4xx, wrong bytes, bad range).
-    Drop(String),
+    Drop {
+        /// Message.
+        msg: String,
+        /// True for HTTP 404/410: the origin is up but lacks this file.
+        not_found: bool,
+    },
+}
+
+impl AttemptError {
+    fn msg(&self) -> &str {
+        match self {
+            Self::Transient { msg, .. } | Self::Drop { msg, .. } => msg,
+        }
+    }
+
+    fn transient(msg: impl Into<String>) -> Self {
+        Self::Transient {
+            msg: msg.into(),
+            connect: false,
+        }
+    }
+
+    fn connect(msg: impl Into<String>) -> Self {
+        Self::Transient {
+            msg: msg.into(),
+            connect: true,
+        }
+    }
+
+    fn drop_src(msg: impl Into<String>) -> Self {
+        Self::Drop {
+            msg: msg.into(),
+            not_found: false,
+        }
+    }
+
+    fn not_found(msg: impl Into<String>) -> Self {
+        Self::Drop {
+            msg: msg.into(),
+            not_found: true,
+        }
+    }
 }
 
 /// Downloader.
@@ -236,21 +312,55 @@ enum AttemptError {
 pub struct Fetcher {
     http: reqwest::Client,
     db: Option<Arc<StateDb>>,
+    health: Arc<Mutex<MirrorHealth>>,
+}
+
+/// In-run (and preloaded) dead-mirror state, shared across concurrent files.
+#[derive(Debug, Default)]
+struct MirrorHealth {
+    /// Origin to marked_unix for origins considered dead this run.
+    dead: HashMap<String, i64>,
+    /// Origins we have already produced a skip notice for.
+    announced: HashSet<String>,
+    /// Skip notices, one per origin.
+    notices: Vec<DeadMirrorNotice>,
+    /// File paths that already had a transient failure on this origin.
+    transient_files: HashMap<String, HashSet<String>>,
+    retry_all: bool,
+    cooldown: Duration,
 }
 
 impl Fetcher {
-    /// Build a fetcher. `db` enables resumable job records.
+    /// Build a fetcher. `db` enables resumable job records and persisted
+    /// dead-mirror marks.
     ///
     /// # Errors
     ///
     /// [`FetchError::Http`] if the HTTP client cannot be built.
     pub fn new(db: Option<Arc<StateDb>>) -> Result<Self> {
+        Self::with_timeouts(db, Duration::from_secs(30), Duration::from_secs(120))
+    }
+
+    /// Build a fetcher with explicit HTTP timeouts (used by tests).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::Http`] if the HTTP client cannot be built.
+    pub fn with_timeouts(
+        db: Option<Arc<StateDb>>,
+        connect_timeout: Duration,
+        read_timeout: Duration,
+    ) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(120))
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
             .build()?;
-        Ok(Self { http, db })
+        Ok(Self {
+            http,
+            db,
+            health: Arc::new(Mutex::new(MirrorHealth::default())),
+        })
     }
 
     /// Download and verify every file of a job.
@@ -267,6 +377,7 @@ impl Fetcher {
         files: Vec<FileJob>,
         opts: FetchOptions,
     ) -> Result<FetchReport> {
+        self.prepare_health(&opts);
         let partial_dir = job.out_dir.join(META_DIR).join("partial");
         tokio::fs::create_dir_all(&partial_dir).await?;
         for f in &files {
@@ -301,7 +412,15 @@ impl Fetcher {
             results.push(r);
         }
         results.sort_by(|a, b| a.path.cmp(&b.path));
-        let report = FetchReport { files: results };
+        let skipped_dead = self
+            .health
+            .lock()
+            .map(|h| h.notices.clone())
+            .unwrap_or_else(|p| p.into_inner().notices.clone());
+        let report = FetchReport {
+            files: results,
+            skipped_dead,
+        };
         if let Some(db) = &self.db {
             let (_, _, failed) = report.counts();
             if failed == 0 {
@@ -341,7 +460,19 @@ impl Fetcher {
             f.digest.hex(),
             &sha256_bytes(f.path.as_bytes())[..16]
         ));
+        // If every source is marked dead, try them anyway rather than fail.
+        let safety_net = !f.sources.is_empty()
+            && f.sources
+                .iter()
+                .all(|s| self.dead_at(&source_origin(&s.url)).is_some());
         for src in &f.sources {
+            let origin = source_origin(&src.url);
+            if !safety_net {
+                if let Some(marked) = self.dead_at(&origin) {
+                    self.announce_skip(&origin, marked);
+                    continue;
+                }
+            }
             let mut attempt = 0;
             loop {
                 attempt += 1;
@@ -359,6 +490,7 @@ impl Fetcher {
                         if let Some(db) = &self.db {
                             db.file_done(&job.id, &f.path, &src.url, mtime)?;
                         }
+                        self.clear_dead(&origin);
                         tracing::info!(path = %f.path, source = %src.url, "verified");
                         result.outcome = Outcome::Downloaded {
                             source: src.url.clone(),
@@ -367,15 +499,36 @@ impl Fetcher {
                         };
                         return Ok(result);
                     }
-                    Err(AttemptError::Transient(e)) if attempt < opts.attempts_per_source => {
-                        tracing::warn!(path = %f.path, source = %src.url, attempt, error = %e, "retrying");
-                        tokio::time::sleep(opts.retry_delay).await;
-                    }
-                    Err(AttemptError::Transient(e) | AttemptError::Drop(e)) => {
-                        tracing::warn!(path = %f.path, source = %src.url, error = %e, "source dropped");
+                    Err(AttemptError::Transient { connect: true, msg }) => {
+                        // A connect failure marks the origin dead immediately.
+                        tracing::warn!(path = %f.path, source = %src.url, error = %msg, "connect failed");
                         result
                             .errors
-                            .push(format!("{} ({}): {e}", src.url, src.kind.label()));
+                            .push(format!("{} ({}): {msg}", src.url, src.kind.label()));
+                        self.note_failure(&origin, &f.path, &msg, true);
+                        break;
+                    }
+                    Err(AttemptError::Transient { msg, .. })
+                        if attempt < opts.attempts_per_source =>
+                    {
+                        tracing::warn!(path = %f.path, source = %src.url, attempt, error = %msg, "retrying");
+                        tokio::time::sleep(opts.retry_delay).await;
+                    }
+                    Err(err) => {
+                        let msg = err.msg().to_string();
+                        tracing::warn!(path = %f.path, source = %src.url, error = %msg, "source dropped");
+                        result
+                            .errors
+                            .push(format!("{} ({}): {msg}", src.url, src.kind.label()));
+                        match err {
+                            AttemptError::Transient { msg, .. } => {
+                                self.note_failure(&origin, &f.path, &msg, true);
+                            }
+                            AttemptError::Drop {
+                                not_found: true, ..
+                            } => {}
+                            AttemptError::Drop { .. } => {}
+                        }
                         break;
                     }
                 }
@@ -440,7 +593,7 @@ impl Fetcher {
         src: &Source,
         part: &Path,
     ) -> Result<(), AttemptError> {
-        let io = |e: std::io::Error| AttemptError::Transient(format!("local I/O: {e}"));
+        let io = |e: std::io::Error| AttemptError::transient(format!("local I/O: {e}"));
         let mut have = tokio::fs::metadata(part)
             .await
             .map(|m| m.len())
@@ -465,7 +618,7 @@ impl Fetcher {
         let mut resp = req
             .send()
             .await
-            .map_err(|e| AttemptError::Transient(e.to_string()))?;
+            .map_err(|e| AttemptError::connect(e.to_string()))?;
         let status = resp.status();
         let mut file;
         if status == reqwest::StatusCode::PARTIAL_CONTENT && have > 0 {
@@ -476,7 +629,7 @@ impl Fetcher {
                 .and_then(content_range_start);
             if start != Some(have) {
                 tokio::fs::remove_file(part).await.map_err(io)?;
-                return Err(AttemptError::Transient(format!(
+                return Err(AttemptError::transient(format!(
                     "server answered range {have}- with start {start:?}; restarting"
                 )));
             }
@@ -492,24 +645,26 @@ impl Fetcher {
             file = tokio::fs::File::create(part).await.map_err(io)?;
         } else if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
             tokio::fs::remove_file(part).await.map_err(io)?;
-            return Err(AttemptError::Transient(
-                "range not satisfiable; restarting".into(),
+            return Err(AttemptError::transient(
+                "range not satisfiable; restarting".to_string(),
             ));
         } else if status.is_server_error() || status.as_u16() == 429 {
-            return Err(AttemptError::Transient(format!("HTTP {status}")));
+            return Err(AttemptError::transient(format!("HTTP {status}")));
+        } else if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
+            return Err(AttemptError::not_found(format!("HTTP {status}")));
         } else {
-            return Err(AttemptError::Drop(format!("HTTP {status}")));
+            return Err(AttemptError::drop_src(format!("HTTP {status}")));
         }
         let mut since_progress = 0u64;
         while let Some(chunk) = resp
             .chunk()
             .await
-            .map_err(|e| AttemptError::Transient(e.to_string()))?
+            .map_err(|e| AttemptError::transient(e.to_string()))?
         {
             if have + chunk.len() as u64 > f.size {
                 drop(file);
                 let _ = tokio::fs::remove_file(part).await;
-                return Err(AttemptError::Drop(format!(
+                return Err(AttemptError::drop_src(format!(
                     "served more than the expected {} bytes",
                     f.size
                 )));
@@ -530,13 +685,138 @@ impl Fetcher {
         file.sync_all().await.map_err(io)?;
         drop(file);
         if have < f.size {
-            return Err(AttemptError::Transient(format!(
+            return Err(AttemptError::transient(format!(
                 "connection ended at {have} of {} bytes",
                 f.size
             )));
         }
         finish(hasher, &f.digest, part).await
     }
+
+    fn prepare_health(&self, opts: &FetchOptions) {
+        let mut h = self.health.lock().unwrap_or_else(|p| p.into_inner());
+        h.retry_all = opts.retry_dead_mirrors;
+        h.cooldown = opts.dead_mirror_cooldown;
+        h.announced.clear();
+        h.notices.clear();
+        h.transient_files.clear();
+        h.dead.clear();
+        if opts.retry_dead_mirrors || opts.dead_mirror_cooldown.is_zero() {
+            return;
+        }
+        let Some(db) = &self.db else {
+            return;
+        };
+        let now = unix_now();
+        let cool = opts.dead_mirror_cooldown.as_secs() as i64;
+        if let Ok(list) = db.list_dead_mirrors() {
+            for m in list {
+                if now.saturating_sub(m.marked_unix) < cool {
+                    h.dead.insert(m.origin, m.marked_unix);
+                }
+            }
+        }
+    }
+
+    fn dead_at(&self, origin: &str) -> Option<i64> {
+        let h = self.health.lock().unwrap_or_else(|p| p.into_inner());
+        if h.retry_all {
+            return None;
+        }
+        h.dead.get(origin).copied()
+    }
+
+    fn announce_skip(&self, origin: &str, marked_unix: i64) {
+        let mut h = self.health.lock().unwrap_or_else(|p| p.into_inner());
+        if !h.announced.insert(origin.to_string()) {
+            return;
+        }
+        let line = dead_skip_line(origin, marked_unix, unix_now());
+        h.notices.push(DeadMirrorNotice {
+            origin: origin.to_string(),
+            marked_unix,
+            line,
+        });
+    }
+
+    fn note_failure(&self, origin: &str, path: &str, reason: &str, mark: bool) {
+        let now = unix_now();
+        let mut persist = false;
+        let mut persist_reason = reason.to_string();
+        {
+            let mut h = self.health.lock().unwrap_or_else(|p| p.into_inner());
+            let n = {
+                let files = h.transient_files.entry(origin.to_string()).or_default();
+                files.insert(path.to_string());
+                files.len()
+            };
+            let repeated = n >= 2;
+            if mark || repeated {
+                h.dead.entry(origin.to_string()).or_insert(now);
+                persist = !h.cooldown.is_zero();
+                if repeated && !mark {
+                    persist_reason = format!("transient failures on {n} files");
+                }
+            }
+        }
+        if persist && let Some(db) = &self.db {
+            let _ = db.mark_dead(origin, &persist_reason);
+        }
+    }
+
+    fn clear_dead(&self, origin: &str) {
+        {
+            let mut h = self.health.lock().unwrap_or_else(|p| p.into_inner());
+            h.dead.remove(origin);
+        }
+        if let Some(db) = &self.db {
+            let _ = db.clear_dead(origin);
+        }
+    }
+}
+
+/// Origin of a source URL (`scheme://host[:port]`), used as the dead-mirror key.
+pub fn source_origin(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let hostport = rest.split('/').next().unwrap_or(rest);
+            if hostport.is_empty() {
+                url.to_string()
+            } else {
+                format!("{scheme}://{hostport}")
+            }
+        }
+        None => url.to_string(),
+    }
+}
+
+/// Human relative time for a dead-mirror mark, for example `12m ago`.
+pub fn dead_ago_label(marked_unix: i64, now_unix: i64) -> String {
+    let secs = now_unix.saturating_sub(marked_unix).max(0);
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
+/// User facing skip line for a dead origin.
+pub fn dead_skip_line(origin: &str, marked_unix: i64, now_unix: i64) -> String {
+    format!(
+        "skip   {origin} (marked dead {}; --retry-dead-mirrors to retry)",
+        dead_ago_label(marked_unix, now_unix)
+    )
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 async fn finish(
@@ -549,7 +829,7 @@ async fn finish(
         Ok(())
     } else {
         let _ = tokio::fs::remove_file(part).await;
-        Err(AttemptError::Drop(format!(
+        Err(AttemptError::drop_src(format!(
             "content hash mismatch: expected {digest}, got {actual}"
         )))
     }

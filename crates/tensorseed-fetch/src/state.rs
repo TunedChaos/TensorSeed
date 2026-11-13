@@ -7,7 +7,9 @@
 //! downloaded; the database records which jobs exist, what each file is
 //! expected to hash to, which source finished it, and the size and mtime of
 //! each finished file so an interrupted `pull` can skip re-hashing files it
-//! already verified.
+//! already verified. Mirror origins that fail to connect or keep returning
+//! transient errors are recorded in `dead_mirrors` so later files and later
+//! runs can skip them until the cooldown expires or a download succeeds.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -51,6 +53,11 @@ CREATE TABLE IF NOT EXISTS harvest_revisions (
     detail TEXT,
     updated_unix INTEGER NOT NULL,
     PRIMARY KEY (repo_type, repo, commit_sha)
+);
+CREATE TABLE IF NOT EXISTS dead_mirrors (
+    origin TEXT PRIMARY KEY,
+    marked_unix INTEGER NOT NULL,
+    reason TEXT
 );
 ";
 
@@ -138,6 +145,17 @@ fn now() -> i64 {
 
 fn db_err(e: rusqlite::Error) -> FetchError {
     FetchError::State(e.to_string())
+}
+
+/// A mirror origin marked dead after connect or repeated transient failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadMirror {
+    /// Origin (`scheme://host[:port]`), shared by every file URL on that host.
+    pub origin: String,
+    /// When the mark was written (Unix seconds).
+    pub marked_unix: i64,
+    /// Why it was marked (connect error, HTTP 5xx, and so on).
+    pub reason: Option<String>,
 }
 
 /// SQLite job store.
@@ -474,6 +492,87 @@ impl StateDb {
             .map_err(db_err)?;
         Ok(n > 0)
     }
+
+    /// Record or refresh a dead-mirror mark.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
+    pub fn mark_dead(&self, origin: &str, reason: &str) -> Result<()> {
+        self.mark_dead_at(origin, now(), reason)
+    }
+
+    /// Record a dead-mirror mark at a specific time (tests and expiry).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
+    pub fn mark_dead_at(&self, origin: &str, marked_unix: i64, reason: &str) -> Result<()> {
+        self.conn()
+            .execute(
+                "INSERT INTO dead_mirrors (origin, marked_unix, reason) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(origin) DO UPDATE SET marked_unix = excluded.marked_unix, reason = excluded.reason",
+                params![origin, marked_unix, reason],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Clear a dead-mirror mark (a later download from this origin succeeded).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
+    pub fn clear_dead(&self, origin: &str) -> Result<()> {
+        self.conn()
+            .execute(
+                "DELETE FROM dead_mirrors WHERE origin = ?1",
+                params![origin],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Look up one dead-mirror mark.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
+    pub fn dead_mirror(&self, origin: &str) -> Result<Option<DeadMirror>> {
+        self.conn()
+            .query_row(
+                "SELECT origin, marked_unix, reason FROM dead_mirrors WHERE origin = ?1",
+                params![origin],
+                row_to_dead,
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// Every dead-mirror mark, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::State`] when the SQLite database
+    /// cannot be opened or the statement fails.
+    pub fn list_dead_mirrors(&self) -> Result<Vec<DeadMirror>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT origin, marked_unix, reason FROM dead_mirrors ORDER BY marked_unix DESC",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], row_to_dead)
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
 }
 
 fn row_to_harvest(r: &rusqlite::Row<'_>) -> rusqlite::Result<HarvestRecord> {
@@ -486,6 +585,14 @@ fn row_to_harvest(r: &rusqlite::Row<'_>) -> rusqlite::Result<HarvestRecord> {
         attempts: r.get::<_, i64>(5)? as u64,
         detail: r.get(6)?,
         updated_unix: r.get(7)?,
+    })
+}
+
+fn row_to_dead(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeadMirror> {
+    Ok(DeadMirror {
+        origin: r.get(0)?,
+        marked_unix: r.get(1)?,
+        reason: r.get(2)?,
     })
 }
 
@@ -550,6 +657,28 @@ mod tests {
         assert!(db.clear_job("j1").unwrap());
         assert!(db.job_files("j1").unwrap().is_empty());
         assert!(!db.clear_job("j1").unwrap());
+    }
+
+    #[test]
+    fn dead_mirror_marks_round_trip_and_clear() {
+        let db = StateDb::open_in_memory().unwrap();
+        db.mark_dead_at("https://a.example", 100, "connect refused")
+            .unwrap();
+        db.mark_dead_at("https://b.example", 200, "HTTP 503")
+            .unwrap();
+        let a = db.dead_mirror("https://a.example").unwrap().unwrap();
+        assert_eq!(a.marked_unix, 100);
+        assert_eq!(a.reason.as_deref(), Some("connect refused"));
+        let list = db.list_dead_mirrors().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].origin, "https://b.example");
+        db.clear_dead("https://a.example").unwrap();
+        assert!(db.dead_mirror("https://a.example").unwrap().is_none());
+        assert_eq!(db.list_dead_mirrors().unwrap().len(), 1);
+        db.mark_dead_at("https://b.example", 300, "timeout")
+            .unwrap();
+        let b = db.dead_mirror("https://b.example").unwrap().unwrap();
+        assert_eq!((b.marked_unix, b.reason.as_deref()), (300, Some("timeout")));
     }
 
     #[test]

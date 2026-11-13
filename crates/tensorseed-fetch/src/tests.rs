@@ -42,6 +42,8 @@ fn fast() -> FetchOptions {
         concurrency: 2,
         attempts_per_source: 2,
         retry_delay: Duration::from_millis(1),
+        dead_mirror_cooldown: Duration::from_secs(3600),
+        ..Default::default()
     }
 }
 
@@ -390,4 +392,300 @@ fn parses_content_range() {
     assert_eq!(content_range_start("bytes 100-199/200"), Some(100));
     assert_eq!(content_range_start("bytes */200"), None);
     assert_eq!(content_range_start("items 1-2/3"), None);
+}
+
+#[test]
+fn source_origin_strips_path() {
+    assert_eq!(
+        source_origin("https://mirror.example/t/org/file.bin"),
+        "https://mirror.example"
+    );
+    assert_eq!(
+        source_origin("http://127.0.0.1:8080/a/b"),
+        "http://127.0.0.1:8080"
+    );
+    assert_eq!(source_origin("not-a-url"), "not-a-url");
+}
+
+#[test]
+fn dead_ago_label_units() {
+    assert_eq!(dead_ago_label(100, 130), "just now");
+    assert_eq!(dead_ago_label(100, 100 + 12 * 60), "12m ago");
+    assert_eq!(dead_ago_label(100, 100 + 2 * 3600), "2h ago");
+    assert_eq!(
+        dead_skip_line("https://m", 100, 100 + 12 * 60),
+        "skip   https://m (marked dead 12m ago; --retry-dead-mirrors to retry)"
+    );
+}
+
+async fn status(server: &MockServer, p: &str, code: u16) {
+    Mock::given(method("GET"))
+        .and(path(p))
+        .respond_with(ResponseTemplate::new(code))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn dead_host_is_skipped_for_later_files() {
+    let dead = MockServer::start().await;
+    let good = MockServer::start().await;
+    let a = data(1000, 1);
+    let b = data(1000, 2);
+    status(&dead, "/ws/a.bin", 503).await;
+    status(&dead, "/ws/b.bin", 503).await;
+    serve(&good, "/ws/a.bin", &a).await;
+    serve(&good, "/ws/b.bin", &b).await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(StateDb::open_in_memory().unwrap());
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let j = job(dir.path());
+    let mut opts = fast();
+    opts.concurrency = 1; // first file marks dead before the second starts
+    let report = f
+        .run(
+            &j,
+            vec![
+                fj(
+                    "a.bin",
+                    &a,
+                    vec![src(&dead, "/ws/a.bin"), src(&good, "/ws/a.bin")],
+                ),
+                fj(
+                    "b.bin",
+                    &b,
+                    vec![src(&dead, "/ws/b.bin"), src(&good, "/ws/b.bin")],
+                ),
+            ],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(report.skipped_dead.len(), 1);
+    assert_eq!(report.skipped_dead[0].origin, dead.uri());
+    assert!(
+        report.skipped_dead[0].line.contains("--retry-dead-mirrors"),
+        "{:?}",
+        report.skipped_dead[0].line
+    );
+    // The dead origin was persisted.
+    assert!(db.dead_mirror(&dead.uri()).unwrap().is_some());
+    assert!(db.dead_mirror(&good.uri()).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn not_found_does_not_mark_origin_dead() {
+    let a_src = MockServer::start().await;
+    let b_src = MockServer::start().await;
+    let a = data(800, 3);
+    let b = data(800, 4);
+    status(&a_src, "/ws/a.bin", 404).await;
+    serve(&a_src, "/ws/b.bin", &b).await;
+    serve(&b_src, "/ws/a.bin", &a).await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(StateDb::open_in_memory().unwrap());
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let j = job(dir.path());
+    let mut opts = fast();
+    opts.concurrency = 1;
+    let report = f
+        .run(
+            &j,
+            vec![
+                fj(
+                    "a.bin",
+                    &a,
+                    vec![src(&a_src, "/ws/a.bin"), src(&b_src, "/ws/a.bin")],
+                ),
+                fj("b.bin", &b, vec![src(&a_src, "/ws/b.bin")]),
+            ],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert!(report.skipped_dead.is_empty(), "{report:?}");
+    assert!(db.dead_mirror(&a_src.uri()).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn cooldown_expiry_retries_and_flag_overrides() {
+    let dead = MockServer::start().await;
+    let body = data(400, 5);
+    serve(&dead, "/ws/a.bin", &body).await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(StateDb::open_in_memory().unwrap());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    db.mark_dead_at(&dead.uri(), now - 120, "connect refused")
+        .unwrap();
+
+    // Within cooldown: skip, safety net still tries (only source), succeeds, clears mark.
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let mut opts = fast();
+    opts.dead_mirror_cooldown = Duration::from_secs(3600);
+    let j = job(dir.path());
+    let report = f
+        .run(
+            &j,
+            vec![fj("a.bin", &body, vec![src(&dead, "/ws/a.bin")])],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        matches!(report.files[0].outcome, Outcome::Downloaded { .. }),
+        "{report:?}"
+    );
+    // Safety net tried the only (dead) source and success cleared the mark.
+    assert!(db.dead_mirror(&dead.uri()).unwrap().is_none());
+
+    // Re-mark recently and skip a later file when a live alternative exists.
+    db.mark_dead_at(&dead.uri(), now, "HTTP 503").unwrap();
+    let good = MockServer::start().await;
+    let other = data(400, 6);
+    serve(&good, "/ws/b.bin", &other).await;
+    serve(&dead, "/ws/b.bin", &other).await;
+    let dir2 = tempfile::tempdir().unwrap();
+    let j2 = job(dir2.path());
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let report = f
+        .run(
+            &j2,
+            vec![fj(
+                "b.bin",
+                &other,
+                vec![src(&dead, "/ws/b.bin"), src(&good, "/ws/b.bin")],
+            )],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(report.skipped_dead.len(), 1);
+    // Succeeded from the good mirror; the dead mark remains (we never got a
+    // success from the dead origin).
+    assert!(db.dead_mirror(&dead.uri()).unwrap().is_some());
+
+    // --retry-dead-mirrors tries the marked origin and clears it on success.
+    let dir3 = tempfile::tempdir().unwrap();
+    let j3 = job(dir3.path());
+    let mut retry = opts;
+    retry.retry_dead_mirrors = true;
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let report = f
+        .run(
+            &j3,
+            vec![fj("b.bin", &other, vec![src(&dead, "/ws/b.bin")])],
+            retry,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert!(report.skipped_dead.is_empty(), "{report:?}");
+    assert!(db.dead_mirror(&dead.uri()).unwrap().is_none());
+
+    // An expired mark is retried automatically.
+    db.mark_dead_at(&dead.uri(), now - 7200, "old").unwrap();
+    let dir4 = tempfile::tempdir().unwrap();
+    let j4 = job(dir4.path());
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let report = f
+        .run(
+            &j4,
+            vec![fj("a.bin", &body, vec![src(&dead, "/ws/a.bin")])],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert!(report.skipped_dead.is_empty(), "{report:?}");
+    assert!(db.dead_mirror(&dead.uri()).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn all_dead_safety_net_still_tries() {
+    let server = MockServer::start().await;
+    let body = data(200, 7);
+    serve(&server, "/ws/a.bin", &body).await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(StateDb::open_in_memory().unwrap());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    db.mark_dead_at(&server.uri(), now, "connect refused")
+        .unwrap();
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let mut opts = fast();
+    opts.dead_mirror_cooldown = Duration::from_secs(3600);
+    let report = f
+        .run(
+            &job(dir.path()),
+            vec![fj("a.bin", &body, vec![src(&server, "/ws/a.bin")])],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    // Safety net does not emit a skip line; success clears the mark.
+    assert!(report.skipped_dead.is_empty(), "{report:?}");
+    assert!(db.dead_mirror(&server.uri()).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn connect_failure_marks_origin_dead() {
+    // Bind and drop a port so connect is refused quickly.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let origin = format!("http://127.0.0.1:{port}");
+    let body = data(100, 8);
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(StateDb::open_in_memory().unwrap());
+    let f = Fetcher::with_timeouts(
+        Some(db.clone()),
+        Duration::from_millis(200),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let good = MockServer::start().await;
+    serve(&good, "/a.bin", &body).await;
+    let mut opts = fast();
+    opts.concurrency = 1;
+    let bad = Source {
+        url: format!("{origin}/a.bin"),
+        kind: SourceKind::Webseed,
+        bearer: None,
+    };
+    let report = f
+        .run(
+            &job(dir.path()),
+            vec![
+                fj("a.bin", &body, vec![bad.clone(), src(&good, "/a.bin")]),
+                fj(
+                    "b.bin",
+                    &body,
+                    vec![
+                        Source {
+                            url: format!("{origin}/b.bin"),
+                            kind: SourceKind::Webseed,
+                            bearer: None,
+                        },
+                        src(&good, "/a.bin"),
+                    ],
+                ),
+            ],
+            opts,
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(report.skipped_dead.len(), 1);
+    assert_eq!(report.skipped_dead[0].origin, origin);
+    assert!(db.dead_mirror(&origin).unwrap().is_some());
 }

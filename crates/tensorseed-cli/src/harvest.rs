@@ -597,6 +597,9 @@ async fn harvest_one(
             jobs,
             FetchOptions {
                 concurrency: (cfg.general.max_concurrent_downloads as usize).max(1),
+                dead_mirror_cooldown: std::time::Duration::from_secs(
+                    cfg.fetch.dead_mirror_cooldown_secs,
+                ),
                 ..FetchOptions::default()
             },
         )

@@ -566,10 +566,15 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             files,
             FetchOptions {
                 concurrency: jobs,
+                retry_dead_mirrors: args.retry_dead_mirrors,
+                dead_mirror_cooldown: Duration::from_secs(cfg.fetch.dead_mirror_cooldown_secs),
                 ..FetchOptions::default()
             },
         )
         .await?;
+    for n in &report.skipped_dead {
+        println!("{}", n.line);
+    }
     let (mut swarm_files, mut swarm_bytes, mut http_bytes) = (0usize, 0u64, 0u64);
     for f in &report.files {
         match &f.outcome {
@@ -1059,6 +1064,24 @@ pub fn jobs(cfg: &Config, show: Option<&str>, clear: Option<&str>) -> anyhow::Re
             j.out_dir,
             j.error.map(|e| format!("  ({e})")).unwrap_or_default()
         );
+    }
+    let dead = db.list_dead_mirrors()?;
+    if !dead.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let cool = cfg.fetch.dead_mirror_cooldown_secs;
+        println!("dead mirrors (cooldown {cool}s; tensorseed pull --retry-dead-mirrors to retry):");
+        for m in dead {
+            let age = tensorseed_fetch::dead_ago_label(m.marked_unix, now);
+            let why = m.reason.as_deref().unwrap_or("");
+            if why.is_empty() {
+                println!("  {}  marked {age}", m.origin);
+            } else {
+                println!("  {}  marked {age}  ({why})", m.origin);
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

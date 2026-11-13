@@ -89,6 +89,14 @@ swarm_no_peer_secs = 30          # fall back to HTTP if no peer connects (0 = di
 swarm_stall_secs = 60            # fall back to HTTP if no byte progress (0 = disable; ignored by --swarm-only)
 swarm_timeout_secs = 600         # overall cap on the swarm pass, then HTTP fills the rest
 
+# HTTP downloads (spec 8.2). A connect failure or repeated transient
+# failures marks a mirror origin dead in general.state_db. Later files and
+# later runs skip it until this cooldown expires, a download from that
+# origin succeeds, or you pass --retry-dead-mirrors. A 404 is not a dead
+# mirror. Hugging Face is tracked the same way.
+[fetch]
+dead_mirror_cooldown_secs = 3600 # 0 disables persistence; in-run marks still apply
+
 # Where published objects go: signed catalog files under "<catalog name>/" and,
 # for webseeds, model files under "t/". Default is local disk only: no account
 # anywhere, seeding works from local files, and the directory can optionally

@@ -1400,6 +1400,7 @@ async fn fetch_revision(
         manifest_file: None,
         manifest_url: None,
         no_hf_fallback: false,
+        retry_dead_mirrors: false,
         jobs: None,
         allow_pickle: false,
         allow_gated: false,

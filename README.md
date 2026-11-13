@@ -60,6 +60,7 @@ tensorseed list
 tensorseed pull org/name            # swarm first, then HTTP mirrors, then the Hub
 tensorseed verify org/name          # against the signed manifest; exit 3 on mismatch
 tensorseed pull org/name --no-swarm # skip the swarm; HTTP mirrors then the Hub
+tensorseed pull org/name --retry-dead-mirrors  # try HTTP mirrors marked dead (clears on success)
 tensorseed pull org/name --seed-after 2h   # swarm first, then seed the verified copy
 tensorseed pull org/name --swarm-only --peer host:6881   # peers only: checks that a seeder works
 

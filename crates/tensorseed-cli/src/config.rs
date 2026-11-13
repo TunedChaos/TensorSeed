@@ -36,6 +36,8 @@ pub struct Config {
     pub huggingface: HuggingFace,
     /// Torrent settings.
     pub torrent: Torrent,
+    /// HTTP fetch behaviour (`[fetch]`).
+    pub fetch: Fetch,
     /// Where published objects go (`[storage]`).
     pub storage: Storage,
     /// Mirror lists (`[mirrors]`).
@@ -575,6 +577,31 @@ impl Torrent {
             }
         }
         Ok(())
+    }
+}
+
+/// `[fetch]`: HTTP download behaviour (spec section 8.2).
+///
+/// Dead-mirror marks are stored in `general.state_db`. A connect failure
+/// or repeated transient failures (attempts exhausted on one file, or
+/// 5xx/network errors on two files) marks the origin dead. Later files
+/// and later runs skip it until this cooldown expires, a download from
+/// that origin succeeds, or `pull --retry-dead-mirrors` is used. A 404
+/// is not a dead mirror: it only drops that origin for the one file.
+/// Hugging Face is tracked the same way. Torrent downloads are not.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Fetch {
+    /// Seconds a dead-mirror mark is honored (0 disables persistence;
+    /// in-run marks still apply). Default 3600.
+    pub dead_mirror_cooldown_secs: u64,
+}
+
+impl Default for Fetch {
+    fn default() -> Self {
+        Self {
+            dead_mirror_cooldown_secs: 3600,
+        }
     }
 }
 

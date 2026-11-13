@@ -142,6 +142,11 @@ tensorseed pull org/name
 tensorseed serve
 ```
 
+If an HTTP mirror is down, later files and later runs skip it for an hour
+(`[fetch] dead_mirror_cooldown_secs`). Pass `--retry-dead-mirrors` to try
+them anyway, or wait for the cooldown to expire. `tensorseed jobs` lists
+current marks. A 404 for one file does not mark the mirror dead.
+
 A minimum `[serve]` section (these are also the built-in defaults):
 
 ```toml
