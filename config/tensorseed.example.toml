@@ -60,13 +60,15 @@ torrent = true                   # also publish each snapshot as a torrent (not 
 
 # The Hugging Face token is optional (needed only for gated or private
 # repos and higher rate limits) and is NEVER written in this file: an inline
-# `token = "..."` is rejected. Tensorseed reads the environment variable named
-# by token_env first, then token_file. The token file must not be readable by
-# group or others (chmod 600), or Tensorseed refuses to use it.
+# `token = "..."` is rejected. Resolution order: the env var named by
+# token_env, then token_file, then the file written by `tensorseed hf login`,
+# then the Hugging Face CLI token (HF_TOKEN_PATH, $HF_HOME/token, or
+# ~/.cache/huggingface/token). A token file must not be readable by group
+# or others (chmod 600), or Tensorseed refuses to use it.
 [huggingface]
 endpoint = "https://huggingface.co"
 token_env = "HF_TOKEN"
-token_file = ""                  # e.g. "~/.config/tensorseed/hf_token" (chmod 600)
+token_file = ""                  # optional explicit file (chmod 600)
 
 # BitTorrent (spec section 7.1; results in docs/M0-TORRENT-SPIKE.md).
 # harvest writes t/<name>.torrent next to each revision; `tensorseed seed`

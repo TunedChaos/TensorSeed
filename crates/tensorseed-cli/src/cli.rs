@@ -166,6 +166,20 @@ pub enum Command {
     /// Inspect configuration.
     #[command(subcommand)]
     Config(ConfigCmd),
+    /// Hugging Face token: login, logout, and status.
+    #[command(subcommand)]
+    Hf(HfCmd),
+}
+
+/// `hf` subcommands.
+#[derive(Debug, Clone, Subcommand)]
+pub enum HfCmd {
+    /// Save a Hugging Face token for Tensorseed (0600 on Unix, user-only ACL on Windows).
+    Login,
+    /// Remove the token saved by `tensorseed hf login`.
+    Logout,
+    /// Show the account and token source without printing the token.
+    Status,
 }
 
 /// `mirror` subcommands.
@@ -542,6 +556,9 @@ impl Command {
             Self::Mirror(_) => "mirror",
             Self::Config(ConfigCmd::Show) => "config show",
             Self::Config(ConfigCmd::Path) => "config path",
+            Self::Hf(HfCmd::Login) => "hf login",
+            Self::Hf(HfCmd::Logout) => "hf logout",
+            Self::Hf(HfCmd::Status) => "hf status",
         }
     }
 }
@@ -630,6 +647,18 @@ mod tests {
                 assert_eq!(a.exclude, vec!["*.md"]);
             }
             _ => panic!("expected pull"),
+        }
+    }
+
+    #[test]
+    fn parses_hf_subcommands() {
+        for (args, name) in [
+            (["tensorseed", "hf", "login"], "hf login"),
+            (["tensorseed", "hf", "logout"], "hf logout"),
+            (["tensorseed", "hf", "status"], "hf status"),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.command.name(), name);
         }
     }
 

@@ -422,39 +422,45 @@ impl HuggingFace {
         Ok(())
     }
 
-    /// Resolve the token: `token_env` first, then `token_file`. A token file
-    /// readable by group or others is refused.
+    /// Resolve the token: `token_env` first, then `token_file`, then the
+    /// file written by `tensorseed hf login`, then the Hugging Face CLI
+    /// stored token. A token file readable by group or others is refused.
     pub fn resolve_token(&self) -> anyhow::Result<Option<String>> {
+        Ok(self.resolve_token_source()?.map(|(t, _)| t))
+    }
+
+    /// Like [`Self::resolve_token`], with a label for the source that never
+    /// includes the token itself.
+    pub fn resolve_token_source(&self) -> anyhow::Result<Option<(String, TokenSource)>> {
         if let Ok(t) = std::env::var(&self.token_env)
             && !t.trim().is_empty()
         {
-            return Ok(Some(t.trim().to_string()));
+            return Ok(Some((
+                t.trim().to_string(),
+                TokenSource::Env(self.token_env.clone()),
+            )));
         }
-        if self.token_file.is_empty() {
-            return Ok(None);
+        if !self.token_file.is_empty() {
+            let p = expand(&self.token_file);
+            let t = read_private_token(&p, "huggingface.token_file")?.ok_or_else(|| {
+                anyhow::anyhow!("huggingface.token_file {} is empty", p.display())
+            })?;
+            return Ok(Some((t, TokenSource::TokenFile(p))));
         }
-        let p = expand(&self.token_file);
-        let meta = std::fs::metadata(&p)
-            .map_err(|e| anyhow::anyhow!("huggingface.token_file {}: {e}", p.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = meta.permissions().mode() & 0o777;
-            if mode & 0o077 != 0 {
-                anyhow::bail!(
-                    "huggingface.token_file {} has mode {mode:o}; it must not be readable by \
-                     group or others. Run: chmod 600 {}",
-                    p.display(),
-                    p.display()
-                );
+        let login = login_token_path();
+        if login.is_file() {
+            if let Some(t) = read_private_token(&login, "tensorseed login file")? {
+                return Ok(Some((t, TokenSource::LoginFile(login))));
             }
         }
-        #[cfg(not(unix))]
-        let _ = meta;
-        let t = std::fs::read_to_string(&p)
-            .map_err(|e| anyhow::anyhow!("reading huggingface.token_file {}: {e}", p.display()))?;
-        let t = t.trim();
-        Ok((!t.is_empty()).then(|| t.to_string()))
+        if let Some(p) = hf_cli_token_path()
+            && p.is_file()
+        {
+            if let Some(t) = read_private_token(&p, "Hugging Face CLI token file")? {
+                return Ok(Some((t, TokenSource::HfCli(p))));
+            }
+        }
+        Ok(None)
     }
 
     /// Hub client with the resolved token.
@@ -1189,6 +1195,174 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+/// Where the token came from. Display labels never include the token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenSource {
+    /// Environment variable named by `huggingface.token_env`.
+    Env(String),
+    /// `huggingface.token_file`.
+    TokenFile(PathBuf),
+    /// File written by `tensorseed hf login`.
+    LoginFile(PathBuf),
+    /// Token stored by the Hugging Face CLI (`hf auth login`).
+    HfCli(PathBuf),
+}
+
+impl TokenSource {
+    /// Human readable origin, never the token value.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Env(name) => format!("environment variable {name}"),
+            Self::TokenFile(p) => format!("huggingface.token_file {}", p.display()),
+            Self::LoginFile(p) => format!("tensorseed login file {}", p.display()),
+            Self::HfCli(p) => format!("Hugging Face CLI token file {}", p.display()),
+        }
+    }
+}
+
+/// Path of the token file written by `tensorseed hf login`.
+///
+/// `~/.config/tensorseed/hf_token` on Unix (`$XDG_CONFIG_HOME` if set),
+/// `%APPDATA%\tensorseed\hf_token` on Windows.
+pub fn login_token_path() -> PathBuf {
+    config_dir().join("tensorseed").join("hf_token")
+}
+
+/// Path of the token stored by the Hugging Face CLI, if one can be resolved.
+///
+/// Order: `HF_TOKEN_PATH`, else `$HF_HOME/token`, else
+/// `~/.cache/huggingface/token` (or `%USERPROFILE%\.cache\huggingface\token`
+/// on Windows).
+pub fn hf_cli_token_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("HF_TOKEN_PATH")
+        && !p.is_empty()
+    {
+        return Some(PathBuf::from(p));
+    }
+    if let Some(p) = std::env::var_os("HF_HOME")
+        && !p.is_empty()
+    {
+        return Some(PathBuf::from(p).join("token"));
+    }
+    home_dir().map(|h| h.join(".cache").join("huggingface").join("token"))
+}
+
+/// Write `token` to [`login_token_path`] with mode 0600 on Unix and a
+/// user-only ACL on Windows.
+pub fn write_login_token(token: &str) -> anyhow::Result<PathBuf> {
+    let token = token.trim();
+    if token.is_empty() {
+        anyhow::bail!("the Hugging Face token is empty");
+    }
+    let path = login_token_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| anyhow::anyhow!("creating {}: {e}", dir.display()))?;
+    }
+    let tmp = path.with_extension("tmp");
+    write_private_file(&tmp, format!("{token}\n").as_bytes())?;
+    std::fs::rename(&tmp, &path).map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+    set_user_only_permissions(&path)?;
+    Ok(path)
+}
+
+/// Remove the file written by [`write_login_token`], if it exists.
+pub fn remove_login_token() -> anyhow::Result<bool> {
+    let path = login_token_path();
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(anyhow::anyhow!("removing {}: {e}", path.display())),
+    }
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        f.write_all(bytes)
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        f.sync_all()
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        set_user_only_permissions(path)?;
+        Ok(())
+    }
+}
+
+/// Set mode 0600 on Unix, or a user-only ACL on Windows, on `path`.
+pub fn set_user_only_permissions(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| anyhow::anyhow!("chmod 600 {}: {e}", path.display()))?;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let user = std::env::var("USERNAME").unwrap_or_else(|_| String::from("%USERNAME%"));
+        let grant = format!("{user}:(R,W)");
+        let out = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/inheritance:r")
+            .arg("/grant:r")
+            .arg(&grant)
+            .output()
+            .map_err(|e| anyhow::anyhow!("running icacls on {}: {e}", path.display()))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "icacls failed to set a user-only ACL on {}: {}",
+                path.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+fn read_private_token(path: &Path, label: &str) -> anyhow::Result<Option<String>> {
+    let meta =
+        std::fs::metadata(path).map_err(|e| anyhow::anyhow!("{label} {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!(
+                "{label} {} has mode {mode:o}; it must not be readable by group or others. \
+                 Run: chmod 600 {}",
+                path.display(),
+                path.display()
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = meta;
+    let t = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("reading {label} {}: {e}", path.display()))?;
+    let t = t.trim();
+    Ok((!t.is_empty()).then(|| t.to_string()))
+}
+
 /// Per-user data directory for state, staging, publish trees, and caches.
 ///
 /// On Unix this is `$HOME/.local/share` (the same location the default
@@ -1670,6 +1844,59 @@ dir = "/mnt/nas/tensorseed"
             // `config show` never prints a token field.
             let shown = serde_json::to_string(&cfg).unwrap();
             assert!(!shown.contains("\"token\""), "{shown}");
+            Ok(())
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hf_token_login_file_then_cli_file() {
+        use std::os::unix::fs::PermissionsExt;
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let root = jail.directory().to_path_buf();
+            let xdg = root.join("xdg");
+            let home = root.join("home");
+            std::fs::create_dir_all(&xdg).unwrap();
+            std::fs::create_dir_all(home.join(".cache").join("huggingface")).unwrap();
+            jail.set_env("XDG_CONFIG_HOME", xdg.to_str().unwrap());
+            jail.set_env("HOME", home.to_str().unwrap());
+            jail.set_env("USERPROFILE", home.to_str().unwrap());
+            jail.create_file(
+                "c.toml",
+                "[huggingface]\ntoken_env = \"TS_TEST_HF_TOKEN\"\n",
+            )?;
+            let cfg = load(Path::new("c.toml")).map_err(|e| e.to_string())?;
+            assert!(cfg.huggingface.resolve_token().unwrap().is_none());
+
+            let cli = home.join(".cache").join("huggingface").join("token");
+            std::fs::write(&cli, "hf_from_cli\n").unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let (tok, src) = cfg.huggingface.resolve_token_source().unwrap().unwrap();
+            assert_eq!(tok, "hf_from_cli");
+            assert!(matches!(src, TokenSource::HfCli(_)), "{src:?}");
+            assert!(!src.label().contains("hf_from_cli"), "{}", src.label());
+
+            let path = write_login_token("hf_from_login").map_err(|e| e.to_string())?;
+            assert_eq!(path, xdg.join("tensorseed").join("hf_token"));
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{mode:o}");
+            let (tok, src) = cfg.huggingface.resolve_token_source().unwrap().unwrap();
+            assert_eq!(tok, "hf_from_login");
+            assert!(matches!(src, TokenSource::LoginFile(_)), "{src:?}");
+
+            let pinned = root.join("explicit");
+            std::fs::write(&pinned, "from_path\n").unwrap();
+            jail.set_env("HF_TOKEN_PATH", pinned.to_str().unwrap());
+            assert_eq!(
+                cfg.huggingface.resolve_token().unwrap().as_deref(),
+                Some("hf_from_login")
+            );
+            remove_login_token().map_err(|e| e.to_string())?;
+            std::fs::set_permissions(&pinned, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let (tok, src) = cfg.huggingface.resolve_token_source().unwrap().unwrap();
+            assert_eq!(tok, "from_path");
+            assert!(matches!(src, TokenSource::HfCli(_)), "{src:?}");
             Ok(())
         });
     }

@@ -398,6 +398,27 @@ impl HfClient {
         self.token.is_some()
     }
 
+    /// `GET /api/whoami-v2`. Returns the username. The token is never
+    /// included in the result or in error messages.
+    ///
+    /// # Errors
+    ///
+    /// [`HfError::Arg`] when no token is set, [`HfError::NotAccessible`]
+    /// when the Hub rejects the token, and the usual HTTP errors.
+    pub async fn whoami(&self) -> Result<String> {
+        if self.token.is_none() {
+            return Err(HfError::Arg("no Hugging Face token configured".into()));
+        }
+        let url = format!("{}/api/whoami-v2", self.base());
+        let v: serde_json::Value = self.get(&url).await?.json().await?;
+        v.get("name")
+            .and_then(|n| n.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| HfError::Invalid("whoami-v2 response has no username".into()))
+    }
+
     /// The token, for callers that download from the same origin.
     pub fn token(&self) -> Option<&str> {
         self.token.as_deref()
@@ -888,5 +909,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(l.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn whoami_returns_username_and_not_the_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/whoami-v2"))
+            .and(header("authorization", "Bearer secret-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "demo-user",
+                "fullname": "Demo User"
+            })))
+            .mount(&server)
+            .await;
+        let hf = HfClient::new(&server.uri(), Some("secret-token".into()))
+            .unwrap()
+            .with_retry(0, Duration::from_millis(1));
+        assert_eq!(hf.whoami().await.unwrap(), "demo-user");
+        let err = HfClient::new(&server.uri(), None)
+            .unwrap()
+            .whoami()
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no Hugging Face token"), "{msg}");
+        assert!(!msg.contains("secret-token"), "{msg}");
     }
 }

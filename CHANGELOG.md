@@ -21,6 +21,14 @@
   `pull` and `serve` auto-fetch. `--no-swarm`, `--swarm-only`, and
   dead-mirror memory are unchanged. A 401, 403, or 404 from the Hub
   falls through to the mirrors without marking the host dead.
+- Hugging Face tokens are also loaded from `tensorseed hf login` and from
+  the Hugging Face CLI (`HF_TOKEN_PATH`, `$HF_HOME/token`, or
+  `~/.cache/huggingface/token`). Resolution order: `token_env`, then
+  `token_file`, then the tensorseed login file, then the CLI token.
+  `tensorseed hf login` reads a token from a hidden prompt or stdin and
+  writes `~/.config/tensorseed/hf_token` (0600 on Unix, a user-only ACL
+  on Windows). `hf logout` removes that file. `hf status` calls
+  whoami-v2 and prints the username and token source, never the token.
 
 ## 0.1.0
 

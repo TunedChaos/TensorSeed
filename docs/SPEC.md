@@ -143,7 +143,7 @@ Confirmed against live responses on 2026-11-12 (code: `tensorseed-hf`):
 - Listing (harvest discovery): `GET {endpoint}/api/models?author=..&filter=<tag>&sort=downloads&direction=-1&limit=N`, same pagination; entries carry `id`, `downloads`, `tags`, `gated`.
 - Downloads: `GET {endpoint}/{repo_id}/resolve/{commit}/{path}` (datasets under `/datasets/`), usually redirected to a CDN; Xet stored files are served there too. Always by commit SHA, never by branch.
 - Verification: LFS files against `lfs.oid` (SHA-256); small non-LFS files against their git blob id (SHA-1 of `"blob <size>\0" || content`), then hashed with SHA-256 for the manifest.
-- Auth: optional token from the env var named by `huggingface.token_env` (default `HF_TOKEN`), else from `huggingface.token_file` (refused if readable by group or others; chmod 600). The token is never written in the config file: an inline `token =` is a config error. It is sent only to the endpoint origin (the HTTP client drops it on cross-origin redirects). Gated repos are refused unless explicitly allowed (`--allow-gated` for personal pulls, `harvest.allow_gated` for mirroring).
+- Auth: optional token, resolved in this order: the env var named by `huggingface.token_env` (default `HF_TOKEN`); else `huggingface.token_file` (refused if readable by group or others; chmod 600); else the file written by `tensorseed hf login` (`~/.config/tensorseed/hf_token` on Unix, `%APPDATA%\tensorseed\hf_token` on Windows, mode 0600 or a user-only ACL); else the Hugging Face CLI token (`HF_TOKEN_PATH`, else `$HF_HOME/token`, else `~/.cache/huggingface/token` or `%USERPROFILE%\.cache\huggingface\token`). The token is never written in the config file: an inline `token =` is a config error. It is sent only to the endpoint origin (the HTTP client drops it on cross-origin redirects). `tensorseed hf status` calls `GET /api/whoami-v2` and prints the username and token source, never the token. Gated repos are refused unless explicitly allowed (`--allow-gated` for personal pulls, `harvest.allow_gated` for mirroring).
 - Rate limits: HTTP 429 and 5xx are retried with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Downloads use bounded concurrency (default 2 files) and HTTP range resume.
 
 The `hf-hub` crate is not used: version 1.0 pulls in `hf-xet` (over 550 crates) and is built around the Hugging Face cache layout, while Tensorseed needs the raw tree hashes, its own output layout, streaming verification, and resumable jobs (section 12).
@@ -789,6 +789,7 @@ torrent = true                   # also publish each snapshot as a torrent
 endpoint = "https://huggingface.co"
 token_env = "HF_TOKEN"              # name of the env var, never the token
 token_file = ""                     # or a chmod 600 file; inline `token =` is rejected
+# Then: tensorseed hf login file, then the Hugging Face CLI stored token
 
 [torrent]                        # section 7.1
 create = true                    # build a torrent for every harvested revision

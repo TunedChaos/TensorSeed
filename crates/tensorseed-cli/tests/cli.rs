@@ -17,7 +17,7 @@ use tensorseed_catalog::sink::DirSink;
 use tensorseed_catalog::{CatalogBackend, CatalogId, CatalogOp};
 use tensorseed_core::keys::{RepoRef, RepoType, catalog_info_key};
 use tensorseed_core::manifest::*;
-use wiremock::matchers::{method, path, path_regex};
+use wiremock::matchers::{header, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const C: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -242,15 +242,58 @@ local_dir = "{d}/publish"
 }
 
 async fn run(config: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    run_stdin(config, args, env, None).await
+}
+
+async fn run_stdin(
+    config: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&str>,
+) -> Output {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_tensorseed"));
     cmd.arg("--config").arg(config).args(args);
-    cmd.env_remove("HF_TOKEN").env("RUST_LOG", "warn");
+    cmd.env_remove("HF_TOKEN")
+        .env_remove("HF_TOKEN_PATH")
+        .env_remove("HF_HOME")
+        .env("RUST_LOG", "warn");
+    // Do not pick up a developer login or Hugging Face CLI token.
+    let home = config.parent().unwrap();
+    if !env.iter().any(|(k, _)| *k == "HOME") {
+        cmd.env("HOME", home);
+    }
+    if !env.iter().any(|(k, _)| *k == "USERPROFILE") {
+        cmd.env("USERPROFILE", home);
+    }
+    if !env.iter().any(|(k, _)| *k == "XDG_CONFIG_HOME") {
+        cmd.env("XDG_CONFIG_HOME", home);
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
-        .await
-        .unwrap();
+    if stdin.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let body = stdin.map(str::to_owned);
+    let out = tokio::task::spawn_blocking(move || {
+        if let Some(body) = body {
+            let mut child = cmd.spawn().unwrap();
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(body.as_bytes())
+                .unwrap();
+            child.wait_with_output().unwrap()
+        } else {
+            cmd.output().unwrap()
+        }
+    })
+    .await
+    .unwrap();
     eprintln!(
         "$ tensorseed {}\n--- stdout\n{}--- stderr\n{}",
         args.join(" "),
@@ -542,6 +585,49 @@ async fn pull_source_order_hub_before_mirrors() {
     let s = stdout(&o);
     assert!(s.contains("ok     config.json (webseed)"), "{s}");
     assert!(s.contains("ok     model.safetensors (webseed)"), "{s}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hf_login_status_logout_never_prints_the_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/whoami-v2"))
+        .and(header("authorization", "Bearer hf_test_token_xyz"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "demo-user"
+        })))
+        .mount(&server)
+        .await;
+    let cfg = write_config(tmp.path(), &server.uri(), "", "");
+    let secret = "hf_test_token_xyz";
+    let o = run_stdin(&cfg, &["hf", "login"], &[], Some(&format!("{secret}\n"))).await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let combined = format!("{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+    assert!(!combined.contains(secret), "{combined}");
+    let token_path = tmp.path().join("tensorseed").join("hf_token");
+    assert_eq!(std::fs::read_to_string(&token_path).unwrap().trim(), secret);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+    }
+
+    let o = run(&cfg, &["hf", "status"], &[]).await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let s = stdout(&o);
+    assert!(s.contains("logged in as demo-user"), "{s}");
+    assert!(s.contains("tensorseed login file"), "{s}");
+    let combined = format!("{s}{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!combined.contains(secret), "{combined}");
+
+    let o = run(&cfg, &["hf", "logout"], &[]).await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!token_path.exists());
+    let o = run(&cfg, &["hf", "status"], &[]).await;
+    assert_eq!(code(&o), 1);
+    assert!(stdout(&o).contains("No Hugging Face token is configured"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

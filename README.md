@@ -133,11 +133,35 @@ allowlist; `--allow-license <id>` or a watchlist entry
 `{ id = "org/name", allow_license = ["other"] }` lets you mirror a repo you hold
 the rights to without loosening it for anything else.
 
-A Hugging Face token is optional. It is never written in `tensorseed.toml`
-(an inline `token =` is rejected): set the variable named by
-`[huggingface] token_env` (default `HF_TOKEN`), or point `token_file` at a file
-only you can read (`chmod 600`). Downloads resume after
-interruption; `tensorseed jobs` shows their state.
+Downloads resume after interruption; `tensorseed jobs` shows their state.
+
+### Use your Hugging Face token
+
+A token is optional, but it avoids anonymous rate limits and is required
+for gated repos (with `--allow-gated`). It is never written in
+`tensorseed.toml` (an inline `token =` is rejected) and is sent only to
+the Hugging Face endpoint (dropped on any redirect to another site).
+
+Tensorseed looks for a token in this order:
+
+1. The environment variable named by `[huggingface] token_env` (default
+   `HF_TOKEN`).
+2. `huggingface.token_file`, if set (must be readable only by you:
+   `chmod 600` on Unix).
+3. The file written by `tensorseed hf login`
+   (`~/.config/tensorseed/hf_token` on Unix, `%APPDATA%\tensorseed\hf_token`
+   on Windows). The file is created with mode 0600 on Unix and a
+   user-only ACL on Windows.
+4. The token already saved by the Hugging Face CLI (`hf auth login`):
+   `HF_TOKEN_PATH`, else `$HF_HOME/token`, else
+   `~/.cache/huggingface/token` (or `%USERPROFILE%\.cache\huggingface\token`
+   on Windows).
+
+```sh
+tensorseed hf login    # paste a token (hidden prompt, or pipe it on stdin)
+tensorseed hf status   # username and token source; the token is never printed
+tensorseed hf logout   # removes only the tensorseed login file
+```
 
 ### Chia is the source of truth
 

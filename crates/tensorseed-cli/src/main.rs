@@ -10,6 +10,7 @@ mod cli;
 mod config;
 mod consumer;
 mod harvest;
+mod hf_auth;
 mod keys;
 mod mirrors;
 mod serve;
@@ -68,6 +69,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&load()?)?);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Hf(cmd) => hf_auth::run(&load()?, cmd).await,
         Command::Catalog(cmd) => catalog_cmd::run(cmd, load).await,
         Command::Harvest(args) => harvest::run(&load()?, args).await,
         Command::Publish {
