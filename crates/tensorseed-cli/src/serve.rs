@@ -253,6 +253,7 @@ struct PersistedRev {
     only: Option<Vec<String>>,
 }
 
+#[derive(Clone)]
 struct Want {
     repo: RepoRef,
     commit: String,
@@ -609,30 +610,136 @@ impl Daemon {
     async fn cycle(&mut self) {
         let now = unix_now();
         self.status_mut().catalog.last_sync_unix = Some(now);
-        let opened = match self.sync().await {
-            Ok(o) => o,
+        let subs = match self.cfg.subscriptions() {
+            Ok(s) => s,
             Err(e) => {
                 let msg = format!("{e:#}");
-                tracing::warn!("catalog sync failed: {msg}");
+                tracing::warn!("catalog config: {msg}");
                 println!("sync     failed: {msg}");
                 self.status_mut().catalog.last_sync_error = Some(msg);
                 self.refresh_status();
                 return;
             }
         };
-        match self.plan(&opened.0, &opened.1).await {
-            Ok(()) => {
-                let mut w = self.status_mut();
-                w.catalog.last_sync_error = None;
-                w.catalog.last_sync_ok_unix = Some(now);
+        if subs.len() <= 1 {
+            let view = if let Some(s) = subs.first() {
+                self.cfg.for_subscription(s)
+            } else {
+                (*self.cfg).clone()
+            };
+            let opened = match self.sync_one(&view).await {
+                Ok(o) => o,
+                Err(e) => {
+                    let msg = format!("{e:#}");
+                    tracing::warn!("catalog sync failed: {msg}");
+                    println!("sync     failed: {msg}");
+                    self.status_mut().catalog.last_sync_error = Some(msg);
+                    self.refresh_status();
+                    return;
+                }
+            };
+            match self.plan_one(&view, &opened.0, &opened.1).await {
+                Ok(()) => {
+                    let mut w = self.status_mut();
+                    w.catalog.last_sync_error = None;
+                    w.catalog.last_sync_ok_unix = Some(now);
+                }
+                Err(e) => {
+                    let msg = format!("reading the catalog: {e:#}");
+                    println!("sync     failed: {msg}");
+                    self.status_mut().catalog.last_sync_error = Some(msg);
+                    self.refresh_status();
+                    return;
+                }
             }
-            Err(e) => {
-                let msg = format!("reading the catalog: {e:#}");
-                println!("sync     failed: {msg}");
-                self.status_mut().catalog.last_sync_error = Some(msg);
-                self.refresh_status();
-                return;
+            self.reconcile().await;
+            self.persist();
+            self.refresh_status();
+            return;
+        }
+        // Several catalogs: plan each one, then merge.
+        type Hit = (String, Want, bool, String);
+        let mut merged: std::collections::HashMap<String, Vec<Hit>> =
+            std::collections::HashMap::new();
+        let mut any_ok = false;
+        let mut last_err: Option<String> = None;
+        for sub in &subs {
+            let view = self.cfg.for_subscription(sub);
+            self.desired.clear();
+            self.taken_down_now.clear();
+            let opened = match self.sync_one(&view).await {
+                Ok(o) => o,
+                Err(e) => {
+                    let msg = format!("{}: {e:#}", sub.display());
+                    tracing::warn!("catalog sync failed: {msg}");
+                    println!("sync     {}: failed: {e:#}", sub.display());
+                    last_err = Some(msg);
+                    continue;
+                }
+            };
+            if let Err(e) = self.plan_one(&view, &opened.0, &opened.1).await {
+                let msg = format!("{}: {e:#}", sub.display());
+                tracing::warn!("reading the catalog: {msg}");
+                println!("sync     {}: failed: {e:#}", sub.display());
+                last_err = Some(msg);
+                continue;
             }
+            any_ok = true;
+            let downs = self.taken_down_now.clone();
+            for (k, w) in std::mem::take(&mut self.desired) {
+                let fp = crate::follow::revision_fingerprint(&w.manifest);
+                let down = downs.contains(&k);
+                merged
+                    .entry(k)
+                    .or_default()
+                    .push((sub.name.clone(), w, down, fp));
+            }
+            for k in downs {
+                merged.entry(k).or_default();
+            }
+        }
+        self.desired.clear();
+        self.taken_down_now.clear();
+        if !any_ok {
+            let msg = last_err.unwrap_or_else(|| "every catalog failed to sync".into());
+            self.status_mut().catalog.last_sync_error = Some(msg.clone());
+            println!("sync     failed: {msg}");
+            self.refresh_status();
+            return;
+        }
+        for (cname, hits) in merged {
+            if hits.is_empty() {
+                // Listed only as taken down, with no Want (already handled below).
+                self.taken_down_now.insert(cname);
+                continue;
+            }
+            let mut fps = std::collections::BTreeSet::new();
+            for (_, _, _, fp) in &hits {
+                fps.insert(fp.clone());
+            }
+            if fps.len() > 1 {
+                println!(
+                    "CONFLICT: {cname} has different hashes in more than one catalog; not auto-selected"
+                );
+                continue;
+            }
+            let live: Vec<&Hit> = hits.iter().filter(|h| !h.2).collect();
+            if live.is_empty() {
+                self.taken_down_now.insert(cname);
+                continue;
+            }
+            // Prefer the default catalog, else the first live hit (plan already applied serve rules).
+            let picked = live
+                .iter()
+                .find(|h| subs.iter().any(|s| s.name == h.0 && s.is_default))
+                .copied()
+                .unwrap_or(live[0]);
+            self.desired.insert(cname, picked.1.clone());
+        }
+        {
+            let mut w = self.status_mut();
+            w.catalog.last_sync_error = None;
+            w.catalog.last_sync_ok_unix = Some(now);
         }
         self.reconcile().await;
         self.persist();
@@ -643,10 +750,9 @@ impl Daemon {
         self.status.write().unwrap_or_else(|e| e.into_inner())
     }
 
-    async fn sync(&mut self) -> anyhow::Result<(Backend, CatalogId)> {
-        let cfg = self.cfg.clone();
+    async fn sync_one(&mut self, cfg: &Config) -> anyhow::Result<(Backend, CatalogId)> {
         if cfg.catalog.backend != "file" {
-            let (b, id) = open_reader(&cfg, None, false).await?;
+            let (b, id) = open_reader(cfg, None, false).await?;
             if let Backend::Chia(c) = &b {
                 use tensorseed_catalog::CatalogBackend;
                 if let Ok(s) = c.sync_status(&id).await {
@@ -784,11 +890,15 @@ impl Daemon {
     }
 
     /// Read the catalog and decide what to seed.
-    async fn plan(&mut self, backend: &Backend, id: &CatalogId) -> anyhow::Result<()> {
-        let cfg = self.cfg.clone();
+    async fn plan_one(
+        &mut self,
+        cfg: &Config,
+        backend: &Backend,
+        id: &CatalogId,
+    ) -> anyhow::Result<()> {
         let b = backend.as_dyn();
         let name = cfg.catalog.name.as_str();
-        let rules = cfg.serve.rules(&cfg);
+        let rules = self.cfg.serve.rules(&self.cfg);
         let prefix = index_prefix();
         let mut candidates = Vec::new();
         let mut wants: HashMap<String, Want> = HashMap::new();
@@ -866,8 +976,14 @@ impl Daemon {
                         continue;
                     }
                     None => {
-                        match crate::consumer::catalog_manifest(&cfg, &repo, Some(&commit), true)
-                            .await
+                        match crate::consumer::catalog_manifest(
+                            &cfg,
+                            &repo,
+                            Some(&commit),
+                            true,
+                            Some(&cfg.catalog.name),
+                        )
+                        .await
                         {
                             Ok(r) => {
                                 self.manifests.insert(cname.clone(), r.manifest.clone());
@@ -1411,6 +1527,7 @@ async fn fetch_revision(
         allow_gated: false,
         allow_license: Vec::new(),
         no_wait: true,
+        catalog: None,
         ignore_tombstone: false,
         swarm: cfg.serve.fetch_swarm,
         no_swarm: !cfg.serve.fetch_swarm,

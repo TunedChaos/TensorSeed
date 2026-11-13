@@ -42,6 +42,20 @@
   `/usr/share/fish/vendor_completions.d`) and the man pages to
   `/usr/share/man/man1`. Release tarballs and zip archives include
   `completions/` and `man/`.
+- Follow several catalogs at once with `[[catalogs]]` (name, label,
+  publisher key, store id, base URL, chain check, optional priority).
+  A config with no `[[catalogs]]` still uses the top-level `[catalog]`,
+  `[file]`, and `[chia]` block as the sole subscription. Revisions are
+  keyed by Hugging Face repo and commit; agreeing hashes share one swarm
+  and can use every agreeing catalog's HTTP sources. `list` prints
+  "N of M catalogs agree". The same repo and commit with different
+  hashes is a hard error unless `--catalog` is given. Tombstones are per
+  catalog: a revision remains pullable and seedable if another
+  subscription still lists it. `serve` seeds a revision that is on disk
+  and still valid in at least one non-tombstoned subscription.
+  `tensorseed catalog list`, `catalog add`, and `catalog remove` manage
+  subscriptions; `catalog info` and `catalog chain-status` accept
+  `--catalog`.
 
 #### Fixed
 

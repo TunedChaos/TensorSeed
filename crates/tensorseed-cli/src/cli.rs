@@ -148,6 +148,9 @@ pub enum Command {
         /// Use the local catalog copy without syncing.
         #[arg(long)]
         no_wait: bool,
+        /// List this subscribed catalog only.
+        #[arg(long, value_name = "NAME")]
+        catalog: Option<String>,
     },
     /// Print a manifest from the catalog.
     Show {
@@ -162,6 +165,9 @@ pub enum Command {
         /// Use the local catalog copy without syncing.
         #[arg(long)]
         no_wait: bool,
+        /// Use this subscribed catalog (required when two catalogs disagree on hashes).
+        #[arg(long, value_name = "NAME")]
+        catalog: Option<String>,
     },
     /// Write a tombstone for a repo and optionally delete webseed objects.
     Takedown {
@@ -297,6 +303,9 @@ pub enum CatalogCmd {
         /// Use the local catalog copy without syncing.
         #[arg(long)]
         no_wait: bool,
+        /// Report this subscribed catalog only.
+        #[arg(long, value_name = "NAME")]
+        catalog: Option<String>,
     },
     /// Advertise a catalog mirror.
     AddMirror {
@@ -358,6 +367,40 @@ pub enum CatalogCmd {
         /// Compare the local catalog copy without syncing it first.
         #[arg(long)]
         no_wait: bool,
+        /// Check this subscribed catalog only.
+        #[arg(long, value_name = "NAME")]
+        catalog: Option<String>,
+    },
+    /// List subscribed catalogs (name, label, head, chain status).
+    List,
+    /// Add a `[[catalogs]]` subscription to the config file.
+    Add {
+        /// Catalog name bound into signatures.
+        #[arg(long)]
+        name: String,
+        /// Publisher public key (minisign `RW...`).
+        #[arg(long)]
+        publisher_pubkey: String,
+        /// File catalog HTTPS base.
+        #[arg(long)]
+        base_url: String,
+        /// Chia DataLayer store id (64 hex).
+        #[arg(long)]
+        store_id: Option<String>,
+        /// Local display name (not signed).
+        #[arg(long)]
+        label: Option<String>,
+        /// `strict`, `warn`, or `off`.
+        #[arg(long)]
+        chain_check: Option<String>,
+        /// Lower is preferred when hashes agree.
+        #[arg(long)]
+        priority: Option<i64>,
+    },
+    /// Drop a `[[catalogs]]` subscription. Verified file catalog state on disk is kept.
+    Remove {
+        /// Catalog name.
+        name: String,
     },
 }
 
@@ -446,6 +489,9 @@ pub struct PullArgs {
     /// Use the current local catalog copy without syncing.
     #[arg(long)]
     pub no_wait: bool,
+    /// Use this subscribed catalog (required when two catalogs disagree on hashes).
+    #[arg(long, value_name = "NAME")]
+    pub catalog: Option<String>,
     /// Download even if the repo is tombstoned.
     #[arg(long)]
     pub ignore_tombstone: bool,
@@ -530,6 +576,9 @@ pub struct VerifyArgs {
     /// Use the local catalog copy without syncing.
     #[arg(long)]
     pub no_wait: bool,
+    /// Use this subscribed catalog (required when two catalogs disagree on hashes).
+    #[arg(long, value_name = "NAME")]
+    pub catalog: Option<String>,
     /// Count missing pickle files as failures (by default they were skipped on pull).
     #[arg(long)]
     pub strict: bool,
@@ -579,6 +628,9 @@ impl Command {
             Self::Catalog(CatalogCmd::Snapshot) => "catalog snapshot",
             Self::Catalog(CatalogCmd::Anchor) => "catalog anchor",
             Self::Catalog(CatalogCmd::ChainStatus { .. }) => "catalog chain-status",
+            Self::Catalog(CatalogCmd::List) => "catalog list",
+            Self::Catalog(CatalogCmd::Add { .. }) => "catalog add",
+            Self::Catalog(CatalogCmd::Remove { .. }) => "catalog remove",
             Self::Publish { .. } => "publish",
             Self::Sync => "sync",
             Self::Harvest(_) => "harvest",

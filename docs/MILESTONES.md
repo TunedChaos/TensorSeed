@@ -104,15 +104,15 @@ entries). Selective pulls, the new default download order, Hugging Face
 token login, and .deb/.rpm packages are on main and will ship in 0.2.0.
 Remaining work: multi-catalog, then the explorer.
 
-- [ ] Multi-catalog subscription: `[[catalogs]]` (name, publisher key, store
+- [x] Multi-catalog subscription: `[[catalogs]]` (name, publisher key, store
       id, base URL, chain check, optional label and priority); a single
       `[catalog]` block still works; each catalog is verified and stored
       independently
-- [ ] `list` / `pull` / `serve` dedupe by HF repo, commit, and manifest
+- [x] `list` / `pull` / `serve` dedupe by HF repo, commit, and manifest
       hashes (agreeing catalogs share one torrent swarm); show
       "N of M catalogs agree"; same commit with different hashes is a
       hard error unless `--catalog` is given
-- [ ] Per-catalog takedowns; `tensorseed catalog add` / `remove` / `list`
+- [x] Per-catalog takedowns; `tensorseed catalog add` / `remove` / `list`
 - [ ] Read-only catalog explorer at explore.tensorseed.dev (SPEC 8.4 and
       18.2): Svelte 5 + TailwindCSS + DaisyUI (build-time, self-hosted,
       pnpm); wasm verification core from the existing Rust crates; no

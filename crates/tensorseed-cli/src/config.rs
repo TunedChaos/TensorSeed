@@ -16,6 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow;
+
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
@@ -54,6 +56,9 @@ pub struct Config {
     pub serve: crate::serve::ServeConfig,
     /// Automatic harvest watchlist (`[harvest]`).
     pub harvest: Harvest,
+    /// Extra catalogs to follow (`[[catalogs]]`). Empty keeps the top-level
+    /// `[catalog]` / `[file]` / `[chia]` block as the sole subscription.
+    pub catalogs: Vec<CatalogSub>,
 }
 
 /// `[harvest]`: what `tensorseed harvest` mirrors from the Hub.
@@ -279,6 +284,71 @@ impl Default for FileBackend {
     }
 }
 
+/// One `[[catalogs]]` entry (spec 18.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct CatalogSub {
+    /// Catalog name bound into signatures.
+    pub name: String,
+    /// Local display name (not signed).
+    pub label: String,
+    /// Publisher public key (minisign `RW...`).
+    pub publisher_pubkey: String,
+    /// This catalog's Chia DataLayer store id (64 hex), if any.
+    pub store_id: String,
+    /// File catalog HTTPS base.
+    pub base_url: String,
+    /// `strict`, `warn`, or `off`. Unset inherits `[catalog] chain_check`.
+    pub chain_check: Option<String>,
+    /// Lower is preferred when hashes agree. Unset is 0.
+    pub priority: Option<i64>,
+    /// Override the file-backend state directory for this catalog.
+    pub state_dir: Option<String>,
+    /// Extra file-catalog mirrors for this catalog.
+    pub mirror_urls: Vec<String>,
+    /// Coin API endpoints for this catalog's chain check.
+    pub coin_api_urls: Vec<String>,
+}
+
+/// A resolved catalog subscription used at runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subscription {
+    /// Catalog name bound into signatures.
+    pub name: String,
+    /// Local display name (falls back to `name`).
+    pub label: String,
+    /// Publisher public key.
+    pub publisher_pubkey: String,
+    /// Chia store id, if any.
+    pub store_id: String,
+    /// File catalog base URL.
+    pub base_url: String,
+    /// Extra file-catalog mirrors.
+    pub mirror_urls: Vec<String>,
+    /// Effective chain check mode.
+    pub chain_check: ChainCheck,
+    /// Tie-break when hashes agree (lower first).
+    pub priority: i64,
+    /// File-backend state directory (FileCatalog still appends `name`).
+    pub state_dir: String,
+    /// Coin API endpoints.
+    pub coin_api_urls: Vec<String>,
+    /// Whether this is the default subscription for commands with no `--catalog`.
+    pub is_default: bool,
+}
+
+impl Subscription {
+    /// Label if set, otherwise the catalog name.
+    #[must_use]
+    pub fn display(&self) -> &str {
+        if self.label.is_empty() {
+            &self.name
+        } else {
+            &self.label
+        }
+    }
+}
+
 /// `[chia]`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -357,14 +427,262 @@ impl Config {
     /// The effective `catalog.chain_check` (default: strict when a store id
     /// is configured, off otherwise).
     pub fn chain_check(&self) -> ChainCheck {
-        match self.catalog.chain_check.as_deref() {
+        parse_chain_check(
+            self.catalog.chain_check.as_deref(),
+            !self.chia.catalog_store_id.trim().is_empty(),
+        )
+    }
+
+    /// Every catalog this process follows (spec 18.1).
+    ///
+    /// If `[[catalogs]]` is missing or empty, the top-level `[catalog]`,
+    /// `[file]`, and `[chia]` block is the sole subscription. If the array
+    /// is present, those top-level fields are also included when they name
+    /// a publisher key, unless the same name and key already appear in the
+    /// array.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if two entries share a name but not a publisher key,
+    /// if a name or key is invalid, or if a store id is malformed.
+    pub fn subscriptions(&self) -> anyhow::Result<Vec<Subscription>> {
+        resolve_subscriptions(self)
+    }
+
+    /// The default subscription, or the one named by `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if subscriptions cannot be resolved, none are
+    /// configured, or `name` does not match a subscription.
+    pub fn subscription(&self, name: Option<&str>) -> anyhow::Result<Subscription> {
+        let subs = self.subscriptions()?;
+        if subs.is_empty() {
+            anyhow::bail!(
+                "no catalog is configured; set catalog.publisher_pubkey or add a [[catalogs]] entry"
+            );
+        }
+        match name {
+            None => subs
+                .into_iter()
+                .find(|s| s.is_default)
+                .ok_or_else(|| anyhow::anyhow!("internal error: no default catalog")),
+            Some(n) => subs
+                .into_iter()
+                .find(|s| s.name == n || s.label == n)
+                .ok_or_else(|| anyhow::anyhow!("no subscribed catalog named {n:?}")),
+        }
+    }
+
+    /// A config view whose top-level `[catalog]` / `[file]` / `[chia]`
+    /// fields describe `sub`, so existing single-catalog helpers can run
+    /// against one subscription.
+    #[must_use]
+    pub fn for_subscription(&self, sub: &Subscription) -> Config {
+        let mut c = self.clone();
+        c.catalog.name = sub.name.clone();
+        c.catalog.publisher_pubkey = sub.publisher_pubkey.clone();
+        c.catalog.chain_check = Some(chain_check_name(sub.chain_check).into());
+        c.file.base_url = sub.base_url.clone();
+        if !sub.mirror_urls.is_empty() {
+            c.file.mirror_urls = sub.mirror_urls.clone();
+        }
+        c.file.state_dir = sub.state_dir.clone();
+        c.chia.catalog_store_id = sub.store_id.clone();
+        if !sub.coin_api_urls.is_empty() {
+            c.chia.coin_api_urls = sub.coin_api_urls.clone();
+        }
+        c
+    }
+}
+
+fn parse_chain_check(raw: Option<&str>, has_store: bool) -> ChainCheck {
+    match raw {
+        Some("strict") => ChainCheck::Strict,
+        Some("warn") => ChainCheck::Warn,
+        Some("off") => ChainCheck::Off,
+        _ if has_store => ChainCheck::Strict,
+        _ => ChainCheck::Off,
+    }
+}
+
+fn chain_check_name(m: ChainCheck) -> &'static str {
+    match m {
+        ChainCheck::Strict => "strict",
+        ChainCheck::Warn => "warn",
+        ChainCheck::Off => "off",
+    }
+}
+
+fn resolve_subscriptions(cfg: &Config) -> anyhow::Result<Vec<Subscription>> {
+    let mut raw: Vec<CatalogSub> = cfg.catalogs.clone();
+    let top_has_key = !cfg.catalog.publisher_pubkey.trim().is_empty();
+    if raw.is_empty() {
+        return Ok(if top_has_key || !cfg.catalog.name.is_empty() {
+            vec![subscription_from_top(cfg, true)?]
+        } else {
+            Vec::new()
+        });
+    }
+    if top_has_key {
+        let already = raw.iter().any(|e| {
+            e.name == cfg.catalog.name && e.publisher_pubkey == cfg.catalog.publisher_pubkey
+        });
+        if !already {
+            raw.insert(
+                0,
+                CatalogSub {
+                    name: cfg.catalog.name.clone(),
+                    label: String::new(),
+                    publisher_pubkey: cfg.catalog.publisher_pubkey.clone(),
+                    store_id: cfg.chia.catalog_store_id.clone(),
+                    base_url: cfg.file.base_url.clone(),
+                    chain_check: cfg.catalog.chain_check.clone(),
+                    priority: None,
+                    state_dir: None,
+                    mirror_urls: cfg.file.mirror_urls.clone(),
+                    coin_api_urls: cfg.chia.coin_api_urls.clone(),
+                },
+            );
+        }
+    }
+    // Same name + same key collapse; same name + different key is an error.
+    let mut by_name: Vec<CatalogSub> = Vec::new();
+    for e in raw {
+        if e.name.is_empty() {
+            anyhow::bail!("[[catalogs]] entry is missing name");
+        }
+        tensorseed_catalog::signed::check_catalog_name(&e.name)?;
+        if e.publisher_pubkey.trim().is_empty() {
+            anyhow::bail!(
+                "[[catalogs]] entry {:?} is missing publisher_pubkey",
+                e.name
+            );
+        }
+        tensorseed_catalog::minisign::PublicKey::parse(&e.publisher_pubkey)
+            .map_err(|err| anyhow::anyhow!("[[catalogs]] entry {:?}: {err}", e.name))?;
+        validate_store_id(&e.store_id)?;
+        if let Some(m) = &e.chain_check
+            && !["strict", "warn", "off"].contains(&m.as_str())
+        {
+            anyhow::bail!(
+                "[[catalogs]] entry {:?}: chain_check must be \"strict\", \"warn\", or \"off\", not {m:?}",
+                e.name
+            );
+        }
+        if let Some(existing) = by_name.iter_mut().find(|x| x.name == e.name) {
+            if existing.publisher_pubkey != e.publisher_pubkey {
+                anyhow::bail!(
+                    "catalog {:?} is listed more than once with different publisher keys",
+                    e.name
+                );
+            }
+            // Same subscription: keep the first, fill in blank fields from the later one.
+            if existing.base_url.is_empty() {
+                existing.base_url = e.base_url;
+            }
+            if existing.store_id.is_empty() {
+                existing.store_id = e.store_id;
+            }
+            if existing.label.is_empty() {
+                existing.label = e.label;
+            }
+            continue;
+        }
+        by_name.push(e);
+    }
+    let mut subs = Vec::with_capacity(by_name.len());
+    for e in by_name {
+        let store = e.store_id.trim().to_string();
+        let base = if e.base_url.is_empty() {
+            cfg.file.base_url.clone()
+        } else {
+            e.base_url
+        };
+        if !(base.starts_with("https://") || base.starts_with("http://")) {
+            anyhow::bail!(
+                "[[catalogs]] entry {:?}: base_url {base:?} is not an http(s) URL",
+                e.name
+            );
+        }
+        let state_dir = e
+            .state_dir
+            .clone()
+            .unwrap_or_else(|| cfg.file.state_dir.clone());
+        let inherit = parse_chain_check(cfg.catalog.chain_check.as_deref(), !store.is_empty());
+        let chain_check = match e.chain_check.as_deref() {
             Some("strict") => ChainCheck::Strict,
             Some("warn") => ChainCheck::Warn,
             Some("off") => ChainCheck::Off,
-            _ if self.chia.catalog_store_id.trim().is_empty() => ChainCheck::Off,
-            _ => ChainCheck::Strict,
-        }
+            _ => inherit,
+        };
+        subs.push(Subscription {
+            name: e.name,
+            label: e.label,
+            publisher_pubkey: e.publisher_pubkey,
+            store_id: store,
+            base_url: base,
+            mirror_urls: e.mirror_urls,
+            chain_check,
+            priority: e.priority.unwrap_or(0),
+            state_dir,
+            coin_api_urls: e.coin_api_urls,
+            is_default: false,
+        });
     }
+    mark_default(&mut subs);
+    Ok(subs)
+}
+
+fn subscription_from_top(cfg: &Config, is_default: bool) -> anyhow::Result<Subscription> {
+    tensorseed_catalog::signed::check_catalog_name(&cfg.catalog.name)?;
+    if !cfg.catalog.publisher_pubkey.is_empty() {
+        tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
+    }
+    validate_store_id(&cfg.chia.catalog_store_id)?;
+    Ok(Subscription {
+        name: cfg.catalog.name.clone(),
+        label: String::new(),
+        publisher_pubkey: cfg.catalog.publisher_pubkey.clone(),
+        store_id: cfg.chia.catalog_store_id.clone(),
+        base_url: cfg.file.base_url.clone(),
+        mirror_urls: cfg.file.mirror_urls.clone(),
+        chain_check: cfg.chain_check(),
+        priority: 0,
+        state_dir: cfg.file.state_dir.clone(),
+        coin_api_urls: cfg.chia.coin_api_urls.clone(),
+        is_default,
+    })
+}
+
+fn mark_default(subs: &mut [Subscription]) {
+    if subs.is_empty() {
+        return;
+    }
+    // Official name if present, else lowest priority, else the first entry.
+    let idx = subs
+        .iter()
+        .position(|s| s.name == "tensorseed")
+        .unwrap_or_else(|| {
+            subs.iter()
+                .enumerate()
+                .min_by_key(|(i, s)| (s.priority, *i))
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        });
+    subs[idx].is_default = true;
+}
+
+fn validate_store_id(sid: &str) -> anyhow::Result<()> {
+    let sid = sid.trim();
+    if sid.is_empty() {
+        return Ok(());
+    }
+    let h = sid.strip_prefix("0x").unwrap_or(sid);
+    if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("store id must be 64 hex characters, not {sid:?}");
+    }
+    Ok(())
 }
 
 /// `[huggingface]`
@@ -1479,6 +1797,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     if !cfg.catalog.publisher_pubkey.is_empty() {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }
+    let _ = cfg.subscriptions()?;
     if let Some(m) = &cfg.catalog.chain_check
         && !["strict", "warn", "off"].contains(&m.as_str())
     {
@@ -2023,6 +2342,118 @@ dir = "/mnt/nas/tensorseed"
                 Mirrors::default().file,
                 r"C:\Users\ts\AppData\Roaming\tensorseed\mirrors.toml"
             );
+            Ok(())
+        });
+    }
+
+    const PK1: &str = "RWSSA0NfLXhfVAteHxL9PPhshHfwrMfYyxUF2VhGZIzNWARaJdwDR5TY";
+    const PK2: &str = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd";
+
+    #[test]
+    fn single_catalog_config_is_the_sole_subscription() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "one.toml",
+                &format!(
+                    "[catalog]\nbackend = \"file\"\nname = \"main\"\npublisher_pubkey = \"{PK1}\"\n"
+                ),
+            )?;
+            let cfg = load(Path::new("one.toml")).map_err(|e| e.to_string())?;
+            let subs = cfg.subscriptions().map_err(|e| e.to_string())?;
+            assert_eq!(subs.len(), 1);
+            assert_eq!(subs[0].name, "main");
+            assert!(subs[0].is_default);
+            assert_eq!(subs[0].publisher_pubkey, PK1);
+            assert_eq!(subs[0].state_dir, cfg.file.state_dir);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn catalogs_array_and_conflict_and_default() {
+        Jail::expect_with(|jail| {
+            let store = "ab".repeat(32);
+            jail.create_file(
+                "multi.toml",
+                &format!(
+                    r#"
+[catalog]
+backend = "file"
+chain_check = "off"
+
+[[catalogs]]
+name = "other"
+label = "Mirror"
+publisher_pubkey = "{PK1}"
+base_url = "https://catalog.example.org/"
+priority = 5
+
+[[catalogs]]
+name = "tensorseed"
+label = "Official"
+publisher_pubkey = "{PK2}"
+store_id = "{store}"
+base_url = "https://catalog.tensorseed.dev/"
+chain_check = "strict"
+priority = 20
+"#
+                ),
+            )?;
+            let cfg = load(Path::new("multi.toml")).map_err(|e| e.to_string())?;
+            let subs = cfg.subscriptions().map_err(|e| e.to_string())?;
+            assert_eq!(subs.len(), 2);
+            let def = cfg.subscription(None).map_err(|e| e.to_string())?;
+            assert_eq!(def.name, "tensorseed");
+            assert!(def.is_default);
+            assert_eq!(def.label, "Official");
+            assert_eq!(def.store_id, store);
+            let other = cfg
+                .subscription(Some("Mirror"))
+                .map_err(|e| e.to_string())?;
+            assert_eq!(other.name, "other");
+            assert_eq!(other.priority, 5);
+            assert_eq!(other.chain_check, ChainCheck::Off, "inherits top-level off");
+            // Same name, different key is an error.
+            jail.create_file(
+                "bad.toml",
+                &format!(
+                    r#"
+[[catalogs]]
+name = "dup"
+publisher_pubkey = "{PK1}"
+base_url = "https://a.example/"
+
+[[catalogs]]
+name = "dup"
+publisher_pubkey = "{PK2}"
+base_url = "https://b.example/"
+"#
+                ),
+            )?;
+            let err = load(Path::new("bad.toml")).unwrap_err().to_string();
+            assert!(
+                err.contains("different publisher keys"),
+                "unexpected error: {err}"
+            );
+            // Same name and key collapse.
+            jail.create_file(
+                "ok.toml",
+                &format!(
+                    r#"
+[[catalogs]]
+name = "dup"
+publisher_pubkey = "{PK1}"
+base_url = "https://a.example/"
+
+[[catalogs]]
+name = "dup"
+publisher_pubkey = "{PK1}"
+base_url = "https://a.example/"
+"#
+                ),
+            )?;
+            let cfg = load(Path::new("ok.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.subscriptions().map_err(|e| e.to_string())?.len(), 1);
             Ok(())
         });
     }

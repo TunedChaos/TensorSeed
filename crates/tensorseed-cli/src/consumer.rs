@@ -142,6 +142,7 @@ fn hf_client(cfg: &Config) -> anyhow::Result<HfClient> {
 }
 
 /// A manifest with its full file list and provenance.
+#[derive(Clone)]
 pub struct Resolved {
     /// The manifest (with `files` filled in from pages if it was paged).
     pub manifest: Manifest,
@@ -159,6 +160,28 @@ fn tombstone_covers(t: &Tombstone, commit: &str) -> bool {
 
 /// Resolve a manifest through the configured catalog.
 pub async fn catalog_manifest(
+    cfg: &Config,
+    repo: &RepoRef,
+    revision: Option<&str>,
+    no_wait: bool,
+    catalog: Option<&str>,
+) -> anyhow::Result<Resolved> {
+    if let Some(name) = catalog {
+        let sub = cfg.subscription(Some(name))?;
+        return catalog_manifest_one(&cfg.for_subscription(&sub), repo, revision, no_wait).await;
+    }
+    let subs = cfg.subscriptions()?;
+    if subs.len() <= 1 {
+        let view = match subs.first() {
+            Some(s) => cfg.for_subscription(s),
+            None => cfg.clone(),
+        };
+        return catalog_manifest_one(&view, repo, revision, no_wait).await;
+    }
+    resolve_across(cfg, &subs, repo, revision, no_wait).await
+}
+
+async fn catalog_manifest_one(
     cfg: &Config,
     repo: &RepoRef,
     revision: Option<&str>,
@@ -246,6 +269,139 @@ pub async fn catalog_manifest(
         signed: true,
         tombstone,
     })
+}
+
+async fn try_one(
+    cfg: &Config,
+    sub: &crate::config::Subscription,
+    repo: &RepoRef,
+    revision: Option<&str>,
+    no_wait: bool,
+) -> Option<Resolved> {
+    let view = cfg.for_subscription(sub);
+    match catalog_manifest_one(&view, repo, revision, no_wait).await {
+        Ok(r) => Some(r),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("is not in the catalog") {
+                None
+            } else {
+                tracing::warn!(catalog = %sub.name, "catalog read failed: {msg}");
+                None
+            }
+        }
+    }
+}
+
+async fn resolve_across(
+    cfg: &Config,
+    subs: &[crate::config::Subscription],
+    repo: &RepoRef,
+    revision: Option<&str>,
+    no_wait: bool,
+) -> anyhow::Result<Resolved> {
+    let commit = if let Some(r) = revision {
+        tensorseed_core::keys::check_commit(r).map_err(|_| {
+            anyhow::anyhow!("catalog revisions are full 40 hex commit SHAs, got {r:?} (or use --from-hf for branches and tags)")
+        })?;
+        r.to_string()
+    } else {
+        let mut ordered: Vec<&crate::config::Subscription> = subs.iter().collect();
+        ordered.sort_by_key(|s| (!s.is_default, s.priority, s.name.as_str()));
+        let mut found = None;
+        for sub in &ordered {
+            if let Some(r) = try_one(cfg, sub, repo, None, no_wait).await {
+                found = Some(r.manifest.hf_commit);
+                if sub.is_default {
+                    break;
+                }
+                // Not the default: keep the first (default-first, then lowest priority).
+                break;
+            }
+        }
+        found.ok_or_else(|| {
+            anyhow::anyhow!("{} {} is not in the catalog", repo.repo_type, repo.id)
+        })?
+    };
+
+    let mut hits: Vec<(crate::config::Subscription, Resolved)> = Vec::new();
+    for sub in subs {
+        if let Some(r) = try_one(cfg, sub, repo, Some(&commit), no_wait).await {
+            hits.push((sub.clone(), r));
+        }
+    }
+    if hits.is_empty() {
+        bail!(
+            "{} {}@{commit} is not in the catalog",
+            repo.repo_type,
+            repo.id
+        );
+    }
+    let mut groups: std::collections::BTreeMap<
+        String,
+        Vec<(crate::config::Subscription, Resolved)>,
+    > = std::collections::BTreeMap::new();
+    for (s, r) in hits {
+        groups
+            .entry(crate::follow::revision_fingerprint(&r.manifest))
+            .or_default()
+            .push((s, r));
+    }
+    if groups.len() > 1 {
+        let summary: Vec<(String, Vec<String>)> = groups
+            .iter()
+            .map(|(fp, hits)| {
+                (
+                    fp.clone(),
+                    hits.iter().map(|(s, _)| s.display().to_string()).collect(),
+                )
+            })
+            .collect();
+        bail!(
+            "{}",
+            crate::follow::conflict_error(&repo.id, &commit, &summary)
+        );
+    }
+    let agreeing = groups.into_values().next().unwrap();
+    let live: Vec<(crate::config::Subscription, Resolved)> = agreeing
+        .iter()
+        .filter(|(_, r)| match &r.tombstone {
+            Some(t) => !tombstone_covers(t, &commit),
+            None => true,
+        })
+        .cloned()
+        .collect();
+    let taken: Vec<&crate::config::Subscription> = agreeing
+        .iter()
+        .filter(|(_, r)| {
+            r.tombstone
+                .as_ref()
+                .is_some_and(|t| tombstone_covers(t, &commit))
+        })
+        .map(|(s, _)| s)
+        .collect();
+    let (mut resolved, extras) = if live.is_empty() {
+        let auth = crate::follow::authority(&agreeing)?;
+        (auth.1.clone(), Vec::new())
+    } else {
+        for s in &taken {
+            eprintln!(
+                "taken down in catalog {} (still listed by another catalog)",
+                s.display()
+            );
+        }
+        let auth = crate::follow::authority(&live)?;
+        let extras: Vec<Manifest> = live
+            .iter()
+            .filter(|(s, _)| s.name != auth.0.name)
+            .map(|(_, r)| r.manifest.clone())
+            .collect();
+        let mut r = auth.1.clone();
+        r.tombstone = None;
+        (r, extras)
+    };
+    crate::follow::merge_webseeds(&mut resolved.manifest, &extras);
+    Ok(resolved)
 }
 
 fn check_manifest_identity(m: &Manifest, repo: &RepoRef, commit: &str) -> anyhow::Result<()> {
@@ -506,7 +662,14 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             parse_manifest_bytes(cfg, &fetch_bytes(u).await?, u)?
         } else {
             source = "catalog";
-            catalog_manifest(cfg, &repo, revision.as_deref(), args.no_wait).await?
+            catalog_manifest(
+                cfg,
+                &repo,
+                revision.as_deref(),
+                args.no_wait,
+                args.catalog.as_deref(),
+            )
+            .await?
         };
         let m = &resolved.manifest;
         if args.manifest_file.is_some() || args.manifest_url.is_some() {
@@ -963,7 +1126,14 @@ pub async fn verify(cfg: &Config, args: &VerifyArgs) -> anyhow::Result<ExitCode>
             res.signed,
         )
     } else if let Some((r, rev)) = &repo {
-        let res = catalog_manifest(cfg, r, rev.as_deref(), args.no_wait).await?;
+        let res = catalog_manifest(
+            cfg,
+            r,
+            rev.as_deref(),
+            args.no_wait,
+            args.catalog.as_deref(),
+        )
+        .await?;
         if let Some(t) = &res.tombstone
             && tombstone_covers(t, &res.manifest.hf_commit)
         {
@@ -1079,7 +1249,33 @@ fn same_files(a: &[ExpectedFile], b: &[ExpectedFile]) -> bool {
 }
 
 /// `tensorseed list`.
-pub async fn list(cfg: &Config, filter: Option<&str>, no_wait: bool) -> anyhow::Result<ExitCode> {
+pub async fn list(
+    cfg: &Config,
+    filter: Option<&str>,
+    no_wait: bool,
+    catalog: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    if let Some(name) = catalog {
+        let sub = cfg.subscription(Some(name))?;
+        return list_one(&cfg.for_subscription(&sub), filter, no_wait, false).await;
+    }
+    let subs = cfg.subscriptions()?;
+    if subs.len() <= 1 {
+        let view = match subs.first() {
+            Some(s) => cfg.for_subscription(s),
+            None => cfg.clone(),
+        };
+        return list_one(&view, filter, no_wait, false).await;
+    }
+    list_across(cfg, &subs, filter, no_wait).await
+}
+
+async fn list_one(
+    cfg: &Config,
+    filter: Option<&str>,
+    no_wait: bool,
+    with_agreement: bool,
+) -> anyhow::Result<ExitCode> {
     let pk = pinned_key(cfg)?;
     let (backend, id) = open_reader(cfg, None, no_wait).await?;
     let b = backend.as_dyn();
@@ -1099,8 +1295,13 @@ pub async fn list(cfg: &Config, filter: Option<&str>, no_wait: bool) -> anyhow::
             bail!("{key} has schema {:?}", ix.schema);
         }
         n += 1;
+        let agreement = if with_agreement {
+            format!("  {}", crate::follow::agreement_line(1, 1, false))
+        } else {
+            String::new()
+        };
         println!(
-            "{rest}  {}  {} bytes  {}{}",
+            "{rest}  {}  {} bytes  {}{}{agreement}",
             ix.latest_commit.get(..12).unwrap_or(&ix.latest_commit),
             ix.total_bytes,
             ix.license_spdx.as_deref().unwrap_or("license unknown"),
@@ -1111,6 +1312,130 @@ pub async fn list(cfg: &Config, filter: Option<&str>, no_wait: bool) -> anyhow::
     Ok(ExitCode::SUCCESS)
 }
 
+async fn list_across(
+    cfg: &Config,
+    subs: &[crate::config::Subscription],
+    filter: Option<&str>,
+    no_wait: bool,
+) -> anyhow::Result<ExitCode> {
+    // repo+commit -> (sub, IndexEntry, Option<fingerprint>)
+    let mut rows: Vec<(
+        String,
+        String,
+        crate::config::Subscription,
+        IndexEntry,
+        Option<String>,
+    )> = Vec::new();
+    let mut errors = 0usize;
+    for sub in subs {
+        let view = cfg.for_subscription(sub);
+        let pk = match pinned_key(&view) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("catalog {}: {e:#}", sub.display());
+                errors += 1;
+                continue;
+            }
+        };
+        let (backend, id) = match open_reader(&view, None, no_wait).await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("catalog {}: {e:#}", sub.display());
+                errors += 1;
+                continue;
+            }
+        };
+        let b = backend.as_dyn();
+        let prefix = index_prefix();
+        let keys = match b.keys(&id, &prefix).await {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("catalog {}: {e:#}", sub.display());
+                errors += 1;
+                continue;
+            }
+        };
+        for key in keys {
+            let rest = &key[prefix.len()..];
+            if filter.is_some_and(|f| !rest.contains(f)) {
+                continue;
+            }
+            let Some(e) = read_verified(b, &id, &key, &pk, &view.catalog.name).await? else {
+                continue;
+            };
+            let ix: IndexEntry =
+                serde_json::from_str(&e.value).with_context(|| format!("parsing {key}"))?;
+            if ix.schema != SCHEMA_INDEX {
+                bail!("{key} has schema {:?}", ix.schema);
+            }
+            let typ_and_id = rest.to_string();
+            let (ty, repo_id) = rest.split_once('/').unwrap_or(("model", rest));
+            let repo_type = match ty {
+                "dataset" => RepoType::Dataset,
+                _ => RepoType::Model,
+            };
+            let fp = match RepoRef::new(repo_type, repo_id) {
+                Ok(repo) => try_one(cfg, sub, &repo, Some(&ix.latest_commit), no_wait)
+                    .await
+                    .map(|r| crate::follow::revision_fingerprint(&r.manifest)),
+                Err(_) => None,
+            };
+            rows.push((typ_and_id, ix.latest_commit.clone(), sub.clone(), ix, fp));
+        }
+    }
+    // Group by repo + commit.
+    let mut groups: std::collections::BTreeMap<
+        (String, String),
+        Vec<(crate::config::Subscription, IndexEntry, Option<String>)>,
+    > = std::collections::BTreeMap::new();
+    for (id, commit, sub, ix, fp) in rows {
+        groups.entry((id, commit)).or_default().push((sub, ix, fp));
+    }
+    let mut n = 0;
+    for ((rest, commit), hits) in groups {
+        n += 1;
+        let listed = hits.len();
+        let mut fps: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for (_, _, fp) in &hits {
+            if let Some(f) = fp {
+                *fps.entry(f.clone()).or_default() += 1;
+            }
+        }
+        let conflict = fps.len() > 1;
+        let agreeing = fps.values().copied().max().unwrap_or(listed);
+        let ix = &hits[0].1;
+        let down = hits.iter().filter(|(_, i, _)| i.taken_down).count();
+        let down_tag = if down == listed && listed > 0 {
+            "  [taken down]"
+        } else if down > 0 {
+            "  [taken down in some catalogs]"
+        } else {
+            ""
+        };
+        println!(
+            "{rest}  {}  {} bytes  {}{}  {}",
+            commit.get(..12).unwrap_or(&commit),
+            ix.total_bytes,
+            ix.license_spdx.as_deref().unwrap_or("license unknown"),
+            down_tag,
+            crate::follow::agreement_line(agreeing, subs.len(), conflict)
+        );
+        if conflict {
+            eprintln!(
+                "CONFLICT: {rest}@{commit} has different hashes; pass --catalog <name> to inspect one"
+            );
+        }
+    }
+    eprintln!("{n} entries");
+    if errors > 0 {
+        eprintln!("{errors} catalog(s) could not be read (other catalogs were listed)");
+    }
+    if errors > 0 && n == 0 {
+        anyhow::bail!("no catalog could be read");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `tensorseed show`.
 pub async fn show(
     cfg: &Config,
@@ -1118,9 +1443,10 @@ pub async fn show(
     repo_type: RepoType,
     revision: Option<&str>,
     no_wait: bool,
+    catalog: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
     let (r, rev) = parse_repo(repo, repo_type, revision)?;
-    let res = catalog_manifest(cfg, &r, rev.as_deref(), no_wait).await?;
+    let res = catalog_manifest(cfg, &r, rev.as_deref(), no_wait, catalog).await?;
     println!("{}", serde_json::to_string_pretty(&res.manifest)?);
     if let Some(t) = &res.tombstone
         && tombstone_covers(t, &res.manifest.hf_commit)

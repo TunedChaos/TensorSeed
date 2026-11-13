@@ -3,6 +3,7 @@
 
 //! `catalog` subcommands.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
@@ -21,6 +22,7 @@ use crate::keys::{PASSWORD_ENV, default_key_dir, keygen, load_secret};
 pub async fn run(
     cmd: &CatalogCmd,
     cfg: impl FnOnce() -> anyhow::Result<Config>,
+    config_path: &Path,
 ) -> anyhow::Result<ExitCode> {
     match cmd {
         CatalogCmd::Keygen {
@@ -75,7 +77,7 @@ pub async fn run(
             );
             Ok(ExitCode::SUCCESS)
         }
-        CatalogCmd::Info { no_wait } => info(&cfg()?, *no_wait).await,
+        CatalogCmd::Info { no_wait, catalog } => info(&cfg()?, *no_wait, catalog.as_deref()).await,
         CatalogCmd::AddMirror { url, amount, fee } => {
             let cfg = cfg()?;
             if cfg.catalog.backend != "chia" {
@@ -137,7 +139,29 @@ pub async fn run(
             Ok(ExitCode::SUCCESS)
         }
         CatalogCmd::Anchor => anchor(&cfg()?).await,
-        CatalogCmd::ChainStatus { no_wait } => chain_status(&cfg()?, *no_wait).await,
+        CatalogCmd::ChainStatus { no_wait, catalog } => {
+            chain_status(&cfg()?, *no_wait, catalog.as_deref()).await
+        }
+        CatalogCmd::List => list_subscriptions(&cfg()?).await,
+        CatalogCmd::Add {
+            name,
+            publisher_pubkey,
+            base_url,
+            store_id,
+            label,
+            chain_check,
+            priority,
+        } => add_subscription(
+            config_path,
+            name,
+            publisher_pubkey,
+            base_url,
+            store_id.as_deref(),
+            label.as_deref(),
+            chain_check.as_deref(),
+            *priority,
+        ),
+        CatalogCmd::Remove { name } => remove_subscription(config_path, name),
         CatalogCmd::Snapshot => {
             let cfg = cfg()?;
             let (cat, _) = publisher_file_catalog(&cfg).await?;
@@ -273,7 +297,46 @@ async fn anchor(cfg: &Config) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn chain_status(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
+async fn chain_status(
+    cfg: &Config,
+    no_wait: bool,
+    catalog: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    let subs = if let Some(name) = catalog {
+        vec![cfg.subscription(Some(name))?]
+    } else {
+        cfg.subscriptions()?
+    };
+    if subs.is_empty() {
+        bail!("no catalog is configured");
+    }
+    if subs.len() == 1 && catalog.is_none() && cfg.catalogs.is_empty() {
+        return chain_status_one(cfg, no_wait).await;
+    }
+    let mut failed = false;
+    for (i, sub) in subs.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("catalog:    {} ({})", sub.display(), sub.name);
+        let view = cfg.for_subscription(sub);
+        match chain_status_one(&view, no_wait).await {
+            Ok(code) if code == ExitCode::SUCCESS => {}
+            Ok(_) => failed = true,
+            Err(e) => {
+                println!("chain:      FAILED: {e:#}");
+                failed = true;
+            }
+        }
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+async fn chain_status_one(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     if cfg.catalog.backend != "file" {
         bail!("chain-status checks the file catalog (catalog.backend = \"file\")");
     }
@@ -322,7 +385,16 @@ async fn chain_status(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     }
 }
 
-async fn info(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
+async fn info(cfg: &Config, no_wait: bool, catalog: Option<&str>) -> anyhow::Result<ExitCode> {
+    if catalog.is_some() || !cfg.catalogs.is_empty() {
+        let sub = cfg.subscription(catalog)?;
+        let view = cfg.for_subscription(&sub);
+        return info_one(&view, no_wait).await;
+    }
+    info_one(cfg, no_wait).await
+}
+
+async fn info_one(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     let pk = pinned_key(cfg)?;
     println!("catalog:   {}", cfg.catalog.name);
     println!("publisher: {} (key id {})", pk.to_base64(), pk.key_id_hex());
@@ -455,4 +527,190 @@ async fn import(
         other => bail!("unknown backend {other:?}"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn list_subscriptions(cfg: &Config) -> anyhow::Result<ExitCode> {
+    let subs = cfg.subscriptions()?;
+    if subs.is_empty() {
+        println!("no catalogs configured");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut failed = false;
+    for sub in &subs {
+        let view = cfg.for_subscription(sub);
+        let def = if sub.is_default { "  (default)" } else { "" };
+        print!(
+            "{}  {}  priority {}  chain {:?}{def}",
+            sub.name,
+            if sub.label.is_empty() {
+                "-"
+            } else {
+                sub.label.as_str()
+            },
+            sub.priority,
+            sub.chain_check
+        );
+        match open_reader(&view, None, true).await {
+            Ok((Backend::File(f), _)) => {
+                let st = f.state();
+                println!("  revision {}", st.revision);
+            }
+            Ok((Backend::Chia(_), id)) => {
+                println!("  store {id}");
+            }
+            Err(e) => {
+                println!("  error: {e:#}");
+                failed = true;
+            }
+        }
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn toml_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn add_subscription(
+    path: &Path,
+    name: &str,
+    publisher_pubkey: &str,
+    base_url: &str,
+    store_id: Option<&str>,
+    label: Option<&str>,
+    chain_check: Option<&str>,
+    priority: Option<i64>,
+) -> anyhow::Result<ExitCode> {
+    tensorseed_catalog::signed::check_catalog_name(name)?;
+    tensorseed_catalog::minisign::PublicKey::parse(publisher_pubkey).context("publisher_pubkey")?;
+    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+        bail!("base_url must be an http(s) URL");
+    }
+    if let Some(m) = chain_check
+        && !["strict", "warn", "off"].contains(&m)
+    {
+        bail!("chain_check must be \"strict\", \"warn\", or \"off\"");
+    }
+    let mut body = String::new();
+    if path.exists() {
+        body =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+    } else if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // If this name already exists with a different key, say so after load.
+    if path.exists() {
+        if let Ok(cfg) = crate::config::load(path)
+            && let Ok(subs) = cfg.subscriptions()
+            && let Some(s) = subs.iter().find(|s| s.name == name)
+            && s.publisher_pubkey != publisher_pubkey
+        {
+            bail!(
+                "catalog {name:?} is already subscribed with a different publisher key; remove it first"
+            );
+        }
+    }
+    body.push('\n');
+    body.push_str("[[catalogs]]\n");
+    body.push_str(&format!("name = {}\n", toml_string(name)));
+    if let Some(l) = label.filter(|s| !s.is_empty()) {
+        body.push_str(&format!("label = {}\n", toml_string(l)));
+    }
+    body.push_str(&format!(
+        "publisher_pubkey = {}\n",
+        toml_string(publisher_pubkey)
+    ));
+    if let Some(id) = store_id.filter(|s| !s.is_empty()) {
+        body.push_str(&format!("store_id = {}\n", toml_string(id)));
+    }
+    body.push_str(&format!("base_url = {}\n", toml_string(base_url)));
+    if let Some(m) = chain_check {
+        body.push_str(&format!("chain_check = {}\n", toml_string(m)));
+    }
+    if let Some(p) = priority {
+        body.push_str(&format!("priority = {p}\n"));
+    }
+    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
+    println!("added catalog {name} to {}", path.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+fn remove_subscription(path: &Path, name: &str) -> anyhow::Result<ExitCode> {
+    if !path.exists() {
+        bail!("config file {} does not exist", path.display());
+    }
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let (new_text, removed) = strip_catalogs_table(&text, name)?;
+    if !removed {
+        // Might be the top-level [catalog] only.
+        if let Ok(cfg) = crate::config::load(path)
+            && cfg.catalog.name == name
+            && cfg.catalogs.iter().all(|c| c.name != name)
+        {
+            bail!(
+                "catalog {name:?} is the top-level [catalog] block; edit {} to remove it",
+                path.display()
+            );
+        }
+        bail!("no [[catalogs]] entry named {name:?} in {}", path.display());
+    }
+    std::fs::write(path, new_text).with_context(|| format!("writing {}", path.display()))?;
+    println!("removed catalog {name} from {}", path.display());
+    println!("verified file catalog state on disk was kept");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Drop every `[[catalogs]]` table whose `name` equals `want`.
+fn strip_catalogs_table(text: &str, want: &str) -> anyhow::Result<(String, bool)> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut removed = false;
+    while i < lines.len() {
+        let trim = lines[i].trim();
+        if trim == "[[catalogs]]" {
+            let start = i;
+            i += 1;
+            while i < lines.len() {
+                let t = lines[i].trim();
+                if t.starts_with('[') {
+                    break;
+                }
+                i += 1;
+            }
+            let block = lines[start..i].join("");
+            let is_match = block.lines().any(|l| {
+                let l = l.trim();
+                l.starts_with("name")
+                    && l.split_once('=')
+                        .is_some_and(|(_, v)| unquote(v.trim()) == want)
+            });
+            if is_match {
+                removed = true;
+                continue;
+            }
+            out.push_str(&block);
+            continue;
+        }
+        out.push_str(lines[i]);
+        i += 1;
+    }
+    Ok((out, removed))
+}
+
+fn unquote(v: &str) -> String {
+    let v = v.trim().trim_end_matches(',').trim();
+    if let Some(s) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        s.replace("\\\"", "\"").replace("\\\\", "\\")
+    } else {
+        v.to_string()
+    }
 }

@@ -60,7 +60,10 @@ tensorseed verify --hf hf-internal-testing/tiny-random-gpt2     # re-checks agai
 
 # With a signed catalog configured (catalog.publisher_pubkey, file.base_url):
 tensorseed list
+tensorseed list --catalog other     # only this subscribed catalog
 tensorseed pull org/name            # swarm first, then the Hub, then HTTP mirrors
+tensorseed pull org/name --catalog other  # required if two catalogs disagree on hashes
+tensorseed catalog list             # subscriptions: name, label, head, chain status
 tensorseed verify org/name          # against the signed manifest; exit 3 on mismatch
 tensorseed pull org/name --no-swarm # skip the swarm; the Hub then HTTP mirrors
 tensorseed pull org/name --retry-dead-mirrors  # try HTTP mirrors marked dead (clears on success)
@@ -81,7 +84,13 @@ tensorseed completions bash         # print a bash completion script
 ```
 
 The default download order is the BitTorrent swarm, then Hugging Face,
-then HTTP mirrors. Set `[fetch] source_order` to a list of `"swarm"`,
+then HTTP mirrors. To follow more than one catalog, add `[[catalogs]]`
+entries (see `config/tensorseed.example.toml`). `list` shows how many
+subscribed catalogs agree on each revision; `pull` fails on a hash
+conflict unless you pass `--catalog <name>`. A takedown in one catalog
+does not hide a revision still listed by another.
+
+Set `[fetch] source_order` to a list of `"swarm"`,
 `"hub"`, and `"mirrors"` (no duplicates) to change it. `--no-swarm` and
 `--swarm-only` still apply. A gated or missing file on the Hub falls
 through to the mirrors without marking the Hub dead.

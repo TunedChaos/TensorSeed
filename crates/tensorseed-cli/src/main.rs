@@ -9,6 +9,7 @@ mod chain;
 mod cli;
 mod config;
 mod consumer;
+mod follow;
 mod harvest;
 mod hf_auth;
 mod keys;
@@ -78,7 +79,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Hf(cmd) => hf_auth::run(&load()?, cmd).await,
-        Command::Catalog(cmd) => catalog_cmd::run(cmd, load).await,
+        Command::Catalog(cmd) => catalog_cmd::run(cmd, load, &path).await,
         Command::Harvest(args) => harvest::run(&load()?, args).await,
         Command::Publish {
             repo_id,
@@ -97,14 +98,17 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Pull(args) => consumer::pull(&load()?, args).await,
         Command::Verify(args) => consumer::verify(&load()?, args).await,
-        Command::List { filter, no_wait } => {
-            consumer::list(&load()?, filter.as_deref(), *no_wait).await
-        }
+        Command::List {
+            filter,
+            no_wait,
+            catalog,
+        } => consumer::list(&load()?, filter.as_deref(), *no_wait, catalog.as_deref()).await,
         Command::Show {
             repo,
             repo_type,
             revision,
             no_wait,
+            catalog,
         } => {
             consumer::show(
                 &load()?,
@@ -112,6 +116,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 (*repo_type).into(),
                 revision.as_deref(),
                 *no_wait,
+                catalog.as_deref(),
             )
             .await
         }

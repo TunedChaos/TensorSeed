@@ -65,6 +65,22 @@ torrent = true                   # also publish each snapshot as a torrent (not 
 # then the Hugging Face CLI token (HF_TOKEN_PATH, $HF_HOME/token, or
 # ~/.cache/huggingface/token). A token file must not be readable by group
 # or others (chmod 600), or Tensorseed refuses to use it.
+
+# Follow several catalogs at once (optional). If [[catalogs]] is absent or
+# empty, the [catalog] / [file] / [chia] block above is the sole subscription.
+# Same name and publisher key is one subscription; the same name with a
+# different key is an error. `list` and `pull` show agreement; a hash
+# conflict is a hard error unless you pass --catalog <name>.
+#
+# [[catalogs]]
+# name = "other"
+# label = "A second catalog"
+# publisher_pubkey = "RW........................................"
+# store_id = "<64 hex store id>"
+# base_url = "https://catalog.example.org/"
+# chain_check = "strict"          # default: inherit catalog.chain_check
+# priority = 10                   # lower is preferred when hashes agree
+
 [huggingface]
 endpoint = "https://huggingface.co"
 token_env = "HF_TOKEN"
