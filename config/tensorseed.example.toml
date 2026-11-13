@@ -22,6 +22,9 @@ publisher_pubkey = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd"  #
 publisher_name = ""              # shown in ts/v1/catalog, written by `catalog create`
 publisher_contact = ""           # email or URL for takedown requests
 publisher_policy_url = ""
+# chain_check = "strict"         # "strict" | "warn" | "off": check the file catalog against the
+                                 # Chia store (spec 6.14). Unset: strict when chia.catalog_store_id
+                                 # is set, off (with a notice) when it is empty.
 
 [chia]
 rpc_url = "https://localhost:8562"
@@ -34,6 +37,12 @@ confirm_poll_secs = 20
 confirm_timeout_secs = 1800
 catalog_mirror_urls = []         # public URLs of your DataLayer HTTP server (port 8575)
 mirror_amount_mojos = 0
+chain_source = "light"           # "light": verify the published chain-proof.json (no Chia software);
+                                 # "datalayer": get the proof from your own DataLayer at rpc_url
+coin_api_urls = ["https://api.coinset.org"]   # read only full node RPC compatible endpoints used to
+                                 # look up the store coin; add more (or your own node) to spread trust
+chain_grace_blocks = 192         # accept a proof for the previous root this many blocks (about an
+                                 # hour) after the store moved on, while caches catch up
 
 [file]
 base_url = "https://catalog.tensorseed.dev/"   # example URL: whatever public URL serves your published

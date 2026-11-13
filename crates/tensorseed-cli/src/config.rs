@@ -216,6 +216,10 @@ pub struct Catalog {
     pub publisher_contact: String,
     /// URL of the publisher's mirroring and takedown policy.
     pub publisher_policy_url: String,
+    /// Check the file catalog against the Chia store (spec 6.14):
+    /// `strict`, `warn`, or `off`. Unset means `strict` when
+    /// `chia.catalog_store_id` is set and `off` otherwise.
+    pub chain_check: Option<String>,
 }
 
 impl Default for Catalog {
@@ -228,6 +232,7 @@ impl Default for Catalog {
             publisher_name: String::new(),
             publisher_contact: String::new(),
             publisher_policy_url: String::new(),
+            chain_check: None,
         }
     }
 }
@@ -287,6 +292,18 @@ pub struct Chia {
     pub catalog_mirror_urls: Vec<String>,
     /// Mirror coin amount in mojos.
     pub mirror_amount_mojos: u64,
+    /// Where the chain check gets the proof of the file anchor: `light`
+    /// (the published `chain-proof.json`, no Chia software needed) or
+    /// `datalayer` (your own DataLayer node at `rpc_url`).
+    pub chain_source: String,
+    /// Full node RPC compatible HTTP endpoints used read only to look up the
+    /// store's singleton coin (for example a public coinset style API or
+    /// your own node). Empty with `chain_source = "datalayer"` trusts the
+    /// local node's confirmed root instead.
+    pub coin_api_urls: Vec<String>,
+    /// How many blocks after the store moved on a proof for the previous
+    /// root is still accepted (caches update a little after the chain).
+    pub chain_grace_blocks: u64,
 }
 
 impl Default for Chia {
@@ -302,6 +319,39 @@ impl Default for Chia {
             confirm_timeout_secs: 1800,
             catalog_mirror_urls: Vec::new(),
             mirror_amount_mojos: 0,
+            chain_source: "light".into(),
+            coin_api_urls: vec![DEFAULT_COIN_API.into()],
+            chain_grace_blocks: 192,
+        }
+    }
+}
+
+/// Default read only chain endpoint (a public full node RPC compatible API
+/// for Chia mainnet).
+pub const DEFAULT_COIN_API: &str = "https://api.coinset.org";
+
+/// Effective chain check mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainCheck {
+    /// Refuse a file head the chain does not anchor, and fail when the chain
+    /// cannot be reached.
+    Strict,
+    /// Log mismatches and unreachable chain endpoints, keep going.
+    Warn,
+    /// No chain check.
+    Off,
+}
+
+impl Config {
+    /// The effective `catalog.chain_check` (default: strict when a store id
+    /// is configured, off otherwise).
+    pub fn chain_check(&self) -> ChainCheck {
+        match self.catalog.chain_check.as_deref() {
+            Some("strict") => ChainCheck::Strict,
+            Some("warn") => ChainCheck::Warn,
+            Some("off") => ChainCheck::Off,
+            _ if self.chia.catalog_store_id.trim().is_empty() => ChainCheck::Off,
+            _ => ChainCheck::Strict,
         }
     }
 }
@@ -1026,6 +1076,33 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     if !cfg.catalog.publisher_pubkey.is_empty() {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }
+    if let Some(m) = &cfg.catalog.chain_check
+        && !["strict", "warn", "off"].contains(&m.as_str())
+    {
+        anyhow::bail!("catalog.chain_check must be \"strict\", \"warn\", or \"off\", not {m:?}");
+    }
+    if !["light", "datalayer"].contains(&cfg.chia.chain_source.as_str()) {
+        anyhow::bail!(
+            "chia.chain_source must be \"light\" or \"datalayer\", not {:?}",
+            cfg.chia.chain_source
+        );
+    }
+    let sid = cfg.chia.catalog_store_id.trim();
+    if !sid.is_empty()
+        && (sid.strip_prefix("0x").unwrap_or(sid).len() != 64
+            || !sid
+                .strip_prefix("0x")
+                .unwrap_or(sid)
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit()))
+    {
+        anyhow::bail!("chia.catalog_store_id must be 64 hex characters");
+    }
+    for u in &cfg.chia.coin_api_urls {
+        if !(u.starts_with("https://") || u.starts_with("http://")) {
+            anyhow::bail!("chia.coin_api_urls: {u:?} is not an http(s) URL");
+        }
+    }
     Ok(cfg)
 }
 
@@ -1036,6 +1113,40 @@ mod tests {
     use figment::Jail;
 
     const EXAMPLE: &str = include_str!("../../../config/tensorseed.example.toml");
+
+    #[test]
+    fn chain_check_defaults_and_validation() {
+        Jail::expect_with(|jail| {
+            jail.create_file("a.toml", "[catalog]\nbackend = \"file\"\n")?;
+            let cfg = load(Path::new("a.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.chain_check(), ChainCheck::Off, "no store id: off");
+            assert_eq!(cfg.chia.chain_source, "light");
+            assert_eq!(cfg.chia.coin_api_urls, vec![DEFAULT_COIN_API.to_string()]);
+            let store = "ab".repeat(32);
+            jail.create_file(
+                "b.toml",
+                &format!("[catalog]\nbackend = \"file\"\n[chia]\ncatalog_store_id = \"{store}\"\n"),
+            )?;
+            let cfg = load(Path::new("b.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.chain_check(), ChainCheck::Strict, "store id: strict");
+            jail.create_file(
+                "c.toml",
+                &format!("[catalog]\nbackend = \"file\"\nchain_check = \"warn\"\n[chia]\ncatalog_store_id = \"{store}\"\n"),
+            )?;
+            let cfg = load(Path::new("c.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.chain_check(), ChainCheck::Warn);
+            for bad in [
+                "[catalog]\nchain_check = \"maybe\"\n",
+                "[chia]\nchain_source = \"oracle\"\n",
+                "[chia]\ncatalog_store_id = \"xyz\"\n",
+                "[chia]\ncoin_api_urls = [\"ftp://x\"]\n",
+            ] {
+                jail.create_file("d.toml", bad)?;
+                assert!(load(Path::new("d.toml")).is_err(), "{bad}");
+            }
+            Ok(())
+        });
+    }
 
     #[test]
     fn example_config_parses() {

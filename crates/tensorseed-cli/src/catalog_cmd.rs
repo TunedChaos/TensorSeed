@@ -126,7 +126,7 @@ pub async fn run(
         }
         CatalogCmd::ResignHead => {
             let cfg = cfg()?;
-            let cat = publisher_file_catalog(&cfg).await?;
+            let (cat, _) = publisher_file_catalog(&cfg).await?;
             let head = cat.resign_head().await?;
             println!(
                 "head re-signed: revision {} root {} expires at {}",
@@ -136,9 +136,11 @@ pub async fn run(
             );
             Ok(ExitCode::SUCCESS)
         }
+        CatalogCmd::Anchor => anchor(&cfg()?).await,
+        CatalogCmd::ChainStatus { no_wait } => chain_status(&cfg()?, *no_wait).await,
         CatalogCmd::Snapshot => {
             let cfg = cfg()?;
-            let cat = publisher_file_catalog(&cfg).await?;
+            let (cat, _) = publisher_file_catalog(&cfg).await?;
             let s = cat.snapshot_now().await?;
             println!(
                 "snapshot written: revision {} at {} (sha256 {})",
@@ -158,15 +160,20 @@ fn store_id(cfg: &Config) -> anyhow::Result<CatalogId> {
 
 async fn publisher_file_catalog(
     cfg: &Config,
-) -> anyhow::Result<tensorseed_catalog::file::FileCatalog> {
+) -> anyhow::Result<(
+    tensorseed_catalog::file::FileCatalog,
+    Option<crate::chain::ChainWriter>,
+)> {
     if cfg.catalog.backend != "file" {
         bail!("this command is for the file backend (catalog.backend = \"file\")");
     }
-    let cat = file_catalog(cfg, Some(load_secret(cfg)?))?;
+    let sk = load_secret(cfg)?;
+    let chain = crate::chain::ChainWriter::open(cfg, &sk)?;
+    let cat = file_catalog(cfg, Some(sk))?;
     cat.sync_for_publish()
         .await
         .context("syncing before publishing")?;
-    Ok(cat)
+    Ok((cat, chain))
 }
 
 fn catalog_info(cfg: &Config) -> CatalogInfo {
@@ -188,7 +195,7 @@ fn catalog_info(cfg: &Config) -> CatalogInfo {
 async fn create(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     match cfg.catalog.backend.as_str() {
         "file" => {
-            let cat = publisher_file_catalog(cfg).await?;
+            let (cat, chain) = publisher_file_catalog(cfg).await?;
             if cat.state().revision != 0 {
                 bail!(
                     "catalog {:?} already exists at revision {}",
@@ -206,8 +213,7 @@ async fn create(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
                 }],
             )
             .await?;
-            let p = cat.commit(&id).await?;
-            let g = cat.wait_confirmed(&p).await?;
+            let g = crate::chain::commit_file(&cat, &id, chain.as_ref()).await?;
             println!(
                 "created file catalog {:?}: revision {} root {}",
                 cfg.catalog.name, g.number, g.root
@@ -241,6 +247,81 @@ async fn create(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     }
 }
 
+async fn anchor(cfg: &Config) -> anyhow::Result<ExitCode> {
+    let (cat, chain) = publisher_file_catalog(cfg).await?;
+    let Some(chain) = chain else {
+        bail!(
+            "chia.catalog_store_id is not set; create the store first (see docs/CHIA-RUNBOOK.md)"
+        );
+    };
+    let st = cat.state();
+    if st.revision == 0 {
+        bail!("the file catalog has nothing published yet");
+    }
+    let proof = chain.write(&st, &st, None).await?;
+    cat.upload_chain_proof(proof.to_bytes()?).await?;
+    println!(
+        "Chia store {} anchors file revision {} root {}",
+        chain.store(),
+        st.revision,
+        st.root
+    );
+    println!(
+        "chain-proof.json written to {}",
+        crate::backend::describe_storage(cfg)
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn chain_status(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
+    if cfg.catalog.backend != "file" {
+        bail!("chain-status checks the file catalog (catalog.backend = \"file\")");
+    }
+    if cfg.chia.catalog_store_id.trim().is_empty() {
+        bail!("chia.catalog_store_id is not set; there is no chain to check against");
+    }
+    crate::mirrors::refresh(cfg, no_wait).await;
+    let cat = file_catalog(cfg, None)?;
+    if !no_wait {
+        // Plain sync: this command reports, it does not gate.
+        if let Err(e) = cat.sync().await {
+            println!("file sync: {e}");
+        }
+    }
+    let st = cat.state();
+    println!("mode:       {:?}", cfg.chain_check());
+    println!("source:     {}", cfg.chia.chain_source);
+    println!("store:      {}", cfg.chia.catalog_store_id);
+    println!("file:       revision {} root {}", st.revision, st.root);
+    let r = match crate::chain::chain_anchor(cfg, &cat).await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("chain:      FAILED: {e:#}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    let a = &r.proof.anchor;
+    println!("chain:      revision {} root {}", a.revision, a.root);
+    println!("datalayer:  root {} coin {}", r.proof.root, r.proof.coin_id);
+    println!(
+        "coin:       {:?} (created at height {})",
+        r.state, r.confirmed_block_index
+    );
+    println!("proof from: {}", r.via);
+    if r.endpoints.is_empty() {
+        println!("checked by: local DataLayer node (trusted)");
+    } else {
+        println!("checked by: {}", r.endpoints.join(", "));
+    }
+    if a.matches(st.revision, &st.root) {
+        println!("result:     OK, the file catalog matches the chain");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("result:     MISMATCH");
+        Ok(ExitCode::FAILURE)
+    }
+}
+
 async fn info(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     let pk = pinned_key(cfg)?;
     println!("catalog:   {}", cfg.catalog.name);
@@ -257,6 +338,16 @@ async fn info(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
                 println!("snapshot:  revision {} ({})", s.revision, s.path);
             }
             println!("sources:   {}", f.sources().join(", "));
+            println!("chain:     {:?}", cfg.chain_check());
+            if let Some(c) = crate::chain::load_status(cfg) {
+                println!(
+                    "anchored:  revision {} in Chia store {} (coin {}, checked {})",
+                    c.revision,
+                    c.store_id,
+                    c.coin_state,
+                    tensorseed_core::time::rfc3339(c.checked_unix)
+                );
+            }
         }
         Backend::Chia(c) => {
             let st = c.sync_status(&id).await?;
@@ -317,18 +408,25 @@ async fn import(
     if dry_run {
         return Ok(ExitCode::SUCCESS);
     }
-    if parsed.entries.is_empty() {
+    // The chain anchor (spec 6.14) describes a file catalog revision; it is
+    // never imported as an entry. Older Chia exports may contain it.
+    let entries: Vec<_> = parsed
+        .entries
+        .iter()
+        .filter(|e| !tensorseed_catalog::anchor::is_reserved_key(&e.key))
+        .cloned()
+        .collect();
+    if entries.is_empty() {
         bail!("bundle has no entries");
     }
     match backend.unwrap_or(&cfg.catalog.backend) {
         "file" => {
             let mut c = cfg.clone();
             c.catalog.backend = "file".into();
-            let cat = publisher_file_catalog(&c).await?;
+            let (cat, chain) = publisher_file_catalog(&c).await?;
             let id = CatalogId(cfg.catalog.name.clone());
-            cat.stage_signed(&parsed.entries)?;
-            let p = cat.commit(&id).await?;
-            let g = cat.wait_confirmed(&p).await?;
+            cat.stage_signed(&entries)?;
+            let g = crate::chain::commit_file(&cat, &id, chain.as_ref()).await?;
             println!(
                 "imported into the file catalog: revision {} root {}",
                 g.number, g.root
@@ -337,7 +435,7 @@ async fn import(
         "chia" => {
             let c = chia(cfg)?;
             let id = store_id(cfg)?;
-            let changed = c.stage_signed(&id, &parsed.entries).await?;
+            let changed = c.stage_signed(&id, &entries).await?;
             let p = c.commit(&id).await?;
             match &p.tx_id {
                 Some(tx) => println!(

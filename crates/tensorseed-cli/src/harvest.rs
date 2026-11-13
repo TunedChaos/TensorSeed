@@ -97,6 +97,8 @@ fn load_takedown(cfg: &Config) -> anyhow::Result<BTreeSet<String>> {
 struct Publisher {
     backend: Backend,
     id: CatalogId,
+    /// Chia first writes for the file catalog (spec 6.14).
+    chain: Option<crate::chain::ChainWriter>,
 }
 
 impl Publisher {
@@ -104,6 +106,7 @@ impl Publisher {
         let sk = load_secret(cfg)?;
         match cfg.catalog.backend.as_str() {
             "file" => {
+                let chain = crate::chain::ChainWriter::open(cfg, &sk)?;
                 let cat = file_catalog(cfg, Some(sk))?;
                 cat.sync_for_publish()
                     .await
@@ -111,6 +114,7 @@ impl Publisher {
                 Ok(Self {
                     backend: Backend::File(cat),
                     id: CatalogId(cfg.catalog.name.clone()),
+                    chain,
                 })
             }
             "chia" => {
@@ -121,6 +125,7 @@ impl Publisher {
                 Ok(Self {
                     backend: Backend::Chia(c),
                     id: CatalogId(cfg.chia.catalog_store_id.clone()),
+                    chain: None,
                 })
             }
             other => bail!("unknown backend {other:?}"),
@@ -151,6 +156,13 @@ impl Publisher {
     async fn commit(&self, ops: Vec<CatalogOp>) -> anyhow::Result<u64> {
         let b = self.backend.as_dyn();
         b.stage(&self.id, &ops).await?;
+        if let Backend::File(cat) = &self.backend {
+            return Ok(
+                crate::chain::commit_file(cat, &self.id, self.chain.as_ref())
+                    .await?
+                    .number,
+            );
+        }
         let p = b.commit(&self.id).await?;
         Ok(b.wait_confirmed(&p).await?.number)
     }

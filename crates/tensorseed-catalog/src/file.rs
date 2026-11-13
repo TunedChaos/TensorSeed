@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use tensorseed_core::canonical::to_canonical_vec;
 use tensorseed_core::hash::sha256_bytes;
 
+use crate::anchor::{CHAIN_PROOF_PATH, is_reserved_key};
 use crate::minisign::{PublicKey, SecretKey};
 use crate::signed::{SignedEntry, check_catalog_name};
 use crate::sink::{CachePolicy, ObjectSink};
@@ -618,6 +619,11 @@ pub struct FileCatalog {
     outbox: Mutex<Vec<SignedFile>>,
     sink: Option<Arc<dyn ObjectSink>>,
     http: reqwest::Client,
+    /// When set, sync only accepts a head with exactly this revision and
+    /// root (the chain anchor, spec 6.14).
+    expected_head: Mutex<Option<(u64, String)>>,
+    /// Chain proof uploaded with the next commit, before the head.
+    chain_proof: Mutex<Option<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for FileCatalog {
@@ -628,6 +634,16 @@ impl std::fmt::Debug for FileCatalog {
             .field("sink", &self.sink)
             .finish_non_exhaustive()
     }
+}
+
+/// Reserved chain side keys never enter the file catalog.
+fn reject_reserved(key: &str) -> Result<()> {
+    if is_reserved_key(key) {
+        return Err(CatalogError::Config(format!(
+            "{key} is reserved for the chain anchor and cannot be stored in the file catalog"
+        )));
+    }
+    Ok(())
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -674,6 +690,8 @@ impl FileCatalog {
             outbox: Mutex::new(Vec::new()),
             sink: None,
             http,
+            expected_head: Mutex::new(None),
+            chain_proof: Mutex::new(None),
         })
     }
 
@@ -741,6 +759,7 @@ impl FileCatalog {
     /// verified against the pinned key first; signatures are kept as is.
     pub fn stage_signed(&self, entries: &[SignedEntry]) -> Result<()> {
         for e in entries {
+            reject_reserved(&e.key)?;
             e.verify(&self.cfg.publisher, &self.cfg.catalog)?;
         }
         lock(&self.staged).extend(
@@ -756,6 +775,56 @@ impl FileCatalog {
     pub fn apply_remote_delta(&self, file: &SignedFile) -> Result<()> {
         lock(&self.state).apply_delta(&self.cfg.publisher, file)?;
         self.persist()
+    }
+
+    /// The state the staged changes would produce, without committing or
+    /// uploading anything: `(next state, staged ops)`. The publisher uses it
+    /// to write the chain anchor for the next revision first (spec 6.14).
+    pub fn preview_staged(&self) -> Result<(ChainState, Vec<DeltaOp>)> {
+        let ops = lock(&self.staged).clone();
+        if ops.is_empty() {
+            return Err(CatalogError::Backend("nothing staged".into()));
+        }
+        let mut next = self.state();
+        for op in &ops {
+            match op {
+                DeltaOp::Upsert { entry } => {
+                    next.entries.insert(entry.key.clone(), entry.clone());
+                }
+                DeltaOp::Delete { key } => {
+                    next.entries.remove(key);
+                }
+            }
+        }
+        next.revision += 1;
+        next.prev_root = std::mem::take(&mut next.root);
+        let sh = state_hash(&next.entries)?;
+        next.root = compute_root(&next.catalog, next.revision, &next.prev_root, &sh)?;
+        Ok((next, ops))
+    }
+
+    /// Only accept a head with exactly this revision and root during sync
+    /// (`None` accepts any valid head). Used for the chain check.
+    pub fn set_expected_head(&self, expected: Option<(u64, String)>) {
+        *lock(&self.expected_head) = expected;
+    }
+
+    /// Upload this chain proof with the next commit, before the head.
+    pub fn set_chain_proof(&self, body: Option<Vec<u8>>) {
+        *lock(&self.chain_proof) = body;
+    }
+
+    /// Upload `chain-proof.json` now (mutable, short cache).
+    pub async fn upload_chain_proof(&self, body: Vec<u8>) -> Result<()> {
+        let key = format!("{}/{CHAIN_PROOF_PATH}", self.cfg.catalog);
+        self.sink()?
+            .put(&key, body, "application/json", CachePolicy::Mutable)
+            .await
+    }
+
+    /// Fetch `chain-proof.json` from one source. `Ok(None)` on 404.
+    pub async fn fetch_chain_proof(&self, base: &str) -> Result<Option<Vec<u8>>> {
+        self.fetch(&normalize_base(base), CHAIN_PROOF_PATH).await
     }
 
     /// Write the verified state and trust anchor to `state_dir` (atomic).
@@ -914,6 +983,14 @@ impl FileCatalog {
         let mut work = self.state();
         let status = work.check_head(pk, head_file, now_unix)?;
         let head: Head = serde_json::from_slice(&head_file.body)?;
+        if let Some((rev, root)) = lock(&self.expected_head).clone()
+            && (head.revision != rev || head.root != root)
+        {
+            return Err(chain_err(format!(
+                "head revision {} root {} is not the chain anchored revision {rev} root {root}",
+                head.revision, head.root
+            )));
+        }
         if let HeadStatus::Behind { target } = status {
             if work.revision == 0
                 && let Some(snap) = &head.snapshot
@@ -1150,6 +1227,9 @@ impl CatalogBackend for FileCatalog {
         let sk = self.signer()?;
         let mut ops = Vec::with_capacity(batch.len());
         for op in batch {
+            match op {
+                CatalogOp::Upsert { key, .. } | CatalogOp::Delete { key } => reject_reserved(key)?,
+            }
             ops.push(match op {
                 CatalogOp::Upsert { key, value } => DeltaOp::Upsert {
                     entry: SignedEntry::sign(sk, &self.cfg.catalog, key, value)?,
@@ -1181,6 +1261,12 @@ impl CatalogBackend for FileCatalog {
             let mut snap = self.last_snapshot();
             if next.revision == 1 || next.revision.is_multiple_of(every) {
                 snap = Some(self.upload_snapshot(sk, &next).await?);
+            }
+            // The chain proof goes up before the head, so a reader that sees
+            // the new head finds the matching proof.
+            let proof = lock(&self.chain_proof).take();
+            if let Some(body) = proof {
+                self.upload_chain_proof(body).await?;
             }
             let head = next.build_head(
                 sk,
@@ -1453,6 +1539,35 @@ mod tests {
             b.add_mirror(&id, &[]).await,
             Err(CatalogError::Unsupported(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn preview_matches_commit_and_reserved_keys_are_refused() {
+        let sk = test_key(9);
+        let b = backend(sk);
+        let id = CatalogId(CAT.into());
+        b.stage(
+            &id,
+            &[CatalogOp::Upsert {
+                key: "ts/v1/a".into(),
+                value: br#"{"a":1}"#.to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+        let (next, ops) = b.preview_staged().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(b.state().revision, 0, "preview does not commit");
+        let p = b.commit(&id).await.unwrap();
+        let g = b.wait_confirmed(&p).await.unwrap();
+        assert_eq!((g.number, g.root), (next.revision, next.root.clone()));
+        assert_eq!(b.state(), next);
+        assert!(b.preview_staged().is_err(), "nothing staged");
+        let reserved = [CatalogOp::Upsert {
+            key: crate::anchor::FILE_HEAD_KEY.into(),
+            value: b"{}".to_vec(),
+        }];
+        assert!(b.stage(&id, &reserved).await.is_err());
     }
 
     #[test]

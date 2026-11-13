@@ -73,6 +73,10 @@ pub async fn export(
 ) -> Result<ExportBundle> {
     let mut entries = Vec::new();
     for key in backend.keys(source, "ts/").await? {
+        // The chain anchor describes the file catalog; it is not an entry.
+        if crate::anchor::is_reserved_key(&key) {
+            continue;
+        }
         let entry = backend
             .get_signed(source, &key)
             .await?

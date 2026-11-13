@@ -202,6 +202,7 @@ fn random_bytes<const N: usize>() -> Result<[u8; N]> {
 }
 
 /// An in-memory publisher signing key.
+#[derive(Clone)]
 pub struct SecretKey {
     key_id: [u8; 8],
     key: SigningKey,

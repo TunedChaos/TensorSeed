@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::anchor::{ChainProof, FILE_HEAD_KEY, FileAnchor};
 use crate::minisign::{PublicKey, SecretKey};
 use crate::signed::SignedEntry;
 use crate::{
@@ -304,6 +305,62 @@ impl ChiaDataLayer {
             values.push((e.key.clone(), Some(e.to_bytes()?)));
         }
         self.write_changelist(catalog, values).await
+    }
+
+    /// Stage already signed entries plus deletes in one changelist (the
+    /// chain side of a file catalog revision, spec 6.14). Every entry is
+    /// verified against the pinned key. Returns how many changes were staged.
+    pub async fn stage_signed_with_deletes(
+        &self,
+        catalog: &CatalogId,
+        entries: &[SignedEntry],
+        deletes: &[String],
+    ) -> Result<usize> {
+        let (name, pk) = self.binding()?;
+        let mut values = Vec::with_capacity(entries.len() + deletes.len());
+        for e in entries {
+            e.verify(pk, name)?;
+            values.push((e.key.clone(), Some(e.to_bytes()?)));
+        }
+        for k in deletes {
+            values.push((k.clone(), None));
+        }
+        self.write_changelist(catalog, values).await
+    }
+
+    /// DataLayer `get_proof` for one key at the node's current root.
+    pub async fn get_proof(&self, catalog: &CatalogId, key: &str) -> Result<Value> {
+        self.rpc(
+            "get_proof",
+            json!({ "store_id": catalog.0, "keys": [to_hex(key.as_bytes())] }),
+        )
+        .await
+    }
+
+    /// The verified file anchor stored under [`crate::anchor::FILE_HEAD_KEY`],
+    /// if any.
+    pub async fn file_anchor(&self, catalog: &CatalogId) -> Result<Option<FileAnchor>> {
+        let (name, pk) = self.binding()?;
+        match self.get_signed(catalog, FILE_HEAD_KEY).await? {
+            Some(e) => Ok(Some(FileAnchor::from_entry(&e, pk, name)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Build the publishable [`ChainProof`] for the anchor at the node's
+    /// current root, or `None` when the store has no anchor yet.
+    pub async fn chain_proof(&self, catalog: &CatalogId) -> Result<Option<ChainProof>> {
+        let Some(raw) = self.raw_value(catalog, FILE_HEAD_KEY).await? else {
+            return Ok(None);
+        };
+        let entry = SignedEntry::from_bytes(&raw)?;
+        if entry.to_bytes()? != raw {
+            return Err(CatalogError::Chain(
+                "stored anchor is not in canonical form".into(),
+            ));
+        }
+        let resp = self.get_proof(catalog, FILE_HEAD_KEY).await?;
+        Ok(Some(ChainProof::from_get_proof(&resp, entry)?))
     }
 
     /// `add_mirror` with an explicit coin amount and fee.
@@ -767,6 +824,67 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(r))
             .mount(server)
             .await;
+    }
+
+    #[tokio::test]
+    async fn file_anchor_proof_and_staging_with_deletes() {
+        use crate::anchor::FileAnchor;
+        let server = MockServer::start().await;
+        let entry = FileAnchor::new("main", 4, &"cd".repeat(32))
+            .sign(&key())
+            .unwrap();
+        let inner = "11".repeat(32);
+        let coin = "22".repeat(32);
+        let (proof, root) = crate::anchor::tests::fake_get_proof(&entry, &inner, &coin, STORE);
+        rpc_ok(
+            &server,
+            "get_value",
+            json!({"id": STORE, "key": to_hex(FILE_HEAD_KEY.as_bytes())}),
+            json!({"value": to_hex(&entry.to_bytes().unwrap())}),
+        )
+        .await;
+        rpc_ok(
+            &server,
+            "get_proof",
+            json!({"store_id": STORE, "keys": [to_hex(FILE_HEAD_KEY.as_bytes())]}),
+            proof,
+        )
+        .await;
+        let b = backend(&server).await;
+        let id = CatalogId(STORE.into());
+        let a = b.file_anchor(&id).await.unwrap().unwrap();
+        assert!(a.matches(4, &"cd".repeat(32)));
+        let p = b.chain_proof(&id).await.unwrap().unwrap();
+        let v = p.verify(&key().public_key(), "main", STORE).unwrap();
+        assert_eq!(v.root, root);
+        assert_eq!(v.coin_id, coin);
+
+        // Staging: changed entries are upserted, deletes of absent keys skipped.
+        let server = MockServer::start().await;
+        mount_missing_values(&server).await;
+        let e = SignedEntry::sign(&key(), "main", "ts/v1/x", br#"{"a":1}"#).unwrap();
+        rpc_ok(
+            &server,
+            "batch_update",
+            json!({"id": STORE, "submit_on_chain": false, "changelist": [
+                {"action": "upsert", "key": to_hex(b"ts/v1/x"), "value": to_hex(&e.to_bytes().unwrap())}
+            ]}),
+            json!({}),
+        )
+        .await;
+        let b = backend(&server).await;
+        let n = b
+            .stage_signed_with_deletes(&id, std::slice::from_ref(&e), &["ts/v1/gone".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        let foreign =
+            SignedEntry::sign(&SecretKey::from_seed(&[6; 32]), "main", "ts/v1/x", b"{}").unwrap();
+        assert!(
+            b.stage_signed_with_deletes(&id, &[foreign], &[])
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

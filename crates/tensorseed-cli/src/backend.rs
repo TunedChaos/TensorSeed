@@ -102,13 +102,25 @@ pub fn file_catalog(cfg: &Config, signer: Option<SecretKey>) -> anyhow::Result<F
 /// Build the Chia backend from config.
 pub fn chia(cfg: &Config) -> anyhow::Result<ChiaDataLayer> {
     let c = &cfg.chia;
-    let mut chia = ChiaDataLayer::new(ChiaConfig {
+    let cc = ChiaConfig {
         rpc_url: c.rpc_url.clone(),
         ssl_cert: expand(&c.ssl_cert),
         ssl_key: expand(&c.ssl_key),
         ca_cert: c.ca_cert.as_deref().map(expand),
         fee_mojos: c.fee_mojos,
-    })?;
+    };
+    // The DataLayer RPC itself is always HTTPS with mutual TLS. A plain
+    // http:// URL is only accepted on the loopback interface (tests, or a
+    // local proxy that adds the client certificate).
+    let mut chia = if let Some(rest) = c.rpc_url.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or("");
+        if !["127.0.0.1", "localhost", "[::1]"].contains(&host) && !rest.starts_with("[::1]") {
+            bail!("chia.rpc_url: plain http:// is only allowed for localhost");
+        }
+        ChiaDataLayer::with_client(cc, reqwest::Client::new())
+    } else {
+        ChiaDataLayer::new(cc)?
+    };
     chia = chia.with_catalog(&cfg.catalog.name, pinned_key(cfg)?);
     chia = chia.with_confirm_policy(c.confirm_poll_secs, c.confirm_timeout_secs);
     Ok(chia)
@@ -169,13 +181,10 @@ pub async fn open_reader(
             crate::mirrors::refresh(cfg, no_wait).await;
             let cat = file_catalog(cfg, None)?;
             if !no_wait {
-                let r = cat
-                    .sync()
+                // Gated by the chain check (catalog.chain_check, spec 6.14).
+                let r = crate::chain::sync_checked(cfg, &cat)
                     .await
                     .context("syncing the file catalog (use --no-wait to use the local copy)")?;
-                for s in &r.skipped {
-                    tracing::warn!("catalog source skipped: {s}");
-                }
                 tracing::info!(from = r.from, to = r.to, source = %r.source, "catalog synced");
             } else if cat.state().revision == 0 {
                 bail!("no local catalog copy yet; run without --no-wait first");

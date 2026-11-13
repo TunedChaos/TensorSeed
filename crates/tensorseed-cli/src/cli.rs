@@ -288,6 +288,19 @@ pub enum CatalogCmd {
     ResignHead,
     /// Write a full snapshot now and point head.json at it (file backend).
     Snapshot,
+    /// Publisher: make the Chia store (chia.catalog_store_id) anchor the
+    /// current file catalog revision, writing every entry and the
+    /// ts/v1/file-head anchor in one generation if needed, then upload
+    /// chain-proof.json. Use once to bootstrap a new store, or to recover
+    /// after an interrupted publish.
+    Anchor,
+    /// Check the file catalog against the Chia store and print the result,
+    /// whatever catalog.chain_check says. Exits non-zero on a mismatch.
+    ChainStatus {
+        /// Compare the local catalog copy without syncing it first.
+        #[arg(long)]
+        no_wait: bool,
+    },
 }
 
 /// Catalog backend argument (mirrors `catalog.backend`).
@@ -486,6 +499,8 @@ impl Command {
             Self::Catalog(CatalogCmd::Import { .. }) => "catalog import",
             Self::Catalog(CatalogCmd::ResignHead) => "catalog resign-head",
             Self::Catalog(CatalogCmd::Snapshot) => "catalog snapshot",
+            Self::Catalog(CatalogCmd::Anchor) => "catalog anchor",
+            Self::Catalog(CatalogCmd::ChainStatus { .. }) => "catalog chain-status",
             Self::Publish { .. } => "publish",
             Self::Sync => "sync",
             Self::Harvest(_) => "harvest",

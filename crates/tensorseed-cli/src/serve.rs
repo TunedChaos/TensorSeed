@@ -656,10 +656,9 @@ impl Daemon {
         }
         crate::mirrors::refresh(&cfg, false).await;
         let cat = file_catalog(&cfg, None)?;
-        let r = cat.sync().await.context("syncing the file catalog")?;
-        for s in &r.skipped {
-            tracing::warn!("catalog source skipped: {s}");
-        }
+        let r = crate::chain::sync_checked(&cfg, &cat)
+            .await
+            .context("syncing the file catalog")?;
         let st = cat.state();
         if r.to != r.from {
             println!("catalog  revision {} -> {} from {}", r.from, r.to, r.source);
@@ -754,6 +753,22 @@ impl Daemon {
             }
             Ok(None) => {}
             Err(e) => tracing::warn!("catalog mirror: mirrors.toml: {e:#}"),
+        }
+        // The chain proof (spec 6.14) for this head, so light clients can
+        // check this mirror against the chain too. Written before the head.
+        use tensorseed_catalog::anchor::{CHAIN_PROOF_PATH, ChainProof, FileAnchor};
+        match get(CHAIN_PROOF_PATH.into()).await {
+            Ok(Some(b)) => match ChainProof::from_bytes(&b)
+                .and_then(|p| FileAnchor::from_entry(&p.entry, &self.pk, name))
+            {
+                Ok(a) if a.matches(head.revision, &head.root) => {
+                    write_atomic(&dir.join(CHAIN_PROOF_PATH), &b)?;
+                }
+                Ok(_) => tracing::debug!("chain-proof.json is for another revision; not mirrored"),
+                Err(e) => tracing::warn!("catalog mirror: chain-proof.json: {e}"),
+            },
+            Ok(None) => {}
+            Err(e) => tracing::warn!("catalog mirror: chain-proof.json: {e:#}"),
         }
         write_atomic(&dir.join("head.json.minisig"), hsig.as_bytes())?;
         write_atomic(&dir.join(HEAD_PATH), &hbody)?;

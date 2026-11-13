@@ -241,3 +241,47 @@ fn copy_dir(from: &Path, to: &Path) {
         }
     }
 }
+
+#[tokio::test]
+async fn expected_head_picks_the_chain_anchored_source() {
+    let out = tempfile::tempdir().unwrap();
+    let pstate = tempfile::tempdir().unwrap();
+    let p = publisher(out.path(), pstate.path());
+    publish(&p, "ts/v1/catalog", "{}").await;
+    let rev1 = p.state();
+    let old = tempfile::tempdir().unwrap();
+    copy_dir(out.path(), old.path());
+    publish(&p, "ts/v1/index/model/org/x", "{}").await;
+    let rev2 = p.state();
+
+    let newer = MockServer::start().await;
+    mount_dir(&newer, out.path(), "").await;
+    let older = MockServer::start().await;
+    mount_dir(&older, old.path(), "").await;
+
+    // The chain anchors revision 1: the newer (unanchored) head is skipped
+    // and the mirror that serves revision 1 is used.
+    let s1 = tempfile::tempdir().unwrap();
+    let mut c = cfg(&format!("{}/", newer.uri()), Some(s1.path()));
+    c.mirror_urls = vec![format!("{}/", older.uri())];
+    let sub = FileCatalog::new(c.clone()).unwrap();
+    sub.set_expected_head(Some((1, rev1.root.clone())));
+    let r = sub.sync().await.unwrap();
+    assert_eq!(r.to, 1);
+    assert!(r.source.contains(&older.uri()));
+    assert!(
+        r.skipped[0].contains("not the chain anchored"),
+        "{:?}",
+        r.skipped
+    );
+
+    // Anchored at revision 2 with a wrong root: every source is refused and
+    // the local state does not move.
+    sub.set_expected_head(Some((2, "00".repeat(32))));
+    assert!(sub.sync().await.is_err());
+    assert_eq!(sub.state().revision, 1);
+
+    // Anchored at revision 2: advances.
+    sub.set_expected_head(Some((2, rev2.root.clone())));
+    assert_eq!(sub.sync().await.unwrap().to, 2);
+}

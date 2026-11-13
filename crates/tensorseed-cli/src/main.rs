@@ -5,6 +5,7 @@
 
 mod backend;
 mod catalog_cmd;
+mod chain;
 mod cli;
 mod config;
 mod consumer;

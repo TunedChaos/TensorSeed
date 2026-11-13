@@ -13,6 +13,7 @@
 
 use async_trait::async_trait;
 
+pub mod anchor;
 pub mod chia;
 pub mod export;
 pub mod file;
@@ -64,6 +65,10 @@ pub enum CatalogError {
         /// Revision with conflicting roots.
         revision: u64,
     },
+    /// No chain endpoint could be reached to check the catalog against the
+    /// chain (spec 6.14).
+    #[error("chain unreachable: {0}")]
+    ChainUnreachable(String),
     /// The catalog (or a requested object) does not exist at any source.
     #[error("not found: {0}")]
     NotFound(String),
