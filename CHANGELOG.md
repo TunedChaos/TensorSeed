@@ -35,6 +35,13 @@
   unit running as the `tensorseed` system user, and
   `/etc/tensorseed/tensorseed.toml.example` (copied to `tensorseed.toml`
   on first install). `just dist` includes the packages in SHA256SUMS.
+- `tensorseed completions <shell>` prints a bash, zsh, fish, or PowerShell
+  completion script. `just generate-docs` also writes man pages
+  (`tensorseed.1` and one page per subcommand). Linux packages install
+  bash, zsh, and fish completions (fish to
+  `/usr/share/fish/vendor_completions.d`) and the man pages to
+  `/usr/share/man/man1`. Release tarballs and zip archives include
+  `completions/` and `man/`.
 
 #### Fixed
 

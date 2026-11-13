@@ -72,21 +72,24 @@ just targets                 # rustup target add for every target above
 just build x86_64-pc-windows-gnu      # one target, into target/<triple>/dist/
 just dist                    # all targets, source archives, .deb/.rpm, and SHA256SUMS
 just dist-packages           # .deb and .rpm from the musl binaries (needs nfpm)
+just generate-docs           # shell completions and man pages into target/shell-docs
 just dist-src v0.1.0         # source only: dist/tensorseed-<version>-src.tar.gz and .zip from that ref
 just sign ~/.tensorseed-release/tensorseed-release.key   # release key only, see RELEASE-KEY.md
 just verify-dist             # uses keys/tensorseed-release.pub
 ```
 
 Binary archives contain the binary, LICENSE, README.md, the volunteer guide,
-the example configs, and (Linux) the systemd unit. `just dist` also writes
+the example configs, shell completions, man pages, and (Linux) the systemd
+unit. `just dist` also writes
 source archives (`tensorseed-<version>-src.tar.gz` and `.zip`) with `git
 archive` of the current tag or HEAD (tracked files only, prefix
 `tensorseed-<version>/`), and `.deb` / `.rpm` packages from the static musl
 binaries (`just dist-packages`, which needs [nfpm](https://github.com/goreleaser/nfpm)).
 The packages install `/usr/bin/tensorseed`, a disabled `tensorseed-serve`
-systemd unit running as the `tensorseed` system user, and an example config
+systemd unit running as the `tensorseed` system user, an example config
 at `/etc/tensorseed/tensorseed.toml.example` (copied to `tensorseed.toml` on
-first install). `just dist-src <ref>` builds only the source archives, from a
+first install), bash/zsh/fish completions, and man pages under
+`/usr/share/man/man1`. `just dist-src <ref>` builds only the source archives, from a
 chosen tag or commit. `dist/` is ignored by git.
 
 ### On Windows

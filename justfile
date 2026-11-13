@@ -52,10 +52,23 @@ build target:
 build-native:
     cargo build --locked --release -p {{ package }}
 
+# Generate shell completions and man pages into target/shell-docs (used by dist).
+generate-docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bin="target/release/{{ bin }}"
+    if [ ! -x "$bin" ]; then
+        just build-native
+    fi
+    rm -rf target/shell-docs
+    "$bin" generate-docs target/shell-docs
+    echo "wrote target/shell-docs"
+
 # Build every dist target, stripped, and package them into dist/ with SHA256SUMS.
 dist: (clean-dist)
     #!/usr/bin/env bash
     set -euo pipefail
+    just generate-docs
     mkdir -p {{ dist_dir }}
     for t in {{ dist_targets }}; do
         just build "$t"
@@ -69,9 +82,11 @@ dist: (clean-dist)
         esac
         cp "target/${triple}/dist/${exe}" "$stage/"
         cp LICENSE README.md RELEASE-KEY.md "$stage/"
-        mkdir -p "$stage/docs" "$stage/config"
+        mkdir -p "$stage/docs" "$stage/config" "$stage/completions" "$stage/man"
         cp docs/RUN-A-MIRROR.md docs/PUBLISH-A-CATALOG.md "$stage/docs/"
         cp config/tensorseed.example.toml config/mirrors.example.toml "$stage/config/"
+        cp -a target/shell-docs/completions/. "$stage/completions/"
+        cp -a target/shell-docs/man/. "$stage/man/"
         case "$triple" in
             *windows*) (cd {{ dist_dir }} && python3 -c 'import sys, zipfile, pathlib
     root = pathlib.Path(sys.argv[1])
@@ -113,6 +128,7 @@ dist-packages:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v nfpm >/dev/null || { echo "nfpm is not installed (https://github.com/goreleaser/nfpm)" >&2; exit 1; }
+    just generate-docs
     mkdir -p {{ dist_dir }}
     version="{{ version }}"
     for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do

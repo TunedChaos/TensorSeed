@@ -10,9 +10,11 @@
 
 #![allow(rustdoc::invalid_html_tags, rustdoc::broken_intra_doc_links)]
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use anyhow::Context;
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use tensorseed_core::keys::RepoType;
 
 /// Tensorseed: verifiable, chain anchored mirrors of open Hugging Face models.
@@ -34,6 +36,30 @@ pub struct Cli {
     /// Command to run.
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Shells that `tensorseed completions` can generate a script for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CompletionShell {
+    /// Bash.
+    Bash,
+    /// Zsh.
+    Zsh,
+    /// Fish.
+    Fish,
+    /// PowerShell.
+    PowerShell,
+}
+
+impl From<CompletionShell> for clap_complete::Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Self::Bash,
+            CompletionShell::Zsh => Self::Zsh,
+            CompletionShell::Fish => Self::Fish,
+            CompletionShell::PowerShell => Self::PowerShell,
+        }
+    }
 }
 
 /// Log formats.
@@ -169,6 +195,17 @@ pub enum Command {
     /// Hugging Face token: login, logout, and status.
     #[command(subcommand)]
     Hf(HfCmd),
+    /// Print a shell completion script (bash, zsh, fish, or powershell).
+    Completions {
+        /// Shell to generate completions for.
+        shell: CompletionShell,
+    },
+    /// Write shell completions and man pages into a directory (`just generate-docs`).
+    #[command(hide = true)]
+    GenerateDocs {
+        /// Output directory (`completions/` and `man/` are created under it).
+        dir: PathBuf,
+    },
 }
 
 /// `hf` subcommands.
@@ -559,8 +596,80 @@ impl Command {
             Self::Hf(HfCmd::Login) => "hf login",
             Self::Hf(HfCmd::Logout) => "hf logout",
             Self::Hf(HfCmd::Status) => "hf status",
+            Self::Completions { .. } => "completions",
+            Self::GenerateDocs { .. } => "generate-docs",
         }
     }
+}
+
+/// Write a completion script for `shell` to `out`.
+///
+/// # Errors
+///
+/// Returns an error if the script cannot be written, except for a broken
+/// pipe (so `tensorseed completions bash | head` exits cleanly).
+pub fn generate_completions(shell: CompletionShell, out: &mut dyn Write) -> anyhow::Result<()> {
+    let mut cmd = Cli::command();
+    let mut buf = Vec::new();
+    clap_complete::generate::<clap_complete::Shell, _>(
+        shell.into(),
+        &mut cmd,
+        "tensorseed",
+        &mut buf,
+    );
+    match out.write_all(&buf) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e).context("writing the completion script"),
+    }
+}
+
+/// Write bash, zsh, fish, and PowerShell completions plus man pages under `dir`.
+///
+/// Completions go in `dir/completions/`. Man pages go in `dir/man/`, one page
+/// per visible command (`tensorseed.1`, `tensorseed-pull.1`, and so on).
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be created or a file cannot be written.
+pub fn write_shell_docs(dir: &Path) -> anyhow::Result<()> {
+    let completions = dir.join("completions");
+    let man = dir.join("man");
+    std::fs::create_dir_all(&completions)
+        .with_context(|| format!("creating {}", completions.display()))?;
+    std::fs::create_dir_all(&man).with_context(|| format!("creating {}", man.display()))?;
+    for (shell, name) in [
+        (CompletionShell::Bash, "tensorseed.bash"),
+        (CompletionShell::Zsh, "_tensorseed"),
+        (CompletionShell::Fish, "tensorseed.fish"),
+        (CompletionShell::PowerShell, "tensorseed.ps1"),
+    ] {
+        let mut buf = Vec::new();
+        generate_completions(shell, &mut buf)?;
+        let path = completions.join(name);
+        std::fs::write(&path, buf).with_context(|| format!("writing {}", path.display()))?;
+    }
+    write_man_pages(Cli::command(), &man)
+}
+
+fn write_man_pages(mut cmd: clap::Command, dir: &Path) -> anyhow::Result<()> {
+    cmd = cmd.disable_help_subcommand(true);
+    cmd.build();
+    fn walk(cmd: clap::Command, dir: &Path) -> anyhow::Result<()> {
+        let parent = cmd
+            .get_display_name()
+            .unwrap_or_else(|| cmd.get_name())
+            .to_owned();
+        for sub in cmd.get_subcommands().filter(|s| !s.is_hide_set()).cloned() {
+            let display = format!("{parent}-{}", sub.get_name());
+            walk(sub.display_name(display), dir)?;
+        }
+        clap_mangen::Man::new(cmd)
+            .generate_to(dir)
+            .with_context(|| format!("writing man pages in {}", dir.display()))?;
+        Ok(())
+    }
+    walk(cmd, dir)
 }
 
 #[cfg(test)]
@@ -648,6 +757,37 @@ mod tests {
             }
             _ => panic!("expected pull"),
         }
+    }
+
+    #[test]
+    fn parses_and_writes_completions() {
+        let cli = Cli::try_parse_from(["tensorseed", "completions", "bash"]).unwrap();
+        assert_eq!(cli.command.name(), "completions");
+        assert!(Cli::try_parse_from(["tensorseed", "completions", "elvish"]).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        write_shell_docs(dir.path()).unwrap();
+        let bash = std::fs::read_to_string(dir.path().join("completions/tensorseed.bash")).unwrap();
+        assert!(
+            bash.contains("tensorseed"),
+            "bash completions:
+{bash}"
+        );
+        assert!(dir.path().join("completions/_tensorseed").is_file());
+        assert!(dir.path().join("completions/tensorseed.fish").is_file());
+        assert!(dir.path().join("completions/tensorseed.ps1").is_file());
+        let man = std::fs::read_to_string(dir.path().join("man/tensorseed.1")).unwrap();
+        assert!(
+            man.contains("tensorseed") || man.contains("TENSORSEED"),
+            "man page:
+{man}"
+        );
+        assert!(dir.path().join("man/tensorseed-pull.1").is_file());
+        assert!(dir.path().join("man/tensorseed-hf-login.1").is_file());
+        assert!(!dir.path().join("man/tensorseed-generate-docs.1").exists());
+        let hidden =
+            Cli::try_parse_from(["tensorseed", "generate-docs", dir.path().to_str().unwrap()])
+                .unwrap();
+        assert_eq!(hidden.command.name(), "generate-docs");
     }
 
     #[test]

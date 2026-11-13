@@ -77,6 +77,7 @@ tensorseed publish me/my-model --allow-license other   # one repo, e.g. your own
 tensorseed mirror add https://mirror.example.org/ts/ --name eu-1 --priority 10
 tensorseed mirror list              # merged mirror ranking
 tensorseed seed                     # seed everything under storage.local_dir (Ctrl-C to stop)
+tensorseed completions bash         # print a bash completion script
 ```
 
 The default download order is the BitTorrent swarm, then Hugging Face,
@@ -199,6 +200,21 @@ and is spent; the root itself is proven locally. Details and limits are in the
 spec. Running a Chia publisher: [docs/CHIA-RUNBOOK.md](docs/CHIA-RUNBOOK.md).
 Running your own catalog (own key, own store, own host):
 [docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md).
+
+### Shell completions and man pages
+
+`tensorseed completions bash` (or `zsh`, `fish`, `powershell`) prints a
+completion script to stdout. Linux `.deb` and `.rpm` packages install the
+bash, zsh, and fish scripts in the usual vendor directories, and install
+man pages under `/usr/share/man/man1`. Release archives ship the same
+files (plus the PowerShell script) under `completions/` and `man/`.
+
+```sh
+# from a release tarball, for the current shell:
+#   source completions/tensorseed.bash
+#   man man/tensorseed.1
+tensorseed completions fish | source   # fish, until the package is installed
+```
 
 ## Workspace layout
 

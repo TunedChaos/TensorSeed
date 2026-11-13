@@ -130,6 +130,10 @@ Remaining work: multi-catalog, then the explorer.
       static musl binaries; systemd unit disabled by default; example
       config under `/etc/tensorseed/`; packages listed in SHA256SUMS
       when `just dist` runs
+- [x] Shell completions (bash, zsh, fish, PowerShell) via
+      `tensorseed completions`, plus man pages; packages install fish
+      completions under `/usr/share/fish/vendor_completions.d` and man
+      pages under `/usr/share/man/man1`; release archives include both
 - [x] Always-on official seeder and the first additional official catalog
       entries (catalog revision 4; details in SPEC 18.5)
 - [ ] Optional follow-ups, not required to ship 0.2.0: an AUR PKGBUILD;

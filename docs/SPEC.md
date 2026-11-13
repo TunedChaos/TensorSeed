@@ -1231,7 +1231,9 @@ The read-only explorer designed in 8.4 ships in 0.2.0 at `explore.tensorseed.dev
 - `/usr/bin/tensorseed` (the static musl binary).
 - A systemd unit for `tensorseed serve` (`contrib/nfpm/tensorseed-serve.service`), installed but disabled by default, running as a dedicated system user (`tensorseed`), with a conservative hardening set in the same spirit as `contrib/systemd/`. The packaged unit uses `User=tensorseed` and `ExecStart=/usr/bin/tensorseed`.
 - An example config at `/etc/tensorseed/tensorseed.toml.example`. The post-install script copies it to `/etc/tensorseed/tensorseed.toml` only when that file does not already exist. The service sets `HOME=/var/lib/tensorseed`, so default `~/...` paths resolve under that directory.
-- A man page and/or shell completions remain optional; they are not in this batch.
+- Shell completions for bash (`/usr/share/bash-completion/completions/tensorseed`), zsh (`/usr/share/zsh/site-functions/_tensorseed`), and fish (`/usr/share/fish/vendor_completions.d/tensorseed.fish`).
+- Man pages for `tensorseed` and each visible subcommand, installed to `/usr/share/man/man1`.
+- The same completion scripts and man pages are included in the release tarballs and zip archives (under `completions/` and `man/`), including a PowerShell script. `tensorseed completions <shell>` prints a script to stdout; `just generate-docs` writes the files used by packages and archives.
 
 **Follow-ups, not 0.2.0.**
 
