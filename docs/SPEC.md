@@ -718,7 +718,7 @@ Single binary `tensorseed`.
 
 | Command | Purpose | Status |
 |---|---|---|
-| `doctor` | Check config, pinned publisher key, catalog backend, storage credentials, torrent ports, disk space. | stub |
+| `doctor [--json] [--offline] [--timeout SECS] [--min-free-gib N] [--no-whoami]` | Check config, pinned publisher key, each followed catalog (reachable, head signature, Chia anchor), the published mirror list and mirror reachability, the Hugging Face token source (never the token), storage credentials (variable names only), torrent and `serve` ports, disk space, and writable download, DHT, and state paths. Each check is ok, warn, or fail; `--json` prints a `ts.doctor/1` report; exit 1 when any check fails. | done |
 | `catalog keygen [--out-dir] [--name] [--no-password] [--force]` | Write a minisign compatible key pair; the secret key is scrypt encrypted with a password from `TENSORSEED_KEY_PASSWORD` or a prompt. | done |
 | `catalog create` | File: write `ts/v1/catalog` as revision 1. Chia: `create_data_store` and print the store id. | done |
 | `catalog info [--no-wait]` | Revision or generation, root, entries, sources, publisher. | done |
@@ -1099,7 +1099,7 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 - DataLayer testnet11 run (done, 6.13): the live signed catalog was imported into a testnet store with signatures intact and read back from a second, subscriber-only node; `publish` wrote through the Chia backend; the bugs it found in the real RPC path were fixed. Mainnet steps are in [CHIA-RUNBOOK.md](CHIA-RUNBOOK.md).
 
 **M1: Publish**
-- `doctor`, `publish`, `sync`. Storage upload of torrents is done in `harvest`; atomic catalog writes through one queue. Testnet first, then mainnet. (`catalog create/info/add-mirror`, `jobs`, resumable state, and S3 upload are done.)
+- `publish`, `sync` (`doctor` is done). Storage upload of torrents is done in `harvest`; atomic catalog writes through one queue. Testnet first, then mainnet. (`catalog create/info/add-mirror`, `jobs`, resumable state, and S3 upload are done.)
 - File backend: snapshot torrent (HTTPS sync, publishing to storage, head re-signing, and export/import are done).
 
 **M2: Pull**

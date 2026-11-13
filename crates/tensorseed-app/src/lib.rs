@@ -9,6 +9,7 @@
 pub mod backend;
 pub mod chain;
 pub mod config;
+pub mod doctor;
 pub mod follow;
 pub mod hf;
 pub mod mirrors;

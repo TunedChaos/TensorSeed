@@ -57,7 +57,7 @@ These were completed in the testnet11 run listed under Done.
 - [x] Hybrid torrents on or off by default: on (the built-in engine needs them)
 
 ## M1: Publish
-- [ ] `doctor`
+- [x] `doctor` (config, catalogs and chain anchor, mirrors, Hub token source, storage credentials, ports, disk space, writable paths; `--json`)
 - [ ] `publish` state machine with torrents (spec section 8.1)
 - [ ] `sync`
 - [x] Torrent creation and `.torrent` upload to storage (in `harvest`; `publish` still to come)

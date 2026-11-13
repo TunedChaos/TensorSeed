@@ -7,6 +7,7 @@ mod catalog_cmd;
 mod chain;
 mod cli;
 mod consumer;
+mod doctor;
 mod harvest;
 mod hf_auth;
 mod keys;
@@ -82,6 +83,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&load()?)?);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Doctor(args) => doctor::run(&path, args).await,
         Command::Hf(cmd) => hf_auth::run(&load()?, cmd).await,
         Command::Catalog(cmd) => catalog_cmd::run(cmd, load, &path).await,
         Command::Harvest(args) => harvest::run(&load()?, args).await,

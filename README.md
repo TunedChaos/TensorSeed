@@ -17,8 +17,9 @@ Catalog explorer: [explore.tensorseed.dev](https://explore.tensorseed.dev).
 > explorer verifies the catalog and its Chia anchor without installing
 > anything. The
 > official catalog is anchored on Chia mainnet, and clients check the file
-> catalog against the Chia store by default (strict). `takedown` and `doctor`
-> still print "not implemented yet". Expect breaking changes.
+> catalog against the Chia store by default (strict). `tensorseed doctor`
+> checks an install end to end; `takedown` still prints "not implemented
+> yet". Expect breaking changes.
 
 **Want to help keep models available?** Run a mirror or seeder: see
 [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md). **Want to publish your own

@@ -123,6 +123,13 @@ pub async fn fetch_for_manifest(m: &Manifest, bases: &[String]) -> anyhow::Resul
     bail!("no usable torrent for {}: {}", t.name, errors.join("; "))
 }
 
+/// Where the DHT routing table is saved between runs:
+/// `~/.local/share/tensorseed/dht.json` on Unix,
+/// `%LOCALAPPDATA%\tensorseed\dht.json` on Windows.
+pub fn dht_persistence_path() -> PathBuf {
+    data_local_dir().join("tensorseed").join("dht.json")
+}
+
 /// Engine options from `[torrent]`. `listen = false` makes a download only
 /// session (outbound connections, no listen port): that is what `pull`
 /// uses, so a pull does not require an open port and does not seed unless
@@ -146,7 +153,7 @@ pub fn engine_options(cfg: &Config, listen: bool, dir: &Path) -> anyhow::Result<
         utp: false,
         tcp: true,
         default_dir: dir.to_owned(),
-        dht_persistence: Some(data_local_dir().join("tensorseed").join("dht.json")),
+        dht_persistence: Some(dht_persistence_path()),
         ipv4_only: ip.is_ipv4(),
     })
 }

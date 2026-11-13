@@ -93,7 +93,9 @@ impl From<RepoTypeArg> for RepoType {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Check config, catalog backend, credentials, ports, and disk space.
-    Doctor,
+    ///
+    /// Each check prints ok, warn, or fail. Exits 1 when any check fails.
+    Doctor(DoctorArgs),
     /// Manage the catalog.
     #[command(subcommand)]
     Catalog(CatalogCmd),
@@ -558,6 +560,26 @@ pub struct ServeArgs {
     pub sync_interval: Option<u64>,
 }
 
+/// `doctor` arguments.
+#[derive(Debug, Clone, Args)]
+pub struct DoctorArgs {
+    /// Print the report as one JSON document (`ts.doctor/1`) on stdout.
+    #[arg(long)]
+    pub json: bool,
+    /// Skip every network check (catalogs, mirrors, Hub).
+    #[arg(long)]
+    pub offline: bool,
+    /// Seconds each network check may take.
+    #[arg(long, value_name = "SECS", default_value_t = 15)]
+    pub timeout: u64,
+    /// Warn when the download directory has less than this many GiB free.
+    #[arg(long, value_name = "GIB", default_value_t = 10)]
+    pub min_free_gib: u64,
+    /// Do not ask the Hub who the token belongs to.
+    #[arg(long)]
+    pub no_whoami: bool,
+}
+
 /// `verify` arguments.
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
@@ -624,7 +646,7 @@ impl Command {
     /// Name used in "not implemented yet" messages.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Doctor => "doctor",
+            Self::Doctor(_) => "doctor",
             Self::Catalog(CatalogCmd::Create { .. }) => "catalog create",
             Self::Catalog(CatalogCmd::Subscribe { .. }) => "catalog subscribe",
             Self::Catalog(CatalogCmd::Keygen { .. }) => "catalog keygen",

@@ -63,6 +63,8 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.2"
 figment = { version = "0.10", features = ["toml", "env"] }
+# Free disk space for `tensorseed doctor` (no unsafe code in our crates).
+fs4 = { version = "1.1", default-features = false, features = ["sync"] }
 hex = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }

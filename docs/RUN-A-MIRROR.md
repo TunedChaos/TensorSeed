@@ -416,7 +416,8 @@ meant for you, not the internet.
   redistribution, and takedowns propagate automatically. You are still
   responsible for what you serve where you live; use `exclude`, `types`,
   and `license_classes` to narrow it.
-- **Help**: `tensorseed doctor` (when implemented) and
+- **Help**: `tensorseed doctor` (config, catalog and chain anchor, mirrors,
+  ports, disk space, writable directories; `--json` for scripts) and
   `tensorseed serve -v` for debug logs; issues on the project repository.
 
 ## 12. Publish your own catalog

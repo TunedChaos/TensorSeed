@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `tensorseed doctor` is implemented. It checks the config, each followed
+  catalog (reachable, head signature, Chia anchor), the published mirror
+  list and whether the mirrors answer, where the Hugging Face token comes
+  from (never the token itself), storage credentials by variable name, the
+  torrent and `serve` ports, free disk space, and that the download, DHT,
+  and state paths are writable. Each check reports ok, warn, or fail; exit
+  code 1 when any check fails. `--json` prints a `ts.doctor/1` report,
+  `--offline` skips network checks, and every network check has a timeout
+  (`--timeout`, default 15 seconds). The checks live in `tensorseed-app` so
+  Desktop can show them.
 - Windows: paths are built per component and config paths are normalized
   to native separators, so `pull` and other commands no longer print mixed
   paths like `C:/Users/x/downloads\datasets\openai/gsm8k`. Linux and macOS

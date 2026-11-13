@@ -12,6 +12,8 @@ homepage.workspace = true
 [dependencies]
 anyhow.workspace = true
 figment.workspace = true
+fs4.workspace = true
+futures-util.workspace = true
 hex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -27,6 +29,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true
