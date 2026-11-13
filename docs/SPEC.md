@@ -1219,14 +1219,14 @@ The read-only explorer designed in 8.4 ships in 0.2.0 at `explore.tensorseed.dev
 
 0.2.0 ships installable packages so most Linux distributions can install Tensorseed without unpacking a tarball.
 
-**How they are built.** Packages are built from the static musl binaries already produced by `just dist` (`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`), not from a per-distro compile. One .deb and one .rpm per architecture then run on Debian, Ubuntu, Fedora, openSUSE, and their derivatives (and on CachyOS or Arch with `rpm` if someone prefers that over AUR). The recommended tool is [nfpm](https://github.com/goreleaser/nfpm): one YAML config, both package formats, designed to wrap pre-built binaries. `cargo-deb` and `cargo-generate-rpm` are a poorer fit because they expect to package a cargo-built (usually glibc) artifact. A `just dist-packages` (or equivalent) recipe on the build host writes the four packages into `dist/`, and they are added to `SHA256SUMS` and signed with the release key like the other archives.
+**How they are built.** Packages are built from the static musl binaries already produced by `just dist` (`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`), not from a per-distro compile. One .deb and one .rpm per architecture then run on Debian, Ubuntu, Fedora, openSUSE, and their derivatives (and on CachyOS or Arch with `rpm` if someone prefers that over AUR). The recommended tool is [nfpm](https://github.com/goreleaser/nfpm): one YAML config, both package formats, designed to wrap pre-built binaries. `cargo-deb` and `cargo-generate-rpm` are a poorer fit because they expect to package a cargo-built (usually glibc) artifact. `just dist-packages` writes the four packages into `dist/` from the musl binaries (and builds those binaries if they are missing). `just dist` runs that recipe before writing `SHA256SUMS`, so a release signs the packages with the other archives.
 
 **Package contents.**
 
 - `/usr/bin/tensorseed` (the static musl binary).
-- A systemd unit for `tensorseed serve`, installed but **disabled** by default, running as a dedicated system user (`tensorseed`), with a conservative hardening set in the same spirit as `contrib/systemd/`.
-- An example config at `/etc/tensorseed/tensorseed.toml` (or `.example` plus a documented copy step), with `serve.data_dir` under a system data directory (for example `/var/lib/tensorseed`).
-- A man page and/or shell completions if they are cheap to generate from the existing clap command (preferred, not a blocker).
+- A systemd unit for `tensorseed serve` (`contrib/nfpm/tensorseed-serve.service`), installed but disabled by default, running as a dedicated system user (`tensorseed`), with a conservative hardening set in the same spirit as `contrib/systemd/`. The packaged unit uses `User=tensorseed` and `ExecStart=/usr/bin/tensorseed`.
+- An example config at `/etc/tensorseed/tensorseed.toml.example`. The post-install script copies it to `/etc/tensorseed/tensorseed.toml` only when that file does not already exist. The service sets `HOME=/var/lib/tensorseed`, so default `~/...` paths resolve under that directory.
+- A man page and/or shell completions remain optional; they are not in this batch.
 
 **Follow-ups, not 0.2.0.**
 

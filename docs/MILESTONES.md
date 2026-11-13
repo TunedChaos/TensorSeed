@@ -118,9 +118,10 @@ is reachable.
 - [x] `pull --include` / `--exclude` globs, using librqbit `only_files`;
       `verify` accepts a recorded partial pull; `serve` and `--seed-after`
       seed the selected subset with `only_files`
-- [ ] .deb and .rpm for x86_64 and aarch64, built with nfpm from the
+- [x] .deb and .rpm for x86_64 and aarch64, built with nfpm from the
       static musl binaries; systemd unit disabled by default; example
       config under `/etc/tensorseed/`; packages listed in SHA256SUMS
+      when `just dist` runs
 - [ ] Always-on official seeder and the first additional official catalog
       entries (candidate list in SPEC 18.5)
 - [ ] Optional follow-ups, not required to ship 0.2.0: an AUR PKGBUILD;

@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026 Tuned Chaos
+#
+# nfpm config for .deb and .rpm built from the static musl binaries.
+# The just dist-packages recipe sets TENSORSEED_VERSION, TENSORSEED_ARCH,
+# and TENSORSEED_BIN.
+
+name: tensorseed
+arch: ${TENSORSEED_ARCH}
+platform: linux
+version: ${TENSORSEED_VERSION}
+release: "1"
+section: utils
+priority: optional
+maintainer: Tuned Chaos <399379+flyingmongoose@users.noreply.github.com>
+description: |-
+  Verifiable, chain-anchored mirrors of open Hugging Face models,
+  shared over BitTorrent v2.
+vendor: Tuned Chaos
+homepage: https://tensorseed.dev
+license: AGPL-3.0-or-later
+contents:
+  - src: ${TENSORSEED_BIN}
+    dst: /usr/bin/tensorseed
+    file_info:
+      mode: 0755
+  - src: contrib/nfpm/tensorseed-serve.service
+    dst: /usr/lib/systemd/system/tensorseed-serve.service
+    file_info:
+      mode: 0644
+  - src: contrib/nfpm/tensorseed.toml
+    dst: /etc/tensorseed/tensorseed.toml.example
+    file_info:
+      mode: 0644
+  - dst: /var/lib/tensorseed
+    type: dir
+    file_info:
+      mode: 0750
+      owner: tensorseed
+      group: tensorseed
+  - dst: /etc/tensorseed
+    type: dir
+    file_info:
+      mode: 0755
+scripts:
+  preinstall: contrib/nfpm/scripts/preinstall.sh
+  postinstall: contrib/nfpm/scripts/postinstall.sh
+  preremove: contrib/nfpm/scripts/preremove.sh
+recommends:
+  - systemd

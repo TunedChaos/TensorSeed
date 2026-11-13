@@ -29,6 +29,12 @@
   writes `~/.config/tensorseed/hf_token` (0600 on Unix, a user-only ACL
   on Windows). `hf logout` removes that file. `hf status` calls
   whoami-v2 and prints the username and token source, never the token.
+- `just dist-packages` builds `.deb` and `.rpm` packages (x86_64 and
+  aarch64) from the static musl binaries with nfpm. Each package
+  installs `/usr/bin/tensorseed`, a disabled `tensorseed-serve` systemd
+  unit running as the `tensorseed` system user, and
+  `/etc/tensorseed/tensorseed.toml.example` (copied to `tensorseed.toml`
+  on first install). `just dist` includes the packages in SHA256SUMS.
 
 ## 0.1.0
 

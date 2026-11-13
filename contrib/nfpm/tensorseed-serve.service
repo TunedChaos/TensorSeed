@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026 Tuned Chaos
+#
+# Packaged tensorseed serve unit. Installed disabled; enable it only after
+# you have reviewed /etc/tensorseed/tensorseed.toml and opened port 6881
+# (TCP and UDP) if you want inbound peers.
+#
+#   sudo systemctl enable --now tensorseed-serve
+
+[Unit]
+Description=Tensorseed seeder (tensorseed serve)
+Documentation=https://tensorseed.dev
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tensorseed --log-format json serve
+Environment=TENSORSEED_CONFIG=/etc/tensorseed/tensorseed.toml
+Environment=HOME=/var/lib/tensorseed
+# Only needed for gated Hub repos; never put the token in the TOML.
+# EnvironmentFile=-/etc/tensorseed/env
+
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=30
+
+User=tensorseed
+Group=tensorseed
+StateDirectory=tensorseed
+StateDirectoryMode=0750
+ConfigurationDirectory=tensorseed
+ConfigurationDirectoryMode=0755
+UMask=0027
+LimitNOFILE=65536
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+# Not ProcSubset=pid: NAT-PMP port mapping reads /proc/net/route.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

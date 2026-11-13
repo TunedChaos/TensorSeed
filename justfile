@@ -10,8 +10,9 @@
 #   cargo install --locked just cargo-zigbuild
 #   pip install ziglang            # or install zig 0.13+ from ziglang.org
 #   just targets                   # rustup target add for every dist target
-#   just dist                      # binaries, source archives, and SHA256SUMS in dist/
+#   just dist                      # binaries, source archives, packages, and SHA256SUMS in dist/
 #   just dist-src [ref]            # tensorseed-<version>-src.tar.gz and .zip from <ref>
+#   just dist-packages             # .deb and .rpm from the musl binaries (needs nfpm)
 #
 # On Windows, run the recipes from Git Bash (shebang recipes need bash), or
 # skip just entirely and build natively with MSVC: `cargo build --release`.
@@ -83,7 +84,8 @@ dist: (clean-dist)
         rm -rf "$stage"
     done
     just dist-src
-    (cd {{ dist_dir }} && sha256sum {{ bin }}-* > SHA256SUMS && cat SHA256SUMS)
+    just dist-packages
+    (cd {{ dist_dir }} && sha256sum {{ bin }}-* {{ bin }}_*.deb > SHA256SUMS && cat SHA256SUMS)
 
 # Writes dist/tensorseed-<version>-src.tar.gz and .zip with prefix tensorseed-<version>/.
 # `just dist` runs this before writing SHA256SUMS.
@@ -101,6 +103,38 @@ dist-src ref="":
     git archive --format=tar.gz --prefix="${prefix}/" -o "${out}.tar.gz" "$ref"
     git archive --format=zip --prefix="${prefix}/" -o "${out}.zip" "$ref"
     echo "wrote ${out}.tar.gz and ${out}.zip from ${ref}"
+
+
+# Build .deb and .rpm for x86_64 and aarch64 from the static musl binaries.
+# Does not wipe dist/ (so a signed SHA256SUMS from a previous release is kept).
+# `just dist` runs this before writing SHA256SUMS. Requires nfpm:
+# https://github.com/goreleaser/nfpm
+dist-packages:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v nfpm >/dev/null || { echo "nfpm is not installed (https://github.com/goreleaser/nfpm)" >&2; exit 1; }
+    mkdir -p {{ dist_dir }}
+    version="{{ version }}"
+    for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+        bin="target/${triple}/dist/{{ bin }}"
+        if [ ! -x "$bin" ]; then
+            just build "$triple"
+        fi
+        case "$triple" in
+            x86_64-*) arch=amd64 ;;
+            aarch64-*) arch=arm64 ;;
+            *) echo "unexpected target $triple" >&2; exit 1 ;;
+        esac
+        export TENSORSEED_VERSION="$version"
+        export TENSORSEED_ARCH="$arch"
+        export TENSORSEED_BIN="$bin"
+        cfg="$(mktemp)"
+        python3 contrib/nfpm/expand-config.py contrib/nfpm/nfpm.yaml "$cfg"
+        nfpm package --config "$cfg" --packager deb --target {{ dist_dir }}/
+        nfpm package --config "$cfg" --packager rpm --target {{ dist_dir }}/
+        rm -f "$cfg"
+    done
+    ls -l {{ dist_dir }}/{{ bin }}_*.deb {{ dist_dir }}/{{ bin }}-*.rpm
 
 # Key id of the catalog publisher key. Release signing must never use it.
 catalog_key_id := "CE1E0E3D543DFFB8"
