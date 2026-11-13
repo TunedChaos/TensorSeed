@@ -16,6 +16,10 @@ use tensorseed_catalog::{CatalogBackend, CatalogId};
 use crate::config::{Config, expand};
 
 /// The pinned publisher key; required for anything that reads the catalog.
+///
+/// # Errors
+///
+/// Fails when `catalog.publisher_pubkey` is missing or not a valid minisign key.
 pub fn pinned_key(cfg: &Config) -> anyhow::Result<PublicKey> {
     if cfg.catalog.publisher_pubkey.is_empty() {
         bail!(
@@ -26,6 +30,10 @@ pub fn pinned_key(cfg: &Config) -> anyhow::Result<PublicKey> {
 }
 
 /// Every enabled `[[storage.target]]` with `upload = true`, as sinks.
+///
+/// # Errors
+///
+/// Fails when a target is misconfigured or its sink cannot be built.
 pub fn upload_sinks(cfg: &Config) -> anyhow::Result<Vec<(String, Arc<dyn ObjectSink>)>> {
     let mut out: Vec<(String, Arc<dyn ObjectSink>)> = Vec::new();
     for t in cfg.storage.upload_targets() {
@@ -51,6 +59,10 @@ pub fn upload_sinks(cfg: &Config) -> anyhow::Result<Vec<(String, Arc<dyn ObjectS
 }
 
 /// Remote upload targets only, fanned out; `None` when there are none.
+///
+/// # Errors
+///
+/// Fails when a target is misconfigured or its sink cannot be built.
 pub fn remote_sink(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ObjectSink>>> {
     let sinks: Vec<_> = upload_sinks(cfg)?.into_iter().map(|(_, s)| s).collect();
     Ok(match sinks.len() {
@@ -61,6 +73,10 @@ pub fn remote_sink(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ObjectSink>>> 
 }
 
 /// Publish destination: the local directory plus every upload target.
+///
+/// # Errors
+///
+/// Fails when a target is misconfigured or its sink cannot be built.
 pub fn sink(cfg: &Config) -> anyhow::Result<Arc<dyn ObjectSink>> {
     let local: Arc<dyn ObjectSink> = Arc::new(DirSink::new(expand(&cfg.storage.local_dir)));
     Ok(match remote_sink(cfg)? {
@@ -83,6 +99,10 @@ pub fn describe_storage(cfg: &Config) -> String {
 
 /// Build the file backend from config. With a signer, the upload sink is
 /// attached as well.
+///
+/// # Errors
+///
+/// Fails when the pinned key, the catalog name, or a sink is invalid.
 pub fn file_catalog(cfg: &Config, signer: Option<SecretKey>) -> anyhow::Result<FileCatalog> {
     let mut fc = FileCatalogConfig::new(&cfg.catalog.name, &cfg.file.base_url, pinned_key(cfg)?);
     // Signed mirror lists, file.mirror_urls and storage public URLs, by
@@ -100,6 +120,10 @@ pub fn file_catalog(cfg: &Config, signer: Option<SecretKey>) -> anyhow::Result<F
 }
 
 /// Build the Chia backend from config.
+///
+/// # Errors
+///
+/// Fails when the Chia settings are incomplete or the client cannot be built.
 pub fn chia(cfg: &Config) -> anyhow::Result<ChiaDataLayer> {
     let c = &cfg.chia;
     let cc = ChiaConfig {
@@ -139,6 +163,10 @@ pub fn load_chia_anchor(cfg: &Config, id: &CatalogId) -> Option<ChiaAnchor> {
 }
 
 /// Persist the accepted on-chain state for a Chia store (atomic rename).
+///
+/// # Errors
+///
+/// Fails when the state file cannot be written.
 pub fn save_chia_anchor(cfg: &Config, anchor: &ChiaAnchor) -> anyhow::Result<()> {
     let path = chia_anchor_path(cfg, &CatalogId(anchor.store_id.clone()));
     if let Some(dir) = path.parent() {
@@ -171,6 +199,10 @@ impl Backend {
 
 /// Open the backend named `name` (or `catalog.backend`) for reading, synced
 /// unless `no_wait`. Returns the backend and its catalog id.
+///
+/// # Errors
+///
+/// Fails on an unknown backend, a bad config, or a sync or chain check error.
 pub async fn open_reader(
     cfg: &Config,
     name: Option<&str>,
@@ -228,6 +260,10 @@ pub async fn open_reader(
 }
 
 /// Read one entry and verify it against the pinned key and catalog name.
+///
+/// # Errors
+///
+/// Fails when the entry cannot be read or does not verify.
 pub async fn read_verified(
     backend: &dyn CatalogBackend,
     id: &CatalogId,

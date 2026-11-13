@@ -6,6 +6,9 @@
 //! Tensorseed Desktop. Nothing here parses command lines; front ends own
 //! their own arguments and output. See `docs/plans/0.3.0-desktop.md`.
 
+pub mod backend;
+pub mod chain;
 pub mod config;
 pub mod follow;
+pub mod mirrors;
 pub mod serve_config;

@@ -3469,12 +3469,15 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "figment",
+ "reqwest",
  "serde",
  "serde_json",
  "tensorseed-catalog",
  "tensorseed-core",
  "tensorseed-hf",
  "tensorseed-serve",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

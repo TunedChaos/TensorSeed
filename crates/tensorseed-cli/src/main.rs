@@ -3,7 +3,6 @@
 
 //! `tensorseed` binary. See `docs/SPEC.md` and <https://tensorseed.dev>.
 
-mod backend;
 mod catalog_cmd;
 mod chain;
 mod cli;
@@ -18,7 +17,7 @@ mod torrents;
 use std::process::ExitCode;
 
 // Library modules, reachable as `crate::config` and so on from the CLI.
-use tensorseed_app::{config, follow};
+use tensorseed_app::{backend, config, follow};
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
