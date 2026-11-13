@@ -92,16 +92,53 @@ the HTTP side of M1 and M2 is already done.
 - [ ] Catalog generation history
 - [ ] Hosted on any static host, with no privileged role
 
-## 0.2.0: Multi-catalog subscription
+## 0.2.0
 
-Independent catalogs are already possible in 0.1.0 (own key, own Chia store,
-own file catalog; see [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md)). A client
-can follow only one catalog per config file. 0.2.0 is about following
-several at once, and about showing agreement between them:
+The design is in [SPEC.md](SPEC.md) section 18. Independent catalogs are
+already possible in 0.1.0 (see [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md));
+0.2.0 is following several at once, plus the items below. Hugging Face
+models and datasets only. Suggested order: selective pulls and packages
+first (they stand alone), then multi-catalog, then the explorer, with the
+official seeder and new official entries in parallel once the listen port
+is reachable.
 
-- [ ] `[[catalogs]]` (or equivalent): each entry has its own publisher key,
-      store id, and base URL, verified independently with the same strict
-      chain check
-- [ ] When two or more subscribed catalogs list the same revision, show
-      whether their file hashes agree
-- [ ] Catalog explorer "use another catalog" form (key, store id, base URL)
+- [ ] Multi-catalog subscription: `[[catalogs]]` (name, publisher key, store
+      id, base URL, chain check, optional label and priority); a single
+      `[catalog]` block still works; each catalog is verified and stored
+      independently
+- [ ] `list` / `pull` / `serve` dedupe by HF repo, commit, and manifest
+      hashes (agreeing catalogs share one torrent swarm); show
+      "N of M catalogs agree"; same commit with different hashes is a
+      hard error unless `--catalog` is given
+- [ ] Per-catalog takedowns; `tensorseed catalog add` / `remove` / `list`
+- [ ] Read-only catalog explorer at explore.tensorseed.dev (SPEC 8.4 and
+      18.2): Svelte 5 + TailwindCSS + DaisyUI (build-time, self-hosted,
+      pnpm); wasm verification core from the existing Rust crates; no
+      third party scripts; "use another catalog" form; agreement UI
+- [ ] `pull --include` / `--exclude` globs, using librqbit `only_files`;
+      `verify` accepts a recorded partial pull; do not seed an incomplete
+      revision by default
+- [ ] .deb and .rpm for x86_64 and aarch64, built with nfpm from the
+      static musl binaries; systemd unit disabled by default; example
+      config under `/etc/tensorseed/`; packages listed in SHA256SUMS
+- [ ] Always-on official seeder and the first additional official catalog
+      entries (candidate list in SPEC 18.5)
+- [ ] Optional follow-ups, not required to ship 0.2.0: an AUR PKGBUILD;
+      later, project apt/dnf repositories. Flatpak and AppImage stay
+      out of scope for the CLI.
+
+## 0.3.0: Tensorseed Desktop
+
+A separate product from the CLI (see [SPEC.md](SPEC.md) section 19).
+The CLI stays a static, GUI-free binary. Work starts after the 0.2.0
+explorer UI exists so Desktop can reuse it.
+
+- [ ] Tauri desktop app with a system tray, reusing the explorer's
+      Svelte 5 + TailwindCSS + DaisyUI UI and calling the Rust crates
+      natively (seeding status, disk use, pause/resume, catalog views)
+- [ ] Desktop bundles or depends on the CLI, and shares config, data
+      directories, and `serve` daemon state; no second layout for the GUI
+- [ ] `tensorseed gui` launcher in the CLI: opens Desktop if it is
+      installed, otherwise prints a download link (does not link a GUI)
+- [ ] Desktop packaging: Windows installer (MSI or NSIS); Linux .deb,
+      .rpm, AppImage, and Flatpak. CLI packages remain GUI-free.

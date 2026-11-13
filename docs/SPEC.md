@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 11)
+# Tensorseed: Project Specification (Revision 12)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 > Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+
+Revision 12 changes: 0.2.0 plan in section 18 (and 6.15, 16): multi-catalog subscription, a read-only explorer at explore.tensorseed.dev, `pull --include` / `--exclude`, .deb and .rpm packages from the static musl binaries, and an official seeder with a first set of additional official entries. The explorer UI is Svelte 5 with TailwindCSS and DaisyUI (build-time, self-hosted, pnpm); the verification core is a WASM module from the existing Rust crates, not a TypeScript reimplementation (8.4). 0.3.0 (section 19) is Tensorseed Desktop, a separate Tauri tray app that reuses that UI and calls the crates natively; Flatpak and AppImage wait for that, and project apt/dnf repos are deferred.
 
 Revision 11 changes: design for a browser catalog explorer (8.4, not built): a static Pages app that verifies the catalog and its Chia anchor in the browser by compiling the existing verification code to WebAssembly, with the same strict, warn, and off modes and trust model as 6.14; views for models, revisions, distribution, chain status, and best effort seed health; optional in browser downloads (phase 2) and deferred wallet, registry, and voting ideas (phase 3).
 
@@ -511,11 +513,7 @@ Anyone can run a separate catalog with their own publisher key, their own Chia D
 
 Chia proves integrity and latest state of *that publisher's* catalog, not publisher honesty. File trust comes from each entry's `hf_commit` and per-file hashes, which anyone can audit against Hugging Face while the repo is still up. Torrents are deterministic, so two catalogs that publish the same HF commit share one info hash and one swarm.
 
-In 0.1.0 a client follows one catalog per config file: pin the third party's `catalog.name`, `catalog.publisher_pubkey`, `chia.catalog_store_id`, and `file.base_url` in a separate file and pass `--config`. 0.2.0 is the multi-catalog milestone:
-
-- `[[catalogs]]` (or equivalent) lists several catalogs, each with its own key, store id, and base URL, verified independently (same strict chain check per catalog).
-- When two or more subscribed catalogs list the same revision, the client shows whether their file hashes agree.
-- The catalog explorer (8.4) ships a "use another catalog" form that accepts a key, store id, and base URL.
+In 0.1.0 a client follows one catalog per config file: pin the third party's `catalog.name`, `catalog.publisher_pubkey`, `chia.catalog_store_id`, and `file.base_url` in a separate file and pass `--config`. 0.2.0 is the multi-catalog milestone. The design, plus the explorer, selective pulls, packaging, and official seeder work, is in section 18.
 
 Delegated writers on the official catalog (CHIP-0035) remain optional and separate; they are not the decentralization path.
 
@@ -698,15 +696,15 @@ Crate split needed first. `tensorseed-core` is already almost portable (serde, s
 4. Endpoint list UI, relay Worker if needed, rollback memory, seed health (opt in).
 5. Phase 2 prototype: verified browser download from webseeds and mirrors, WebTorrent as an extra source.
 
-**Tooling.** JS tooling uses pnpm (`pnpm create vite` or plain ES modules, `pnpm dlx wrangler pages deploy`). A framework is optional; the first version can be plain TypeScript with no runtime dependencies besides the generated `wasm-bindgen` glue.
+**Tooling.** The explorer UI is Svelte 5 with TailwindCSS and DaisyUI, built with Vite and pnpm (`pnpm dlx wrangler pages deploy` for Pages). All three UI tools are compile-time only: the published site is static HTML, JS, and CSS, with no runtime loaded from another origin and no CDN for scripts, styles, or fonts. Prefer extracted stylesheets so the CSP can stay `style-src 'self'` without `'unsafe-inline'`. Use system fonts, or a self-hosted font in the same build. The verification core is a WASM module compiled from the existing Rust crates (`tensorseed-verify` / `tensorseed-wasm` as above), not a TypeScript reimplementation. The UI calls into that module; the two layers are not alternatives.
 
-**Open questions.**
+**Open questions, resolved for 0.2.0 (see section 18).**
 
-1. Which public coin endpoints send CORS headers today, and is a relay Worker acceptable as the default path?
-2. Framework or no framework (plain TypeScript vs. Svelte or similar) given the no third party scripts rule and the bundle size budget?
-3. Should seed health be opt in through `mirrors.toml`, or a separate signed volunteer list?
-4. Is WebTorrent worth shipping in phase 2 given that most bytes will come over HTTP, or should phase 2 be webseeds and mirrors only?
-5. Host the explorer under `tensorseed.dev` (same project) or its own Pages project and subdomain?
+1. `https://api.coinset.org` sends `Access-Control-Allow-Origin: *`, allows `GET, POST, DELETE, OPTIONS`, and allows the `Content-Type` request header (checked with a browser-style OPTIONS preflight and a POST on 2026-11-13). The MVP talks to it directly from the page. A tiny relay Worker remains a fallback only for endpoints that do not send CORS headers, not the default path.
+2. The UI is Svelte 5 with TailwindCSS and DaisyUI, all build-time and self-hosted, built with pnpm. The verification core is the WASM module from the existing Rust crates (18.2). No third party scripts, fonts, analytics, or CDNs at runtime.
+3. Seed health stays opt in through the signed `mirrors.toml`. No separate volunteer list in 0.2.0.
+4. The 0.2.0 explorer is read only. Browser downloads, if added later, start with webseeds and mirrors only. WebTorrent is deferred: browsers cannot speak TCP or uTP, so it would be a second swarm with little overlap.
+5. The explorer is its own Cloudflare Pages project at `explore.tensorseed.dev`, not a path on tensorseed.dev, so its CSP `connect-src` can stay limited to catalog bases, mirrors, and coin endpoints.
 
 ## 9. CLI
 
@@ -1104,10 +1102,19 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 **M4: Catalog explorer**
 - Static site at tensorseed.dev (generated from the catalog) listing repos, licenses, sizes, magnets, webseeds, attribution text, and catalog generation history. Hosted on any static host; it has no privileged role.
 
-**0.2.0: Multi-catalog subscription**
-- Clients subscribe to several independent catalogs at once (`[[catalogs]]`, each with its own publisher key, store id, and base URL), each verified on its own.
-- When catalogs agree (or disagree) on the hashes of the same HF commit, the client shows that.
-- Explorer "use another catalog" form (8.4). Operator guide for running a catalog is in 0.1.0: [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md).
+**0.2.0** (section 18)
+- Multi-catalog subscription (`[[catalogs]]`), independent verification, and cross-catalog hash agreement.
+- Read-only catalog explorer at explore.tensorseed.dev (8.4, 18.2): Svelte 5 + TailwindCSS + DaisyUI, WASM verification core, including a "use another catalog" form.
+- `pull --include` / `--exclude` globs, using librqbit `only_files` on the swarm pass.
+- .deb and .rpm packages for x86_64 and aarch64, built from the static musl binaries (CLI only).
+- An always-on official seeder and a first set of additional official catalog entries (HF models and datasets only).
+- Operator guide for running a catalog remains [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md).
+
+**0.3.0: Tensorseed Desktop** (section 19)
+- A separate desktop product (Tauri, system tray) that reuses the explorer UI and calls the Rust crates natively.
+- The CLI stays a static, GUI-free binary. Desktop bundles or depends on it, and shares config, data directories, and `serve` daemon state.
+- `tensorseed gui` launches Desktop if it is installed, or prints a download link if it is not.
+- Desktop packaging: Windows installer (MSI or NSIS); Linux .deb, .rpm, AppImage, and Flatpak.
 
 ---
 
@@ -1127,3 +1134,171 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 12. Accept ssh-sig as a second signature type later (6.9), or stay minisign only?
 13. Head expiry (`file.head_ttl_secs`, default 7 days): shorter is safer against freeze attacks but needs a reliable re-signing job.
 14. Harvest watchlist for launch: which authors, tags, download floor, and disk budget?
+
+## 18. 0.2.0 plan
+
+Design only in this revision; implementation follows this section. 0.2.0 stays Hugging Face models and datasets only. The cost of entry stays low: a laptop and one repo the user cares about should still be enough to pull, verify, and seed, with no extra configuration. Torrents remain the primary download, with HTTP mirrors and the Hub as failover. Chia DataLayer remains the source of truth for each catalog (6.14, 6.15).
+
+The four product items, plus Linux packages, are below. Suggested build order and risks are at the end.
+
+### 18.1 Multi-catalog subscription
+
+**Config.** A client may list several catalogs. Each entry is verified on its own (own publisher key, own store, own file catalog, own chain check). A suggested shape:
+
+```toml
+# Backward compatible: a single [catalog] plus [file] / [chia] is still
+# "the" catalog when [[catalogs]] is absent or empty, including every
+# existing 0.1.0 config.
+
+[[catalogs]]
+name = "tensorseed"
+label = "Official"
+publisher_pubkey = "RW........................................"
+store_id = "<64 hex store id>"
+base_url = "https://catalog.example.org/"
+chain_check = "strict"          # default: inherit catalog.chain_check, else strict when store_id is set
+# priority = 0                  # lower is preferred when two catalogs agree; optional
+```
+
+`name` is the catalog name bound into signatures (6.8, 6.9). `label` is a local display name and is not signed. `store_id` is that catalog's Chia DataLayer store. `base_url` is its file catalog host. Optional `priority` breaks ties when hashes agree (lower first). Additional fields may follow the existing `[file]` and `[chia]` settings per catalog where they must differ (state directory, extra mirror URLs, coin endpoints).
+
+**Backward compatibility.** If `[[catalogs]]` is missing or empty, the existing `[catalog]`, `[file]`, and `[chia]` block is the sole subscription. If `[[catalogs]]` is present, those top-level fields may still describe the first (or default) catalog, or be omitted when every catalog is listed in the array. A config that mixes them must have a single obvious default for commands that take no catalog flag (the official one if present, else the lowest priority, else the first entry). Two catalogs with the same `name` and the same `publisher_pubkey` are one subscription; the same name with a different key is an error.
+
+**Verification and state.** Each catalog has its own file-backend state and trust anchor under `file.state_dir/<catalog name>/`, or a distinct directory when two subscriptions could otherwise collide. Sync, head expiry, rollback memory, and the chain check (strict / warn / off) run independently. A failure in one catalog does not block the others. `catalog chain-status` reports every subscription, or one when `--catalog <name>` is given.
+
+**How `list`, `pull`, and `serve` choose.** Revisions are keyed by Hugging Face repo id plus commit. When two subscriptions list the same repo and commit, the client compares the manifest file lists, sizes, and SHA-256 hashes (and the torrent info hashes, which are determined by those files). If they match, it is one revision: torrents already share one info hash and one swarm (6.15), and HTTP sources from every agreeing catalog can be used as failover. `list` shows each unique revision once, with an agreement line such as `2 of 3 catalogs agree`. `pull org/name` uses any agreeing catalog as the hash authority (the default catalog if it agrees, otherwise the lowest priority agreeing one) and may take webseeds and mirrors from all of them. `serve` seeds a revision that is present on disk and still valid in at least one non-tombstoned subscription.
+
+**Conflicts.** If the same HF repo and commit appear in two catalogs with different file hashes or different info hashes, the client prints a loud warning, does not silently pick a winner, and `pull` of that revision fails unless the user names a catalog (`--catalog <name>`). This is evidence that at least one publisher is wrong or malicious; it is not resolved by majority vote in 0.2.0.
+
+**Takedowns.** Tombstones are per catalog. A revision taken down in catalog A remains pullable and seedable if catalog B still lists it and the user is subscribed to B. `serve` stops seeding a revision only when every subscribed catalog that ever listed it has tombstoned it, or when the user drops those subscriptions. The UI must say which catalog issued a takedown.
+
+**CLI.** New commands (names can be bikesheded, behavior is fixed):
+
+- `tensorseed catalog list` (subscriptions: name, label, head revision, chain status, last error)
+- `tensorseed catalog add` (write a `[[catalogs]]` entry from flags or a snippet: name, key, store id, base URL)
+- `tensorseed catalog remove <name>` (drop a subscription; does not delete verified file catalogs on disk unless asked)
+
+Existing `catalog info`, `chain-status`, `pull`, `list`, and `show` gain `--catalog <name>` where a single catalog must be named.
+
+### 18.2 Browser catalog explorer
+
+The read-only explorer designed in 8.4 ships in 0.2.0 at `explore.tensorseed.dev`, as its own Cloudflare Pages project, built with pnpm. It must work with no wallet, no Chia software, and no trust in the host that serves the page. The UI toolkit and the verification core are complementary, not a choice of one or the other.
+
+**Verification core.** Reuse the Rust checks already in the CLI, compiled to `wasm32-unknown-unknown` (`tensorseed-verify` crate split, then a thin `tensorseed-wasm` `wasm-bindgen` crate), with test vectors shared with the native tests. Do not reimplement minisign, the file catalog chain, or the chain proof in TypeScript; a second implementation would drift from the CLI.
+
+**Coin lookup.** The default endpoint is `https://api.coinset.org`. On 2026-11-13 it answered a browser-style CORS preflight (`OPTIONS` 204) and a `POST` with `Content-Type: application/json` and `Origin: https://explore.tensorseed.dev`, returning `Access-Control-Allow-Origin: *` and `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS`. The MVP calls it directly. A relay Worker is only a fallback for endpoints that lack CORS, and the UI shows which path was used.
+
+**UI.** Svelte 5, TailwindCSS, and DaisyUI, compiled at build time into static HTML, JS, and CSS. No framework runtime is loaded from another origin, and there are no third party scripts, fonts, analytics, or CDNs. Generated `wasm-bindgen` glue and the `.wasm` module are first-party build output, served from the same origin with SRI. Extract stylesheets so CSP can remain `style-src 'self'` (8.4). The page calls the WASM verification module; do not treat WASM as a substitute for the UI toolkit.
+
+**MVP features.**
+
+- Catalog view: name, revision, root, head expiry, publisher key, store id, chain status.
+- Model list: repo, license, size, takedown state; search and simple filters.
+- Revision view: files, hashes, `hf_commit`, signature status, magnets, webseeds, signed mirrors.
+- "Use another catalog" form: key, store id, base URL (8.4, 6.15).
+- When the page is given more than one catalog, show the same agreement line the CLI uses (`2 of 3 catalogs agree`) and the same loud warning on a hash conflict.
+- Modes `strict` (default), `warn`, and `off`, matching the CLI.
+
+**Out of scope for the 0.2.0 explorer.** Browser downloads (phase 2 in 8.4), WebTorrent, wallet tips, and a volunteer mirror registry.
+
+### 18.3 Selective pulls (`--include` / `--exclude`)
+
+`tensorseed pull` gains repeatable `--include GLOB` and `--exclude GLOB` arguments (gitignore-style or the same glob rules `serve` already uses; pick one and use it everywhere). Default remains "every file in the revision" except pickle files, which stay skipped unless `--allow-pickle`.
+
+**Matching.** Globs are matched against the manifest paths (HF relative paths). `--exclude` wins over `--include` when both match. If `--include` is present, only included paths are fetched. The signed manifest is still fetched in full; selection never changes hashes or the torrent info hash.
+
+**Swarm.** librqbit 9.1, the engine already in use, supports selective download through `AddTorrentOptions.only_files` (file indices) and `only_files_regex`. `tensorseed-torrent` already maps a path list to `only_files`. 0.2.0 is the CLI and HTTP-pass wiring: compute the selected paths, pass that list into the swarm session, and have the HTTP failover fetch only those files. `--swarm-only` with a selection still waits for those files only, not the rest of the torrent.
+
+**Verify and state.** `pull.json` records the selected set and the full expected list. `verify` on a partial pull passes when every selected file matches and does not fail merely because unselected files are absent, unless `--strict` is also passed. Job records in the state DB mark unselected files as skipped, not failed.
+
+**Seeding a partial revision.** By default, `serve` and `--seed-after` do not announce a revision that is missing unselected files. Advertising a hybrid torrent while files are absent would make peers ask for pieces the seeder cannot provide. A later, explicit option may seed the subset with `only_files`; that is not the default. This keeps the cost of trying one small file low without hurting the swarm.
+
+### 18.4 Linux packages (.deb and .rpm)
+
+0.2.0 ships installable packages so most Linux distributions can install Tensorseed without unpacking a tarball.
+
+**How they are built.** Packages are built from the static musl binaries already produced by `just dist` (`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`), not from a per-distro compile. One .deb and one .rpm per architecture then run on Debian, Ubuntu, Fedora, openSUSE, and their derivatives (and on CachyOS or Arch with `rpm` if someone prefers that over AUR). The recommended tool is [nfpm](https://github.com/goreleaser/nfpm): one YAML config, both package formats, designed to wrap pre-built binaries. `cargo-deb` and `cargo-generate-rpm` are a poorer fit because they expect to package a cargo-built (usually glibc) artifact. A `just dist-packages` (or equivalent) recipe on the build host writes the four packages into `dist/`, and they are added to `SHA256SUMS` and signed with the release key like the other archives.
+
+**Package contents.**
+
+- `/usr/bin/tensorseed` (the static musl binary).
+- A systemd unit for `tensorseed serve`, installed but **disabled** by default, running as a dedicated system user (`tensorseed`), with a conservative hardening set in the same spirit as `contrib/systemd/`.
+- An example config at `/etc/tensorseed/tensorseed.toml` (or `.example` plus a documented copy step), with `serve.data_dir` under a system data directory (for example `/var/lib/tensorseed`).
+- A man page and/or shell completions if they are cheap to generate from the existing clap command (preferred, not a blocker).
+
+**Follow-ups, not 0.2.0.**
+
+- An Arch AUR PKGBUILD is a natural optional follow-up (the project already documents Arch-family use). It is not required to ship 0.2.0.
+- Hosting a project apt or dnf repository so clients upgrade with `apt` or `dnf` is deferred.
+- Flatpak and AppImage are out of scope for 0.2.0. The static musl CLI is already portable, and a Flatpak sandbox is a poor fit for a long-running seeder that needs a listen port, DHT, and a large data directory. They are packaging options for Tensorseed Desktop in 0.3.0 (section 19), not for the CLI.
+
+### 18.5 Official seeder and more catalog entries
+
+An always-on official seeder gives `pull` peers from the first seconds, which is what torrent-first needs in practice. It runs `tensorseed serve` under systemd, `fetch` off unless the operator explicitly auto-follows a list, and seeds what has been pulled onto a dedicated data volume. The same machine may also serve an HTTPS webseed (`--http` behind an existing TLS reverse proxy) and `--serve-catalog`.
+
+**Host requirements (no change to published layout).** A modest x86_64 Linux host is enough: a few CPU cores, tens of GiB of RAM (the official seeder host already in use has this margin), and well over 100 GiB free for the first additional entries. The daemon itself is light compared with storing model files.
+
+**Ports.** The seeder must accept inbound BitTorrent on `torrent.listen_port` (default **6881/tcp and 6881/udp**, the UDP side for uTP). That port is not useful until it is allowed in the host firewall and, if the host is behind NAT, forwarded. An HTTP webseed is optional; if offered, it should sit behind TLS on the usual HTTPS port rather than opening a new public port. DataLayer HTTP (8575) is only needed if this host also serves the catalog `.dat` files; it is not required for a byte seeder.
+
+**Ops.** Use the packaged (or `contrib/systemd`) unit, a dedicated system user, and a data directory on the large volume. Upload caps and `serve.max_bytes` should be set. Enable the unit only after the listen port is reachable from the internet. No new secret material belongs on this host beyond an optional HF token if gated work is ever allowed (it is not in this plan).
+
+**Candidate official entries.** Sizes below are Hugging Face `usedStorage` for the whole repo (all export formats), collected from the Hub API on 2026-11-13. Every candidate is ungated, not private, and on the default open license allowlist (`apache-2.0` or `mit`). The official catalog already has `TunedChaos/ChaosNexus_Tuned_v1-GGUF`; these are additions. Together they are about 49 GB, under a 100 GB budget. Some "small" models are large on disk because the Hub copy includes many frameworks (ONNX, TensorFlow, and so on); `--include` can later fetch only safetensors if a slimmer official copy is preferred, but the first publish should keep the repo as published unless a format is refused by policy (pickle).
+
+| Repo | Kind | Why | License | Size |
+|---|---|---|---|---|
+| `google-bert/bert-base-uncased` | model | Historically important encoder, still widely used | apache-2.0 | 6.72 GB |
+| `openai-community/gpt2` | model | Historically important small GPT; widely cited | mit | 11.98 GB |
+| `sentence-transformers/all-MiniLM-L6-v2` | model | Very widely used small embedding model | apache-2.0 | 1.85 GB |
+| `BAAI/bge-small-en-v1.5` | model | Popular small embedding model, second lineage | mit | 0.90 GB |
+| `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | model | Small open chat model, easy to run | apache-2.0 | 6.60 GB |
+| `Qwen/Qwen2.5-1.5B-Instruct-GGUF` | model | Popular small GGUF quant, local-inference friendly | apache-2.0 | 14.44 GB |
+| `openai/whisper-small` | model | Widely used open speech model | apache-2.0 | 6.21 GB |
+| `openai/gsm8k` | dataset | Small, well known reasoning set (MIT) | mit | 0.01 GB |
+
+Not recommended in this first batch: EleutherAI Pythia repos as a whole (the Hub copies include many checkpoints and are hundreds of GB to more than 1 TB), and CC-BY-SA datasets such as SQuAD, Dolly, or WikiText, which need an explicit license allow because `cc-by-sa-*` is not on the default allowlist. Those can be a later policy decision.
+
+### 18.6 Effort, order, and risks
+
+Suggested order, so each step is useful on its own and early work stays cheap to try:
+
+1. **`pull --include` / `--exclude`.** Smallest user-facing change; the engine already has `only_files`. Unblocks trying one file of a large repo.
+2. **.deb and .rpm packages.** Independent of the other items; can proceed in parallel with (1). Needs nfpm in the release justfile and package contents as in 18.4.
+3. **Multi-catalog subscription.** Core 0.2.0 feature. Config, state, `list` / `pull` / `serve` / `catalog add|remove|list`, agreement and conflict behavior.
+4. **Explorer.** Depends on the `tensorseed-verify` crate split and benefits from (3) for the agreement UI. Read-only MVP as in 18.2.
+5. **Official seeder and the additional official entries.** Operations can start as soon as the listen port is reachable; publishing the new repos can proceed in parallel with (3) and (4) using 0.1.0 tools.
+
+Rough effort (one experienced implementer, after this design is approved): (1) about a week including tests; (2) several days to a week; (3) two to three weeks; (4) three to five weeks including the wasm crate split, CSP, and Pages deploy; (5) mostly operations and publishing time, plus systemd and monitoring on the seeder host. These overlap.
+
+**Risks.**
+
+- The wasm crate split is the most likely schedule risk for the explorer.
+- A second coin endpoint may lack CORS; the default path is fine, but the fallback Worker should be designed, even if it is not the default.
+- Hash conflicts between catalogs must stay noisy; a quiet default pick would hide a dishonest publisher.
+- Seeding a partial `--include` tree by accident would hurt the swarm; the default "do not announce incomplete revisions" rule is the mitigation.
+- Hub `usedStorage` can surprise (many export formats, or every training checkpoint). Measure before publish, as in the table above.
+- Packaging must wrap the musl binary as-is; do not rebuild with a distro toolchain for the .deb/.rpm if that would change the artifact the checksums cover.
+
+### 18.7 After 0.2.0
+
+The desktop GUI is not part of 0.2.0. It is 0.3.0: a separate product, Tensorseed Desktop, described in section 19.
+
+## 19. 0.3.0 plan: Tensorseed Desktop
+
+Design only in this revision; 0.3.0 comes after 0.2.0. Hugging Face models and datasets only. The cost of entry stays low: the CLI remains enough on its own, including on a headless host.
+
+**Product.** Tensorseed Desktop is a separate product from the CLI, not a second mode of the same binary. It is a [Tauri](https://tauri.app) app with a system tray, using the same Svelte 5 + TailwindCSS + DaisyUI UI as the 0.2.0 explorer. In the desktop build that UI talks to the existing Rust crates natively (no WASM), for seeding status, disk use, pause and resume, and the catalog views already in the explorer. The official always-on seeder remains a systemd service, not a tray app.
+
+**Why a separate product, not `--gui` on the CLI.** Folding the GUI into the CLI (a `--gui` flag, or one binary that always links a webview) would pull GUI libraries into every install, including servers, containers, and the static musl packages of 0.2.0. That hurts the people who only want a small CLI. Shipping a GUI that does not share state with the CLI would hurt the people who use both: two configs, two data directories, and two views of the same seeder. The better UX is both: a static, GUI-free `tensorseed` binary, plus a Desktop app that bundles or depends on that CLI and shares its config, data directories, and `serve` daemon state. One library of models, one seeder, two fronts.
+
+**`tensorseed gui`.** The CLI gains a `gui` subcommand that does not link a GUI. If Tensorseed Desktop is installed, it opens it (via a well-known desktop entry or a documented install path). If it is not, the command prints a short message and the download URL. This is the bridge for people who already have the CLI and later want a tray.
+
+**Shared state.** Desktop must use the same default config path, data directory, catalog state, and serve state as the CLI on that machine (XDG on Unix, `%APPDATA%` / `%LOCALAPPDATA%` on Windows). Starting, pausing, or changing what is seeded in the tray is visible to `tensorseed serve` / `list` / `jobs`, and the other way around. Do not invent a second layout for the GUI.
+
+**Packaging (Desktop, 0.3.0).**
+
+- Windows: an installer (MSI or NSIS).
+- Linux: .deb, .rpm, AppImage, and Flatpak. (These formats were deferred in 0.2.0 because they add little on top of the static CLI; they are the right fit once there is a GUI to bundle.)
+- The 0.2.0 CLI .deb and .rpm stay CLI-only: they must not start pulling in a webview or a tray. A Desktop package may depend on the CLI package, or bundle the CLI binary, but the CLI artifact itself stays GUI-free.
+- There is no macOS CLI build yet; a macOS Desktop build is not part of this plan until that changes.
+
+**Order.** 0.3.0 starts after the 0.2.0 explorer UI exists, so Desktop can reuse it. CLI packaging and the `gui` launcher stub can be designed earlier, but the app itself is a 0.3.0 milestone.
