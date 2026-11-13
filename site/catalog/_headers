@@ -19,6 +19,7 @@
 /tensorseed/head.json.minisig
 /tensorseed/mirrors.toml
 /tensorseed/mirrors.toml.minisig
+/tensorseed/chain-proof.json
   Cache-Control: public, max-age=60, must-revalidate
 
 /tensorseed/deltas/0000000001.json

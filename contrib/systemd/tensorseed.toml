@@ -7,9 +7,15 @@
 backend = "file"
 name = "tensorseed"
 publisher_pubkey = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd"
+chain_check = "strict"           # accept only catalog heads anchored on Chia (SPEC 6.14)
 
 [file]
 base_url = "https://catalog.tensorseed.dev/"
+
+[chia]
+catalog_store_id = "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76"
+chain_source = "light"           # verify the published chain-proof.json; no Chia software needed
+coin_api_urls = ["https://api.coinset.org"]
 
 [torrent]
 listen_port = 6881               # forward TCP and UDP on the router, or set serve.port_mapping

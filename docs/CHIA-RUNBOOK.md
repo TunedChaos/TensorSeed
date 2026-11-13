@@ -248,3 +248,44 @@ were not started for this run because the mainnet services on the same host
 use the same ports; the full publish path was tested against a fake
 DataLayer and coin API instead. Re-run the live part with
 `cargo test -p tensorseed-catalog -- --ignored live_`.
+
+## 8. Mainnet store (live since 2026-11-12)
+
+The official catalog `tensorseed` is anchored in the Chia mainnet DataLayer
+store
+
+    3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76
+
+Clients pin it in `chia.catalog_store_id` next to the publisher key; the
+shipped example configs and the website already do, with
+`catalog.chain_check = "strict"` and `https://api.coinset.org` as the coin
+endpoint.
+
+What the bootstrap cost and how long it took:
+
+| Step | Cost | Time |
+|---|---|---|
+| Funding deposit, sent with fee 0 | none for us | about 30 minutes to confirm with a nearly full mempool |
+| `catalog create` (store launcher) | 1 mojo plus a 1,000,000 mojo fee | about 1 minute |
+| `catalog anchor` (file revision 3 plus `ts/v1/file-head`, one generation) | 1,000,000 mojo fee | about 1.5 minutes |
+| `catalog resign-head` (weekly) | nothing; no chain transaction, no DataLayer or coin endpoint needed | seconds |
+
+After `catalog anchor`, `chain-proof.json` was written to every storage
+target (local publish directory and the object mirror) and has to be
+deployed with the rest of the catalog tree; on the static host it uses the
+same short cache policy as `head.json`.
+
+Checks run from a clean client state directory against the public catalog:
+`catalog chain-status` reported the file head and the chain anchor at the
+same revision and root with the store coin current, and `catalog info` and
+`list` passed in strict mode. In local tests a strict client refused a
+validly signed head from a different key that the chain does not anchor, a
+`chain-proof.json` with one altered Merkle layer, and a proof for a store
+other than the pinned one; the same rogue head was accepted only with
+`chain_check = "off"`.
+
+Weekly routine with the chain check on: `catalog resign-head`, copy the
+publish tree (including `chain-proof.json`) into the static site, deploy, and
+run `tensorseed catalog chain-status` with a clean strict client config as
+the final check. A new revision (`publish`, `harvest`, `import`) still goes
+to Chia first and needs the publishing wallet and DataLayer running.

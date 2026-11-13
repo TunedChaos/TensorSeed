@@ -18,9 +18,17 @@ Pin this publisher public key (minisign, key id CE1E0E3D543DFFB8):
 
   RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd
 
+Chia mainnet DataLayer store that anchors every catalog revision
+(SPEC 6.14; Chia is the source of truth, these files are a cache):
+
+  3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76
+
 Clients: set catalog.backend = "file", catalog.name = "tensorseed",
-catalog.publisher_pubkey to the key above, and file.base_url to this host,
-then run `tensorseed catalog info`, `list`, `show`, `pull`, and `verify`.
+catalog.publisher_pubkey to the key above, file.base_url to this host,
+chia.catalog_store_id to the store above, catalog.chain_check = "strict",
+and chia.coin_api_urls = ["https://api.coinset.org"], then run
+`tensorseed catalog chain-status`, `catalog info`, `list`, `show`, `pull`,
+and `verify`.
 Every head, delta, snapshot, and mirrors.toml is signature checked against
 that key. Model bytes are not hosted on Pages (the per-file limit is 25 MiB).
 Pull should fetch objects from https://mirror.tensorseed.dev/ first, then
@@ -33,6 +41,8 @@ Layout (SPEC 6.8, 6.12)
   <base_url>/<catalog>/deltas/<revision:010>.json (+ .minisig)
   <base_url>/<catalog>/snapshots/<revision:010>.json (+ .minisig)
   <base_url>/<catalog>/mirrors.toml               (+ mirrors.toml.minisig)
+  <base_url>/<catalog>/chain-proof.json           (Chia anchor proof, unsigned:
+                                                   every field is checked)
 
 - head.json is rewritten each revision and is re-signed before its expiry.
   Cache it briefly.

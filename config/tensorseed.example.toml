@@ -22,7 +22,7 @@ publisher_pubkey = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd"  #
 publisher_name = ""              # shown in ts/v1/catalog, written by `catalog create`
 publisher_contact = ""           # email or URL for takedown requests
 publisher_policy_url = ""
-# chain_check = "strict"         # "strict" | "warn" | "off": check the file catalog against the
+chain_check = "strict"           # "strict" | "warn" | "off": check the file catalog against the
                                  # Chia store (spec 6.14). Unset: strict when chia.catalog_store_id
                                  # is set, off (with a notice) when it is empty.
 
@@ -31,7 +31,7 @@ rpc_url = "https://localhost:8562"
 ssl_cert = "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.crt"
 ssl_key = "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.key"
 # ca_cert = "~/.chia/mainnet/config/ssl/ca/private_ca.crt"
-catalog_store_id = ""            # set by `tensorseed catalog create`
+catalog_store_id = "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76"  # official Tensorseed mainnet store; publishers of their own catalog set theirs
 fee_mojos = 0
 confirm_poll_secs = 20
 confirm_timeout_secs = 1800

@@ -25,9 +25,9 @@
         more than one place.
       </p>
       <p>
-        Catalog backends are pluggable. The first backends are a chain-free
-        signed file tree (the default for this site) and Chia DataLayer. The
-        chain can change later without changing how clients verify content.
+        Chia DataLayer is the source of truth for the catalog: every catalog
+        revision is anchored on Chia mainnet first, and the signed file tree
+        served over HTTPS is a cache that clients check against the chain.
       </p>
     </section>
 
@@ -83,11 +83,31 @@
       </p>
       <pre class="key"><code>RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd</code></pre>
       <p>
-        Set <code>catalog.backend = "file"</code>,
-        <code>catalog.name = "tensorseed"</code>, and
-        <code>file.base_url = "https://catalog.tensorseed.dev/"</code>,
-        then run <code>tensorseed catalog info</code>, <code>list</code>,
-        <code>show</code>, <code>pull</code>, and <code>verify</code>.
+        Pin the Chia mainnet DataLayer store that anchors the catalog in
+        <code>chia.catalog_store_id</code>. Clients accept a catalog head only
+        when the chain anchors it.
+      </p>
+      <pre class="key"><code>3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76</code></pre>
+      <p>Client config:</p>
+      <pre><code>[catalog]
+backend = "file"
+name = "tensorseed"
+publisher_pubkey = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd"
+chain_check = "strict"
+
+[file]
+base_url = "https://catalog.tensorseed.dev/"
+
+[chia]
+catalog_store_id = "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76"
+chain_source = "light"
+coin_api_urls = ["https://api.coinset.org"]</code></pre>
+      <p>
+        Then run <code>tensorseed catalog chain-status</code>,
+        <code>catalog info</code>, <code>list</code>, <code>show</code>,
+        <code>pull</code>, and <code>verify</code>. No Chia software is
+        needed: the client checks the published <code>chain-proof.json</code>
+        against a public Chia full node API.
       </p>
     </section>
 
