@@ -2,7 +2,17 @@
   import { formatBytes, sizeBucket } from "../format";
   import type { ListedEntry } from "../types";
 
-  let { entries }: { entries: ListedEntry[] } = $props();
+  let {
+    entries,
+    entryHref = (e: ListedEntry) => `#/entry/${e.repoType}/${e.id}`,
+    showSignature = false,
+  }: {
+    entries: ListedEntry[];
+    /** Link target for an entry; the default is the explorer's hash route. */
+    entryHref?: (e: ListedEntry) => string;
+    /** Show the per entry signature column (sources that check entries one by one). */
+    showSignature?: boolean;
+  } = $props();
 
   let query = $state("");
   let typeFilter = $state<"all" | "model" | "dataset">("all");
@@ -74,13 +84,16 @@
           <th scope="col">License</th>
           <th scope="col">Size</th>
           <th scope="col">Commit</th>
+          {#if showSignature}
+            <th scope="col">Signature</th>
+          {/if}
         </tr>
       </thead>
       <tbody>
         {#each filtered as e (e.indexKey)}
           <tr>
             <th scope="row">
-              <a class="link link-primary" href="#/entry/{e.repoType}/{e.id}">{e.id}</a>
+              <a class="link link-primary" href={entryHref(e)}>{e.id}</a>
               {#if e.index.taken_down}
                 <span class="badge badge-warning ms-2">Taken down</span>
               {/if}
@@ -89,10 +102,21 @@
             <td>{e.index.license_spdx ?? "unknown"}</td>
             <td>{formatBytes(e.index.total_bytes)}</td>
             <td><code class="text-xs">{e.index.latest_commit.slice(0, 12)}</code></td>
+            {#if showSignature}
+              <td>
+                {#if e.signature?.ok}
+                  <span class="badge badge-success">Verified</span>
+                {:else if e.signature}
+                  <span class="badge badge-error" title={e.signature.error}>Failed</span>
+                {:else}
+                  <span class="badge badge-ghost">Not checked</span>
+                {/if}
+              </td>
+            {/if}
           </tr>
         {:else}
           <tr>
-            <td colspan="5">No entries match these filters.</td>
+            <td colspan={showSignature ? 6 : 5}>No entries match these filters.</td>
           </tr>
         {/each}
       </tbody>

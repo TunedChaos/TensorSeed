@@ -2,7 +2,7 @@
 // Copyright 2026 Tuned Chaos
 
 import { OFFICIAL_CATALOG } from "./official";
-import type { CatalogConfig, TrustAnchor, VerifyMode } from "./types";
+import type { CatalogConfig, TrustAnchor, VerifyMode } from "@tensorseed/ui/types";
 
 const CATALOGS_KEY = "tensorseed.explorer.catalogs.v1";
 const ANCHORS_KEY = "tensorseed.explorer.anchors.v1";

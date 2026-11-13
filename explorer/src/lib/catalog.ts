@@ -2,7 +2,7 @@
 // Copyright 2026 Tuned Chaos
 
 import { CatalogVerifier, check_coin_rpc, initWasm, wasm_parse_manifest } from "./wasm";
-import { catalogDir, joinUrl } from "./format";
+import { catalogDir, joinUrl } from "@tensorseed/ui/format";
 import { DEFAULT_GRACE_BLOCKS, MAX_ARTIFACT_BYTES } from "./official";
 import { loadAnchors, saveAnchor } from "./storage";
 import type {
@@ -16,7 +16,7 @@ import type {
   TrustAnchor,
   VerifiedProof,
   VerifyStatus,
-} from "./types";
+} from "@tensorseed/ui/types";
 
 export type LoadedCatalog = {
   config: CatalogConfig;

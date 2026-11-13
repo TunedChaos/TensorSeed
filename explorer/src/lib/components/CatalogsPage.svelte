@@ -1,6 +1,6 @@
 <script lang="ts">
   import { officialConfig } from "../storage";
-  import type { CatalogAgreement, CatalogConfig, VerifyMode } from "../types";
+  import type { CatalogAgreement, CatalogConfig, VerifyMode } from "@tensorseed/ui/types";
 
   let {
     catalogs,

@@ -1,18 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import ThemeToggle from "./lib/components/ThemeToggle.svelte";
-  import StatusBanner from "./lib/components/StatusBanner.svelte";
-  import EntryList from "./lib/components/EntryList.svelte";
+  import ThemeToggle from "@tensorseed/ui/components/ThemeToggle.svelte";
+  import StatusBanner from "@tensorseed/ui/components/StatusBanner.svelte";
+  import EntryList from "@tensorseed/ui/components/EntryList.svelte";
   import EntryPage from "./lib/components/EntryPage.svelte";
   import CatalogsPage from "./lib/components/CatalogsPage.svelte";
   import { agreements, loadCatalog, type LoadedCatalog } from "./lib/catalog";
   import {
     loadActiveCatalog,
     loadCatalogs,
+    loadTheme,
     saveActiveCatalog,
     saveCatalogs,
+    saveTheme,
   } from "./lib/storage";
-  import type { CatalogConfig, VerifyMode } from "./lib/types";
+  import type { CatalogConfig, VerifyMode } from "@tensorseed/ui/types";
 
   type Route =
     | { page: "list" }
@@ -131,7 +133,7 @@
       <a class="btn btn-ghost btn-sm" href="#/">Catalog</a>
       <a class="btn btn-ghost btn-sm" href="#/catalogs">Catalogs</a>
       <a class="btn btn-ghost btn-sm" href="https://tensorseed.dev">tensorseed.dev</a>
-      <ThemeToggle />
+      <ThemeToggle load={loadTheme} save={saveTheme} />
     </nav>
   </header>
 

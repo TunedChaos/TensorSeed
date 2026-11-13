@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { formatBytes, pullCommand } from "../format";
+  import { formatBytes, pullCommand } from "@tensorseed/ui/format";
   import { loadManifest } from "../catalog";
   import type { CatalogVerifier } from "../wasm";
-  import type { ListedEntry } from "../types";
-  import CommandBox from "./CommandBox.svelte";
+  import type { ListedEntry } from "@tensorseed/ui/types";
+  import CommandBox from "@tensorseed/ui/components/CommandBox.svelte";
 
   let { verifier, entry }: { verifier: CatalogVerifier; entry: ListedEntry } = $props();
 

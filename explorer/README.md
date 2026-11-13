@@ -6,6 +6,11 @@ from `tensorseed-wasm`, which wraps `tensorseed-verify`. The page fetches
 catalog files from the catalog host and coin records from a public
 coinset-style API, then checks signatures and the Chia anchor locally.
 
+Shared components, types, formatting helpers, and the theme live in the
+`ui/` package (`@tensorseed/ui`, linked with `link:../ui`) so Tensorseed
+Desktop can reuse them. Explorer only code (the WASM data layer, local
+storage, the entry and catalogs pages) stays in `explorer/src`.
+
 The official catalog pin (name, publisher key, store id) is compiled into
 the page. You can add other catalogs; those settings stay in this browser.
 

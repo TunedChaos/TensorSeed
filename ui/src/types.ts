@@ -3,6 +3,8 @@
 
 export type VerifyMode = "strict" | "warn" | "off";
 
+export type ThemePreference = "light" | "dark" | "system";
+
 export type CatalogConfig = {
   name: string;
   displayName: string;
@@ -74,6 +76,8 @@ export type ListedEntry = {
   indexKey: string;
   latestKey: string;
   index: IndexEntry;
+  /** Per entry signature result, when the source checks entries one by one (Desktop). */
+  signature?: { ok: true } | { ok: false; error: string };
 };
 
 export type FileEntry = {

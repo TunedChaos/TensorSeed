@@ -1,0 +1,26 @@
+{
+  "name": "@tensorseed/ui",
+  "version": "0.3.0-dev",
+  "private": true,
+  "type": "module",
+  "description": "Svelte 5 components, types, and theme shared by the Tensorseed explorer and Tensorseed Desktop.",
+  "license": "AGPL-3.0-or-later",
+  "author": "Tuned Chaos",
+  "exports": {
+    "./components/*": {
+      "types": "./src/components/*",
+      "svelte": "./src/components/*",
+      "default": "./src/components/*"
+    },
+    "./format": "./src/format.ts",
+    "./types": "./src/types.ts",
+    "./source": "./src/source.ts",
+    "./theme.css": {
+      "style": "./src/theme.css",
+      "default": "./src/theme.css"
+    }
+  },
+  "peerDependencies": {
+    "svelte": "^5.0.0"
+  }
+}

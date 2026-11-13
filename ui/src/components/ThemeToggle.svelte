@@ -1,11 +1,15 @@
 <script lang="ts">
-  import { loadTheme, saveTheme } from "../storage";
+  import { untrack } from "svelte";
+  import type { ThemePreference } from "../types";
 
-  let preference = $state<"light" | "dark" | "system">(loadTheme());
+  // Each app keeps its own storage key, so persistence is passed in.
+  let { load, save }: { load: () => ThemePreference; save: (theme: ThemePreference) => void } = $props();
 
-  function apply(next: "light" | "dark" | "system") {
+  let preference = $state<ThemePreference>(untrack(() => load()));
+
+  function apply(next: ThemePreference) {
     preference = next;
-    saveTheme(next);
+    save(next);
     const dark =
       next === "dark" ||
       (next === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
