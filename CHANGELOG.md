@@ -12,6 +12,15 @@
   0.3.0): config, catalog access and chain check, mirror ranking, torrent
   helpers, manifest resolution, and Hugging Face login state moved out of
   the CLI. No change to CLI commands, flags, or output.
+- New `ui/` package (`@tensorseed/ui`): the explorer's entry list, status
+  banner, command box, theme toggle, types, formatting helpers, and theme,
+  shared with Tensorseed Desktop. The explorer looks and behaves the same.
+- Tensorseed Desktop scaffold (`desktop/`, Tauri 2, not released yet): a
+  window that lists the followed catalogs from the shared config and shows
+  a catalog's entries, synced through the same chain check as
+  `tensorseed list`, with each entry signature verified natively. Built
+  outside the root Cargo workspace, so CLI builds are unaffected. No
+  updater and no telemetry.
 
 ## 0.2.0
 
