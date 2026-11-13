@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tensorseed HTTP mirror</title>
+  <style>
+    body { margin: 0; background: #12140f; color: #efe8d4;
+           font-family: "Segoe UI", system-ui, sans-serif; line-height: 1.6; }
+    main { width: min(42rem, calc(100% - 2.5rem)); margin: 4rem auto; }
+    h1 { font-family: Georgia, serif; font-weight: 600; }
+    a { color: #8fb36a; }
+    a:hover { color: #d4a017; }
+    ul { padding-left: 1.2rem; }
+    li { margin: 0.15rem 0; }
+    code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }
+    pre { background: #1b2016; border: 1px solid #2d3426; padding: 1rem;
+          overflow: auto; border-radius: 0.4rem; }
+    p.note { color: #a39a82; }
+    p.code { font-family: ui-monospace, Menlo, Consolas, monospace; color: #d4a017; font-size: 2rem; margin: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tensorseed HTTP mirror</h1>
+    <p>
+      This host is an HTTP mirror and BitTorrent webseed for the official
+      Tensorseed catalog. It stores exact copies of the files listed in the
+      signed catalog so Tensorseed clients can fetch them over plain HTTP
+      when there are not enough BitTorrent peers. There is no directory
+      listing here: clients find files through the catalog.
+    </p>
+    <p>
+      You do not need to trust this mirror. Every file is checked against
+      the hashes in the catalog, which is signed with minisign and anchored
+      on the Chia blockchain.
+    </p>
+    <p>To download a model, use the Tensorseed client:</p>
+    <pre><code>tensorseed pull openai-community/gpt2</code></pre>
+    <p>Layout:</p>
+    <pre><code>/t/&lt;name&gt;@&lt;revision&gt;.torrent     torrent metadata
+/t/&lt;name&gt;@&lt;revision&gt;/&lt;file&gt;      webseed file data</code></pre>
+    <p>Torrents for the current official entries:</p>
+    <ul>
+      <li><a href="/t/TunedChaos__ChaosNexus_Tuned_v1-GGUF@b43d53d2b975.torrent"><code>TunedChaos/ChaosNexus_Tuned_v1-GGUF</code></a></li>
+      <li><a href="/t/openai__gsm8k@740312add88f.torrent"><code>openai/gsm8k</code></a></li>
+      <li><a href="/t/BAAI__bge-small-en-v1.5@5c38ec7c405e.torrent"><code>BAAI/bge-small-en-v1.5</code></a></li>
+      <li><a href="/t/sentence-transformers__all-MiniLM-L6-v2@1110a243fdf4.torrent"><code>sentence-transformers/all-MiniLM-L6-v2</code></a></li>
+      <li><a href="/t/openai__whisper-small@973afd24965f.torrent"><code>openai/whisper-small</code></a></li>
+      <li><a href="/t/TinyLlama__TinyLlama-1.1B-Chat-v1.0@fe8a4ea1ffed.torrent"><code>TinyLlama/TinyLlama-1.1B-Chat-v1.0</code></a></li>
+      <li><a href="/t/google-bert__bert-base-uncased@86b5e0934494.torrent"><code>google-bert/bert-base-uncased</code></a></li>
+      <li><a href="/t/openai-community__gpt2@607a30d783df.torrent"><code>openai-community/gpt2</code></a></li>
+      <li><a href="/t/Qwen__Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc.torrent"><code>Qwen/Qwen2.5-1.5B-Instruct-GGUF</code></a></li>
+    </ul>
+    <p>More about Tensorseed:</p>
+    <ul>
+      <li><a href="https://tensorseed.dev/">tensorseed.dev</a>: what Tensorseed is and how to install it</li>
+      <li><a href="https://explore.tensorseed.dev/">explore.tensorseed.dev</a>: browse and verify the catalog in your browser</li>
+      <li><a href="https://catalog.tensorseed.dev/">catalog.tensorseed.dev</a>: the signed catalog documents</li>
+      <li><a href="https://github.com/TunedChaos/TensorSeed">github.com/TunedChaos/TensorSeed</a>: source code (AGPL-3.0-or-later)</li>
+    </ul>
+    <p class="note">A Tuned Chaos project.</p>
+  </main>
+  <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "2ca15b3548814081a2bf4109dc015af5"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>
