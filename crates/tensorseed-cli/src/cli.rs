@@ -375,6 +375,16 @@ pub struct PullArgs {
     /// Also download pickle based files (.bin, .pt, .ckpt, ...), which can run code when loaded.
     #[arg(long)]
     pub allow_pickle: bool,
+    /// Only download files whose paths match this glob (repeatable). `*`
+    /// matches any run of characters, including `/`, the same rules
+    /// `serve` uses for repo selection. If any `--include` is given, only
+    /// matching paths are fetched.
+    #[arg(long, value_name = "GLOB")]
+    pub include: Vec<String>,
+    /// Skip files whose paths match this glob (repeatable). Wins over
+    /// `--include` when both match.
+    #[arg(long, value_name = "GLOB")]
+    pub exclude: Vec<String>,
     /// Allow gated repos with --from-hf (needs HF_TOKEN and accepted terms).
     #[arg(long)]
     pub allow_gated: bool,
@@ -602,6 +612,25 @@ mod tests {
             ])
             .is_err()
         );
+        let cli = Cli::try_parse_from([
+            "tensorseed",
+            "pull",
+            "org/name",
+            "--include",
+            "*.gguf",
+            "--include",
+            "tokenizer.json",
+            "--exclude",
+            "*.md",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Pull(a) => {
+                assert_eq!(a.include, vec!["*.gguf", "tokenizer.json"]);
+                assert_eq!(a.exclude, vec!["*.md"]);
+            }
+            _ => panic!("expected pull"),
+        }
     }
 
     #[test]

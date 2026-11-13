@@ -66,6 +66,7 @@ tensorseed pull org/name --no-swarm # skip the swarm; HTTP mirrors then the Hub
 tensorseed pull org/name --retry-dead-mirrors  # try HTTP mirrors marked dead (clears on success)
 tensorseed pull org/name --seed-after 2h   # swarm first, then seed the verified copy
 tensorseed pull org/name --swarm-only --peer host:6881   # peers only: checks that a seeder works
+tensorseed pull org/name --include '*.gguf' --exclude '*.md'  # only selected files
 
 # Publisher side:
 tensorseed catalog keygen           # minisign compatible, password protected
@@ -111,6 +112,14 @@ curl -s http://127.0.0.1:6880/health              # JSON: bytes, peers, torrents
 The full volunteer guide (ports, what to seed, optional auto-follow,
 webseeds, S3 compatible storage, systemd, health checks, and how to get a
 mirror listed) is [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md).
+
+`--include` and `--exclude` take globs against each file's path in the
+revision (`*` matches any run of characters, including `/`, the same
+rules `serve` uses). `--exclude` wins when both match. `verify` on a
+partial pull passes when every selected file matches; missing unselected
+files fail only with `--strict`. `serve` and `--seed-after` seed the
+selected subset with `only_files`, and do not announce missing files as a
+complete torrent.
 
 Pickle based files (`.bin`, `.pt`, ...) are skipped unless `--allow-pickle`, and
 gated repos are refused unless `--allow-gated`. Publishing uses a strict license

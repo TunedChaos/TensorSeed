@@ -370,6 +370,101 @@ async fn pull_from_signed_catalog_then_verify_and_detect_tampering() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pull_include_exclude_then_verify_partial() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let fx = Fixture::new();
+    let m = manifest(&fx, "org/tiny", C, &format!("{}/t/", server.uri()));
+    let pubdir = tmp.path().join("srv");
+    publish_catalog(&pubdir, &tmp.path().join("pstate"), &m, false).await;
+    mount_dir(&server, &pubdir).await;
+    let name = m.content_name();
+    for p in ["config.json", "model.safetensors", "pytorch_model.bin"] {
+        serve(&server, &format!("/t/{name}/{p}"), fx.get(p)).await;
+    }
+    let cfg = write_config(
+        tmp.path(),
+        &server.uri(),
+        &key().public_key().to_base64(),
+        "",
+    );
+
+    let o = run(
+        &cfg,
+        &["pull", "org/tiny", "--include", "*.safetensors"],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let s = stdout(&o);
+    assert!(s.contains("skip   config.json (unselected)"), "{s}");
+    assert!(s.contains("skip   pytorch_model.bin (unselected)"), "{s}");
+    assert!(s.contains("ok     model.safetensors"), "{s}");
+    let dir = tmp.path().join("dl/org/tiny");
+    assert!(dir.join("model.safetensors").exists());
+    assert!(!dir.join("config.json").exists());
+    assert!(!dir.join("pytorch_model.bin").exists());
+    let rec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join(".tensorseed/pull.json")).unwrap()).unwrap();
+    let skipped = rec["skipped"].as_array().unwrap();
+    assert!(skipped.iter().any(|v| v == "config.json"), "{rec}");
+    assert!(skipped.iter().any(|v| v == "pytorch_model.bin"), "{rec}");
+    let unselected = rec["unselected"].as_array().unwrap();
+    assert!(unselected.iter().any(|v| v == "config.json"), "{rec}");
+    assert!(unselected.iter().any(|v| v == "pytorch_model.bin"), "{rec}");
+    assert_eq!(rec["files"].as_array().unwrap().len(), 3);
+
+    let o = run(&cfg, &["verify", dir.to_str().unwrap()], &[]).await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert!(stdout(&o).contains("3 files checked, 3 passed, 0 failed"));
+
+    let o = run(&cfg, &["verify", "--strict", dir.to_str().unwrap()], &[]).await;
+    assert_eq!(code(&o), 3, "strict counts unselected files as missing");
+
+    let other = tmp.path().join("partial-exclude");
+    let o = run(
+        &cfg,
+        &[
+            "pull",
+            "org/tiny",
+            "--exclude",
+            "*.json",
+            "--out",
+            other.to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let s = stdout(&o);
+    assert!(s.contains("skip   config.json (unselected)"), "{s}");
+    assert!(s.contains("skip   pytorch_model.bin (pickle"), "{s}");
+    assert!(s.contains("ok     model.safetensors"), "{s}");
+    assert!(other.join("model.safetensors").exists());
+    assert!(!other.join("config.json").exists());
+
+    let o = run(
+        &cfg,
+        &[
+            "pull",
+            "org/tiny",
+            "--include",
+            "*.gguf",
+            "--out",
+            tmp.path().join("none").to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("no files matched --include/--exclude"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn tombstoned_repo_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;

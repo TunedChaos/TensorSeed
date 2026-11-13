@@ -56,6 +56,8 @@ pub enum FileStatus {
     Missing,
     /// Pickle file absent, and absence was allowed (skipped by policy).
     SkippedPickle,
+    /// File absent, and absence was allowed (unselected or otherwise skipped).
+    Skipped,
     /// Size differs.
     SizeMismatch {
         /// Expected size.
@@ -77,7 +79,7 @@ pub enum FileStatus {
 impl FileStatus {
     /// True for outcomes that do not fail verification.
     pub fn is_pass(&self) -> bool {
-        matches!(self, Self::Ok | Self::SkippedPickle)
+        matches!(self, Self::Ok | Self::SkippedPickle | Self::Skipped)
     }
 
     /// Short label for reports.
@@ -86,6 +88,7 @@ impl FileStatus {
             Self::Ok => "ok",
             Self::Missing => "MISSING",
             Self::SkippedPickle => "skipped (pickle)",
+            Self::Skipped => "skipped",
             Self::SizeMismatch { .. } => "SIZE MISMATCH",
             Self::HashMismatch { .. } => "HASH MISMATCH",
             Self::Error(_) => "ERROR",
@@ -124,10 +127,12 @@ impl VerifyReport {
 }
 
 /// Options for [`verify_dir`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct VerifyOptions {
     /// Treat absent pickle files as skipped instead of missing.
     pub allow_missing_pickle: bool,
+    /// Absent files whose path is in this list are reported as [`FileStatus::Skipped`].
+    pub allow_missing: Vec<String>,
     /// Hashing threads (at least 1).
     pub threads: usize,
 }
@@ -136,6 +141,7 @@ impl Default for VerifyOptions {
     fn default() -> Self {
         Self {
             allow_missing_pickle: true,
+            allow_missing: Vec::new(),
             threads: 4,
         }
     }
@@ -243,6 +249,10 @@ pub fn verify_dir(
                     }
                     let mut st = verify_file(&paths[i], sorted[i]);
                     if st == FileStatus::Missing
+                        && opts.allow_missing.iter().any(|p| p == &sorted[i].path)
+                    {
+                        st = FileStatus::Skipped;
+                    } else if st == FileStatus::Missing
                         && sorted[i].pickle_risk
                         && opts.allow_missing_pickle
                     {
@@ -387,9 +397,26 @@ mod tests {
 
         let strict = VerifyOptions {
             allow_missing_pickle: false,
+            allow_missing: Vec::new(),
             threads: 1,
         };
         let r = verify_dir(d, &expected[..1], strict).unwrap();
         assert!(r.passed());
+
+        let allow = VerifyOptions {
+            allow_missing_pickle: false,
+            allow_missing: vec!["missing.gguf".into()],
+            threads: 1,
+        };
+        let r = verify_dir(d, &expected, allow).unwrap();
+        assert_eq!(by_status(&r)["missing.gguf"], &FileStatus::Skipped);
+        assert_eq!(by_status(&r)["pytorch_model.bin"], &FileStatus::Missing);
+    }
+
+    fn by_status(r: &VerifyReport) -> std::collections::BTreeMap<&str, &FileStatus> {
+        r.files
+            .iter()
+            .map(|f| (f.path.as_str(), &f.status))
+            .collect()
     }
 }

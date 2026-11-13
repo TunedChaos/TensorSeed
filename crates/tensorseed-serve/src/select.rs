@@ -52,6 +52,17 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     pi == p.len()
 }
 
+/// Whether a manifest path is selected by `--include` / `--exclude`.
+///
+/// `--exclude` wins when both match. If `include` is empty, every path is
+/// included unless it is excluded. Globs use [`glob_match`].
+pub fn path_selected(path: &str, include: &[String], exclude: &[String]) -> bool {
+    if exclude.iter().any(|g| glob_match(g, path)) {
+        return false;
+    }
+    include.is_empty() || include.iter().any(|g| glob_match(g, path))
+}
+
 /// One catalog revision that could be seeded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Candidate {
@@ -256,5 +267,27 @@ mod tests {
                 .plan(vec![c("a/b", "1", 1, true)])
                 .is_empty()
         );
+    }
+    #[test]
+    fn path_selected_include_exclude() {
+        let inc = |s: &str| vec![s.to_string()];
+        assert!(path_selected("a/b.bin", &[], &[]));
+        assert!(path_selected(
+            "model.safetensors",
+            &inc("*.safetensors"),
+            &[]
+        ));
+        assert!(path_selected("onnx/model.onnx", &inc("onnx/*"), &[]));
+        assert!(!path_selected("config.json", &inc("*.safetensors"), &[]));
+        assert!(!path_selected(
+            "model.safetensors",
+            &inc("*.safetensors"),
+            &inc("*.safetensors")
+        ));
+        assert!(!path_selected("pytorch_model.bin", &[], &inc("*.bin")));
+        assert!(path_selected("config.json", &[], &inc("*.bin")));
+        assert!(path_selected("Q4_K_M.gguf", &inc("*.gguf"), &inc("*.bin")));
+        // exclude wins even when include would also match
+        assert!(!path_selected("w/x.bin", &inc("w/*"), &inc("*.bin")));
     }
 }

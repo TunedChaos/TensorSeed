@@ -1355,7 +1355,10 @@ impl Daemon {
 }
 
 /// Files of a downloaded revision to seed: everything but what `pull`
-/// skipped (pickle formats), or `None` for all.
+/// skipped (pickle formats and unselected `--include` / `--exclude`
+/// paths), or `None` for all. The seeder passes this list as
+/// `only_files`, so a partial pull is announced as that subset, not as
+/// a complete torrent with missing files.
 fn skipped_only(dir: &Path, t: &Metainfo) -> Option<Vec<String>> {
     let skipped: Vec<String> = std::fs::read(dir.join(META_DIR).join("pull.json"))
         .ok()
@@ -1403,6 +1406,8 @@ async fn fetch_revision(
         retry_dead_mirrors: false,
         jobs: None,
         allow_pickle: false,
+        include: Vec::new(),
+        exclude: Vec::new(),
         allow_gated: false,
         allow_license: Vec::new(),
         no_wait: true,

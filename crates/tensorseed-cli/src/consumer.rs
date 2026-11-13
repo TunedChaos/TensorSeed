@@ -61,8 +61,13 @@ pub struct PullRecord {
     pub pulled_at: String,
     /// Every file of the revision, including skipped ones.
     pub files: Vec<PullFile>,
-    /// Files deliberately not downloaded (pickle formats).
+    /// Files deliberately not downloaded (pickle formats and unselected paths).
     pub skipped: Vec<String>,
+    /// Files not downloaded because they did not match `--include` / `--exclude`.
+    /// Also listed in [`Self::skipped`] so `serve` can seed the selected
+    /// subset with `only_files`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unselected: Vec<String>,
 }
 
 /// One expected file in a [`PullRecord`].
@@ -348,6 +353,53 @@ fn state_db(cfg: &Config) -> anyhow::Result<Arc<StateDb>> {
     ))
 }
 
+/// Skip reason for a file, or `None` to download it.
+///
+/// `--exclude` wins over `--include`. Unselected paths are skipped before
+/// the pickle policy, so a path that is both unselected and a pickle file
+/// is recorded as unselected.
+fn skip_reason(ef: &ExpectedFile, args: &PullArgs, allow_pickle: bool) -> Option<&'static str> {
+    if !tensorseed_serve::select::path_selected(&ef.path, &args.include, &args.exclude) {
+        return Some("unselected");
+    }
+    if ef.pickle_risk && !allow_pickle {
+        return Some("pickle");
+    }
+    None
+}
+
+/// Fail when `--include` / `--exclude` matched no files in the revision.
+fn reject_empty_selection(
+    expected: &[ExpectedFile],
+    args: &PullArgs,
+    repo_id: &str,
+) -> anyhow::Result<()> {
+    if args.include.is_empty() && args.exclude.is_empty() {
+        return Ok(());
+    }
+    if expected
+        .iter()
+        .all(|f| !tensorseed_serve::select::path_selected(&f.path, &args.include, &args.exclude))
+    {
+        bail!("no files matched --include/--exclude for {repo_id}");
+    }
+    Ok(())
+}
+
+/// Paths recorded as skipped or unselected in a pull, if one exists.
+fn allow_missing_from(record: &Option<PullRecord>) -> Vec<String> {
+    let Some(r) = record else {
+        return Vec::new();
+    };
+    let mut v = r.skipped.clone();
+    for p in &r.unselected {
+        if !v.iter().any(|s| s == p) {
+            v.push(p.clone());
+        }
+    }
+    v
+}
+
 /// `tensorseed pull`.
 pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
     let use_swarm = swarm_wanted(cfg, args);
@@ -370,6 +422,7 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
     let mut expected: Vec<ExpectedFile> = Vec::new();
     let mut files: Vec<FileJob> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut unselected: Vec<String> = Vec::new();
     let commit: String;
     let source: &str;
     let mut signed = false;
@@ -424,8 +477,11 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
                 digest: e.expected_digest()?,
                 pickle_risk: FileEntry::path_has_pickle_risk(&e.path),
             };
-            if ef.pickle_risk && !policy.allow_pickle_formats {
+            if let Some(reason) = skip_reason(&ef, args, policy.allow_pickle_formats) {
                 skipped.push(ef.path.clone());
+                if reason == "unselected" {
+                    unselected.push(ef.path.clone());
+                }
             } else {
                 files.push(FileJob {
                     path: ef.path.clone(),
@@ -436,6 +492,7 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             }
             expected.push(ef);
         }
+        reject_empty_selection(&expected, args, &repo.id)?;
     } else {
         let resolved = if let Some(p) = &args.manifest_file {
             source = "manifest-file";
@@ -493,8 +550,11 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         }
         for f in &m.files {
             let ef = ExpectedFile::from_manifest(f);
-            if ef.pickle_risk && !args.allow_pickle {
+            if let Some(reason) = skip_reason(&ef, args, args.allow_pickle) {
                 skipped.push(ef.path.clone());
+                if reason == "unselected" {
+                    unselected.push(ef.path.clone());
+                }
             } else {
                 let mut sources: Vec<Source> = if args.swarm_only {
                     Vec::new()
@@ -524,6 +584,7 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
             }
             expected.push(ef);
         }
+        reject_empty_selection(&expected, args, &repo.id)?;
         manifest_raw = Some(resolved.raw);
     }
 
@@ -542,7 +603,13 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         total,
         out.display()
     );
+    for s in &unselected {
+        println!("skip   {s} (unselected)");
+    }
     for s in &skipped {
+        if unselected.iter().any(|u| u == s) {
+            continue;
+        }
         println!("skip   {s} (pickle format; --allow-pickle to include)");
     }
     // Files complete on disk before the swarm ran; anything else the HTTP
@@ -630,6 +697,7 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         pulled_at: tensorseed_core::time::now_rfc3339(),
         files: expected.iter().map(PullFile::from_expected).collect(),
         skipped,
+        unselected,
     };
     if let Some(t) = &torrent {
         write_meta(&out, crate::torrents::PULLED_TORRENT, &t.bytes)?;
@@ -927,6 +995,11 @@ pub async fn verify(cfg: &Config, args: &VerifyArgs) -> anyhow::Result<ExitCode>
         &expected,
         VerifyOptions {
             allow_missing_pickle: !args.strict,
+            allow_missing: if args.strict {
+                Vec::new()
+            } else {
+                allow_missing_from(&record)
+            },
             threads: args.threads,
         },
     )?;

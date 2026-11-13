@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### 0.2.0
+
+#### Added
+
+- `tensorseed pull --include GLOB` and `--exclude GLOB` (repeatable) select
+  files by path. Globs use the same rules as `serve` (`*` matches any
+  run of characters, including `/`). `--exclude` wins when both match.
+  The swarm uses librqbit `only_files`; HTTP mirrors and the Hub use the
+  same filter. `pull.json` records the full file list plus `skipped` and
+  `unselected`. `verify` on a partial pull passes when selected files
+  match; missing unselected files fail only with `--strict`. `serve` and
+  `--seed-after` seed the selected subset with `only_files`, and do not
+  announce missing files as a complete torrent.
+
 ## 0.1.0
 
 Tensorseed mirrors open Hugging Face models and datasets for preservation.

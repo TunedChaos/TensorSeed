@@ -1203,15 +1203,15 @@ The read-only explorer designed in 8.4 ships in 0.2.0 at `explore.tensorseed.dev
 
 ### 18.3 Selective pulls (`--include` / `--exclude`)
 
-`tensorseed pull` gains repeatable `--include GLOB` and `--exclude GLOB` arguments (gitignore-style or the same glob rules `serve` already uses; pick one and use it everywhere). Default remains "every file in the revision" except pickle files, which stay skipped unless `--allow-pickle`.
+`tensorseed pull` has repeatable `--include GLOB` and `--exclude GLOB` arguments. Globs use the same rules `serve` already uses for repo selection (`*` matches any run of characters, including `/`; `?` matches one character; matching is case sensitive). Default remains "every file in the revision" except pickle files, which stay skipped unless `--allow-pickle`.
 
 **Matching.** Globs are matched against the manifest paths (HF relative paths). `--exclude` wins over `--include` when both match. If `--include` is present, only included paths are fetched. The signed manifest is still fetched in full; selection never changes hashes or the torrent info hash.
 
 **Swarm.** librqbit 9.1, the engine already in use, supports selective download through `AddTorrentOptions.only_files` (file indices) and `only_files_regex`. `tensorseed-torrent` already maps a path list to `only_files`. 0.2.0 is the CLI and HTTP-pass wiring: compute the selected paths, pass that list into the swarm session, and have the HTTP failover fetch only those files. `--swarm-only` with a selection still waits for those files only, not the rest of the torrent.
 
-**Verify and state.** `pull.json` records the selected set and the full expected list. `verify` on a partial pull passes when every selected file matches and does not fail merely because unselected files are absent, unless `--strict` is also passed. Job records in the state DB mark unselected files as skipped, not failed.
+**Verify and state.** `pull.json` records the full expected list, a `skipped` list (pickle files and unselected paths), and an `unselected` list for the include/exclude set. `verify` on a partial pull passes when every selected file matches and does not fail merely because unselected files are absent, unless `--strict` is also passed. Unselected files are never added to the HTTP job list (skipped, not failed).
 
-**Seeding a partial revision.** By default, `serve` and `--seed-after` do not announce a revision that is missing unselected files. Advertising a hybrid torrent while files are absent would make peers ask for pieces the seeder cannot provide. A later, explicit option may seed the subset with `only_files`; that is not the default. This keeps the cost of trying one small file low without hurting the swarm.
+**Seeding a partial revision.** `serve` and `--seed-after` seed the selected subset with librqbit `only_files`, the same way skipped pickle files already work. They do not announce missing files as a complete torrent, so peers are not asked for pieces the seeder cannot provide.
 
 ### 18.4 Linux packages (.deb and .rpm)
 

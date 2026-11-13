@@ -115,9 +115,9 @@ is reachable.
       18.2): Svelte 5 + TailwindCSS + DaisyUI (build-time, self-hosted,
       pnpm); wasm verification core from the existing Rust crates; no
       third party scripts; "use another catalog" form; agreement UI
-- [ ] `pull --include` / `--exclude` globs, using librqbit `only_files`;
-      `verify` accepts a recorded partial pull; do not seed an incomplete
-      revision by default
+- [x] `pull --include` / `--exclude` globs, using librqbit `only_files`;
+      `verify` accepts a recorded partial pull; `serve` and `--seed-after`
+      seed the selected subset with `only_files`
 - [ ] .deb and .rpm for x86_64 and aarch64, built with nfpm from the
       static musl binaries; systemd unit disabled by default; example
       config under `/etc/tensorseed/`; packages listed in SHA256SUMS
