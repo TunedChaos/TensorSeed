@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 10)
+# Tensorseed: Project Specification (Revision 11)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 > Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+
+Revision 11 changes: design for a browser catalog explorer (8.4, not built): a static Pages app that verifies the catalog and its Chia anchor in the browser by compiling the existing verification code to WebAssembly, with the same strict, warn, and off modes and trust model as 6.14; views for models, revisions, distribution, chain status, and best effort seed health; optional in browser downloads (phase 2) and deferred wallet, registry, and voting ideas (phase 3).
 
 Revision 10 changes: Chia is the source of truth for the file catalog (6.14). Each Chia generation carries a signed `ts/v1/file-head` anchor naming the file catalog revision and root; the publisher writes to Chia first and only uploads the file catalog, with a `chain-proof.json` proof of inclusion, after the generation confirmed. Clients verify the proof offline, look the store singleton coin up read only on full node RPC compatible endpoints (no wallet or full node needed), and only accept a file head the chain anchors. New `catalog.chain_check = "strict" | "warn" | "off"` (strict by default once `chia.catalog_store_id` is set, off otherwise), `chia.chain_source`, `chia.coin_api_urls`, and `chia.chain_grace_blocks`; new commands `catalog anchor` and `catalog chain-status`. Head re-signs and snapshots need no chain transaction (4, 6.3, 6.13, 6.14, 8.1, 9, 10).
 
@@ -618,6 +620,79 @@ Implemented (Revision 9). `tensorseed serve [--for DURATION] [--serve-catalog] [
 `tensorseed seed` stays the simple one shot seeder: it seeds every revision under `storage.local_dir`, every enabled `provider = "torrent"` storage target `dir`, or the directories passed with `--dir`, in place, honors `torrent.upload_limit_kbps`, `dht`, and `lsd`, and runs until `--for <duration>` or Ctrl-C. The `[seed]` config block is superseded by `[serve]` and ignored.
 
 ---
+
+### 8.4 Browser catalog explorer (design, not built)
+
+Status: design only. Nothing in this section is implemented, and nothing here changes the formats or the CLI.
+
+**Goal.** A static web app that lets anyone browse the catalog and check it in the browser, with no wallet, no Chia software, and no trust in the host that serves the page. It is the browser equivalent of a strict `tensorseed list` / `show` / `catalog chain-status`.
+
+**Hosting.** Cloudflare Pages on the free tier (static files only: HTML, JS, CSS, one `.wasm` module), next to the existing `tensorseed` and `tensorseed-catalog` projects, for example at `explore.tensorseed.dev`. The host is just a cache like every other catalog mirror (6.14): every signature and chain check runs client side, so a compromised host can serve a broken page but cannot make a forged catalog verify (see Security below for the bootstrap limit). Anyone can serve the same build from any static host or open it from a local file.
+
+**Verification core in WebAssembly.** The checks reuse the Rust code that clients already run, compiled to `wasm32-unknown-unknown` with `wasm-bindgen`:
+
+- minisign entry verification (`tensorseed_catalog::minisign`, `signed`): Ed25519 with BLAKE2b prehash, trusted comment context checks.
+- File catalog chain (`tensorseed_catalog::file::ChainState`): head checks, delta application, snapshot loading, state hash and root recomputation, rollback and fork detection, head expiry.
+- Chain proof (`tensorseed_catalog::anchor`): `ts/v1/file-head` anchor verification, DataLayer Merkle path folding to the root, store singleton puzzle hash and coin id computation, and the grace window logic.
+- Manifest validation and canonical JSON (`tensorseed-core`).
+
+Crate split needed first. `tensorseed-core` is already almost portable (serde, sha1, sha2, hex), but its `verify` module uses the filesystem and threads; it moves behind a default `fs` feature. `tensorseed-catalog` mixes pure logic with I/O (`reqwest`, `tokio`, `object_store`, `scrypt`, `getrandom`); the pure parts (`minisign` verify only, `signed`, the `ChainState` part of `file`, the proof and puzzle parts of `anchor`, `mirrors` parsing) move into a new `tensorseed-verify` crate with no async runtime, no network, and no OS randomness (verification needs none; `getrandom` with the `wasm_js` backend only if key generation is ever wanted in the browser, which it is not). `tensorseed-catalog` then re-exports from it, so the CLI is unchanged. A thin `tensorseed-wasm` crate (`cdylib`, `wasm-bindgen`) exposes a small API: `verify_head`, `apply_delta`, `load_snapshot`, `verify_chain_proof`, `coin_id`, `check_coin_record`, `parse_manifest`. Builds use `wasm-pack` or `wasm-bindgen-cli` with `wasm-opt`; a CI job builds the module so portability regressions are caught early. `tensorseed-torrent` (bencode and metainfo parsing, no `engine` feature) can follow later to show info hashes and check `.torrent` files against manifests.
+
+**Coin lookup from the browser.** The only network trust is the same as 6.14: read only full node RPC compatible endpoints answer whether the store coin exists and whether it is spent (`get_coin_record_by_name`). The explorer calls them with `fetch`.
+
+- CORS: an endpoint must answer cross origin `POST` with `Content-Type: application/json`, which needs a preflight. Endpoints that do not send `Access-Control-Allow-Origin` cannot be used directly; the fallback is a tiny stateless relay (a Cloudflare Worker on the free tier) that forwards only `get_coin_record_by_name` and `get_blockchain_state` to a fixed allowlist. A relay is trusted no more than the endpoint behind it, and the UI shows which path was used.
+- Endpoints: a configurable list, defaulting to the same values as `chia.coin_api_urls` (today `https://api.coinset.org`), with room for more public endpoints and a user supplied URL (for example a personal full node behind an HTTPS proxy with CORS enabled). Testnet endpoints (for example `https://testnet11.api.coinset.org`) are only used for testnet stores.
+- Modes: `strict` (default), `warn`, and `off`, with exactly the CLI semantics. Strict refuses to show a head the chain does not anchor; warn shows it with a banner; off skips the coin lookup and says so. All endpoints that answer must agree; unreachable endpoints are skipped, and none answering is reported as "chain unreachable" (strict then shows the last verified state from local storage, clearly marked as such).
+- The highest accepted revision and root are kept in `localStorage` (or IndexedDB), so the browser refuses rollbacks across visits like the CLI does.
+
+**Pinned values.** The publisher key and store id are compiled into the page and shown on every view; a "use another catalog" form accepts a different key, store id, and base URL for third party catalogs.
+
+**Views.**
+
+- Catalog: name, revision, root, head expiry, publisher key, store id, chain status (anchored revision, coin id, spent or unspent, which endpoints answered, grace window state).
+- Model list: repos with latest revision, license, size, and takedown state; search and filters by org, type, and license class.
+- Revision: the manifest with every file (path, size, SHA-256, pickle flag), license and attribution text, the `hf_commit` with a link to that commit on the Hub, the publication time, and the signature status.
+- Distribution: torrent file links, magnet links, info hashes (v1 and v2), webseeds from the manifest, and mirrors from the signed `mirrors.toml`, each with a reachability probe (HEAD request) where CORS allows.
+- Seed health, where available, labelled as unverified and best effort: optional public health summaries that volunteers choose to expose (a reduced `ts.serve.health/1` behind their own HTTPS proxy, opted in through `mirrors.toml`), and tracker scrape counts through an HTTPS tracker or the relay. Browsers cannot speak UDP or the DHT, so swarm size seen from the browser is a lower bound, and health numbers are self reported.
+
+**Phase 2 (optional): download in the browser.** WebTorrent plus HTTP webseeds and mirrors, verifying every file against the manifest SHA-256 before offering it for saving.
+
+- Browser peers only speak WebRTC; native clients (librqbit, libtorrent) speak TCP and uTP. Unless enough hybrid clients join the WebRTC swarm, HTTP webseeds and the R2 or volunteer mirrors carry most bytes, and the explorer must work with zero WebRTC peers.
+- Large files: streaming to disk with the File System Access API (`showSaveFilePicker`, writable streams) works in Chromium based browsers; Firefox and Safari lack it, so the fallback is the origin private file system or a Service Worker streamed download, both with quota and size limits that rule out multi gigabyte files on some browsers. Hashing runs in a Web Worker in chunks (SHA-256 from the WASM module) so the page stays responsive; a file is only marked good when its hash matches.
+- Resume needs persisted partial state per file; the first version may restart failed files.
+
+**Phase 3 ideas (explicitly deferred).**
+
+- WalletConnect with Sage for optional tips to seeders. Risks: wallet connection phishing look alikes, tip addresses that must themselves be signed (for example in `mirrors.toml`), tax and money transmission questions, and incentives that reward claimed rather than measured seeding.
+- A volunteer mirror registry as per volunteer DataLayer stores, aggregated by the explorer. Risks: spam and sybil entries, cost and complexity for volunteers (an XCH balance and a wallet), and liveness claims nobody verifies; the signed publisher `mirrors.toml` stays authoritative.
+- Curation voting (what to mirror next). Risks: sybil voting, brigading, and legal exposure for content picked by vote; the publisher remains responsible for what the catalog lists.
+
+**Non goals.** Storing model bytes on chain; paid downloads or any paywall; accounts or tracking; publishing from the browser (publisher keys never enter a web page).
+
+**Security notes.**
+
+- Strict Content Security Policy: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src` limited to the catalog base URLs, mirrors, configured coin endpoints, and the relay; `frame-ancestors 'none'`; `base-uri 'none'`; `form-action 'none'`. No inline scripts.
+- No third party scripts, fonts, analytics, or CDNs; all JS and WASM is served from the same origin with Subresource Integrity hashes in the HTML, and the build is reproducible so anyone can compare hashes with a local build.
+- Bootstrap limit: whoever serves the page controls the code that runs. SRI and reproducible builds let users check a deployment, and the page can be run from a local copy or any other host. The catalog data itself never needs to be trusted from the host.
+- Everything fetched (catalog files, `mirrors.toml`, torrents, coin records, health) is treated as untrusted input: size limits as in the CLI, verified before display, and rendered as text (no HTML from data).
+
+**Milestones.**
+
+1. Crate split: `tensorseed-verify` without I/O, `fs` feature in `tensorseed-core`, CLI unchanged, CI builds `wasm32-unknown-unknown`.
+2. `tensorseed-wasm` bindings and test vectors shared with the native tests (same fixtures, same results).
+3. Read only explorer: catalog, model list, revision, and distribution views with strict chain checking; CSP, SRI, reproducible build; deploy to Pages.
+4. Endpoint list UI, relay Worker if needed, rollback memory, seed health (opt in).
+5. Phase 2 prototype: verified browser download from webseeds and mirrors, WebTorrent as an extra source.
+
+**Tooling.** JS tooling uses pnpm (`pnpm create vite` or plain ES modules, `pnpm dlx wrangler pages deploy`). A framework is optional; the first version can be plain TypeScript with no runtime dependencies besides the generated `wasm-bindgen` glue.
+
+**Open questions.**
+
+1. Which public coin endpoints send CORS headers today, and is a relay Worker acceptable as the default path?
+2. Framework or no framework (plain TypeScript vs. Svelte or similar) given the no third party scripts rule and the bundle size budget?
+3. Should seed health be opt in through `mirrors.toml`, or a separate signed volunteer list?
+4. Is WebTorrent worth shipping in phase 2 given that most bytes will come over HTTP, or should phase 2 be webseeds and mirrors only?
+5. Host the explorer under `tensorseed.dev` (same project) or its own Pages project and subdomain?
 
 ## 9. CLI
 
