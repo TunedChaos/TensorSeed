@@ -99,13 +99,16 @@
     <p class="text-xs opacity-70">Commercial serving marks come from the license id only and are not legal advice. Read the license before selling access to a model.</p>
   {/if}
   <div class="overflow-x-auto">
-    <table class="table table-zebra">
+    <table class="table table-zebra [&_td]:align-middle [&_th]:align-middle">
       <thead>
         <tr>
           <th scope="col">Repository</th>
           <th scope="col">Type</th>
           <th scope="col">License</th>
-          <th scope="col">Size</th>
+          {#if hasMarks}
+            <th scope="col">Commercial serving</th>
+          {/if}
+          <th scope="col" class="text-right">Size</th>
           <th scope="col">Commit</th>
           {#if showSignature}
             <th scope="col">Signature</th>
@@ -122,13 +125,15 @@
               {/if}
             </th>
             <td>{e.repoType}</td>
-            <td>
-              {e.index.license_spdx ?? "unknown"}
-              {#if e.commercial}
-                <CommercialBadge assessment={e.commercial} />
-              {/if}
-            </td>
-            <td>{formatBytes(e.index.total_bytes)}</td>
+            <td>{e.index.license_spdx ?? "unknown"}</td>
+            {#if hasMarks}
+              <td>
+                {#if e.commercial}
+                  <CommercialBadge assessment={e.commercial} compact />
+                {/if}
+              </td>
+            {/if}
+            <td class="text-right tabular-nums whitespace-nowrap">{formatBytes(e.index.total_bytes)}</td>
             <td><code class="text-xs">{e.index.latest_commit.slice(0, 12)}</code></td>
             {#if showSignature}
               <td>
@@ -144,7 +149,7 @@
           </tr>
         {:else}
           <tr>
-            <td colspan={showSignature ? 6 : 5}>No entries match these filters.</td>
+            <td colspan={5 + (showSignature ? 1 : 0) + (hasMarks ? 1 : 0)}>No entries match these filters.</td>
           </tr>
         {/each}
       </tbody>

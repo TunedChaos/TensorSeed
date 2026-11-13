@@ -936,6 +936,7 @@ async fn list_one(
     let b = backend.as_dyn();
     let prefix = index_prefix();
     let mut rows = Vec::new();
+    let mut table: Vec<Vec<String>> = Vec::new();
     for key in b.keys(&id, &prefix).await? {
         let rest = &key[prefix.len()..];
         if !opts.keeps(rest) {
@@ -959,17 +960,28 @@ async fn list_one(
             } else {
                 String::new()
             };
-            println!(
-                "{rest}  {}  {} bytes  {}  serving:{}{}{agreement}",
-                ix.latest_commit.get(..12).unwrap_or(&ix.latest_commit),
-                ix.total_bytes,
-                ix.license_spdx.as_deref().unwrap_or("license unknown"),
-                a.value,
-                if ix.taken_down { "  [taken down]" } else { "" }
+            let tail = format!(
+                "{}{agreement}",
+                if ix.taken_down { "[taken down]" } else { "" }
             );
+            table.push(vec![
+                rest.to_string(),
+                ix.latest_commit
+                    .get(..12)
+                    .unwrap_or(&ix.latest_commit)
+                    .to_string(),
+                format!("{} bytes", ix.total_bytes),
+                ix.license_spdx
+                    .as_deref()
+                    .unwrap_or("license unknown")
+                    .to_string(),
+                format!("serving:{}", a.value),
+                tail.trim_start().to_string(),
+            ]);
         }
         rows.push(ListRow::new(rest, &ix.latest_commit, &ix, a));
     }
+    print_aligned(&table);
     if opts.json {
         print_list_json(&rows)?;
     }
@@ -1059,6 +1071,7 @@ async fn list_across(
         groups.entry((id, commit)).or_default().push((sub, ix, fp));
     }
     let mut out = Vec::new();
+    let mut table: Vec<Vec<String>> = Vec::new();
     for ((rest, commit), hits) in groups {
         let listed = hits.len();
         let mut fps: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -1080,15 +1093,22 @@ async fn list_across(
             ""
         };
         if !opts.json {
-            println!(
-                "{rest}  {}  {} bytes  {}  serving:{}{}  {}",
-                commit.get(..12).unwrap_or(&commit),
-                ix.total_bytes,
-                ix.license_spdx.as_deref().unwrap_or("license unknown"),
-                a.value,
-                down_tag,
+            let tail = format!(
+                "{}  {}",
+                down_tag.trim_start(),
                 crate::follow::agreement_line(agreeing, subs.len(), conflict)
             );
+            table.push(vec![
+                rest.clone(),
+                commit.get(..12).unwrap_or(&commit).to_string(),
+                format!("{} bytes", ix.total_bytes),
+                ix.license_spdx
+                    .as_deref()
+                    .unwrap_or("license unknown")
+                    .to_string(),
+                format!("serving:{}", a.value),
+                tail.trim_start().to_string(),
+            ]);
         }
         if conflict {
             eprintln!(
@@ -1100,6 +1120,7 @@ async fn list_across(
         row.catalogs = Some(listed);
         out.push(row);
     }
+    print_aligned(&table);
     if opts.json {
         print_list_json(&out)?;
     }
@@ -1190,4 +1211,76 @@ pub fn jobs(cfg: &Config, show: Option<&str>, clear: Option<&str>) -> anyhow::Re
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Prints `list` rows as aligned columns. The size column (index 2) is
+/// right aligned; the last column is free text and is not padded.
+fn print_aligned(rows: &[Vec<String>]) {
+    for line in align_rows(rows) {
+        println!("{line}");
+    }
+}
+
+fn align_rows(rows: &[Vec<String>]) -> Vec<String> {
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![0usize; cols];
+    for r in rows {
+        for (i, c) in r.iter().enumerate() {
+            widths[i] = widths[i].max(c.chars().count());
+        }
+    }
+    rows.iter()
+        .map(|r| {
+            let mut line = String::new();
+            for (i, c) in r.iter().enumerate() {
+                let last = i + 1 == r.len();
+                if i > 0 {
+                    line.push_str("  ");
+                }
+                let pad = widths[i].saturating_sub(c.chars().count());
+                if last {
+                    line.push_str(c);
+                } else if i == 2 {
+                    line.push_str(&" ".repeat(pad));
+                    line.push_str(c);
+                } else {
+                    line.push_str(c);
+                    line.push_str(&" ".repeat(pad));
+                }
+            }
+            line.trim_end().to_string()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod align_tests {
+    use super::align_rows;
+
+    #[test]
+    fn columns_line_up_and_size_is_right_aligned() {
+        let rows = vec![
+            vec![
+                "model/a".into(),
+                "abc".into(),
+                "5 bytes".into(),
+                "mit".into(),
+                "serving:allowed".into(),
+                String::new(),
+            ],
+            vec![
+                "dataset/long/name".into(),
+                "def".into(),
+                "12345 bytes".into(),
+                "apache-2.0".into(),
+                "serving:allowed".into(),
+                "[taken down]".into(),
+            ],
+        ];
+        let out = align_rows(&rows);
+        assert_eq!(out[0].find("serving:"), out[1].find("serving:"));
+        assert_eq!(out[0].find(" bytes"), out[1].find(" bytes"));
+        assert!(!out[0].ends_with(' '));
+        assert!(out[1].ends_with("[taken down]"));
+    }
 }

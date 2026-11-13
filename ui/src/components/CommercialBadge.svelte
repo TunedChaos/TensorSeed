@@ -3,7 +3,7 @@
 <script lang="ts">
   import type { CommercialAssessment } from "../types";
 
-  let { assessment }: { assessment: CommercialAssessment } = $props();
+  let { assessment, compact = false }: { assessment: CommercialAssessment; compact?: boolean } = $props();
 
   const styles: Record<CommercialAssessment["value"], string> = {
     allowed: "badge-success",
@@ -20,7 +20,7 @@
 </script>
 
 <span
-  class="badge badge-sm ms-1 {styles[assessment.value]}"
+  class="badge badge-sm {compact ? 'min-w-20' : 'ms-1'} {styles[assessment.value]}"
   title={`${assessment.note}. Not legal advice.`}
   data-commercial={assessment.value}
->{labels[assessment.value]}</span>
+>{compact ? assessment.value.charAt(0).toUpperCase() + assessment.value.slice(1) : labels[assessment.value]}</span>
