@@ -68,6 +68,7 @@ pub mod error;
 pub mod hash;
 pub mod keys;
 pub mod manifest;
+pub mod paths;
 pub mod time;
 #[cfg(feature = "fs")]
 pub mod verify;

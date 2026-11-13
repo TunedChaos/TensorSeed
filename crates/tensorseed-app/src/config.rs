@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
+use tensorseed_core::paths::{native, native_string};
 
 /// Full configuration.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -491,6 +492,51 @@ impl Config {
             c.chia.coin_api_urls = sub.coin_api_urls.clone();
         }
         c
+    }
+}
+
+impl Config {
+    /// Rewrite every filesystem path setting to native separators, so
+    /// `config show`, log lines, and the paths actually opened agree. A no-op
+    /// on Unix; on Windows `C:/dl` becomes `C:\\dl`. URLs are not touched.
+    pub fn normalize_paths(&mut self) {
+        fn n(s: &mut String) {
+            *s = native_string(s);
+        }
+        let g = &mut self.general;
+        for s in [
+            &mut g.state_db,
+            &mut g.staging_dir,
+            &mut g.seed_dir,
+            &mut g.download_dir,
+        ] {
+            n(s);
+        }
+        if let Some(s) = self.catalog.publisher_seckey_file.as_mut() {
+            n(s);
+        }
+        n(&mut self.file.state_dir);
+        n(&mut self.chia.ssl_cert);
+        n(&mut self.chia.ssl_key);
+        if let Some(s) = self.chia.ca_cert.as_mut() {
+            n(s);
+        }
+        n(&mut self.huggingface.token_file);
+        n(&mut self.storage.local_dir);
+        for t in &mut self.storage.target {
+            n(&mut t.dir);
+        }
+        n(&mut self.mirrors.file);
+        n(&mut self.harvest.takedown_file);
+        n(&mut self.serve.data_dir);
+        for d in &mut self.serve.dirs {
+            n(d);
+        }
+        for c in &mut self.catalogs {
+            if let Some(s) = c.state_dir.as_mut() {
+                n(s);
+            }
+        }
     }
 }
 
@@ -1786,13 +1832,16 @@ pub fn default_config_file(rel: &str) -> String {
 ///
 /// Home is `$HOME`, or `%USERPROFILE%` when `$HOME` is unset. Paths that do
 /// not start with a tilde slash are returned unchanged.
+///
+/// The result uses native separators (see [`tensorseed_core::paths`]): on
+/// Windows `C:/dl` becomes `C:\\dl`; on Unix the path is unchanged.
 pub fn expand(path: &str) -> PathBuf {
     let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
     match rest {
         Some(rest) => home_dir()
-            .map(|h| h.join(rest))
-            .unwrap_or_else(|| PathBuf::from(path)),
-        None => PathBuf::from(path),
+            .map(|h| h.join(native(rest)))
+            .unwrap_or_else(|| native(path)),
+        None => native(path),
     }
 }
 
@@ -1822,7 +1871,8 @@ pub fn figment(path: &Path) -> Figment {
 ///
 /// Fails when the file or environment cannot be parsed or a value is invalid.
 pub fn load(path: &Path) -> anyhow::Result<Config> {
-    let cfg: Config = figment(path).extract()?;
+    let mut cfg: Config = figment(path).extract()?;
+    cfg.normalize_paths();
     if !tensorseed_catalog::KNOWN_BACKENDS.contains(&cfg.catalog.backend.as_str()) {
         anyhow::bail!(
             "unknown catalog.backend {:?}; known backends: {:?}",
@@ -2301,6 +2351,59 @@ dir = "/mnt/nas/tensorseed"
             );
             assert_eq!(expand("/abs/path"), PathBuf::from("/abs/path"));
             assert_eq!(expand("rel/path"), PathBuf::from("rel/path"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn config_paths_use_native_separators() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "ts.toml",
+                r#"
+                [general]
+                download_dir = "C:/Users/x/tensorseed-test/downloads"
+                state_db = "~/ts/state.sqlite"
+                [file]
+                base_url = "https://catalog.example.org/a/b/"
+                "#,
+            )?;
+            let cfg = load(Path::new("ts.toml")).unwrap();
+            // URLs keep their slashes everywhere.
+            assert_eq!(cfg.file.base_url, "https://catalog.example.org/a/b/");
+            if cfg!(windows) {
+                assert_eq!(
+                    cfg.general.download_dir,
+                    r"C:\Users\x\tensorseed-test\downloads"
+                );
+                assert_eq!(cfg.general.state_db, r"~\ts\state.sqlite");
+                assert!(
+                    !expand(&cfg.general.state_db)
+                        .to_string_lossy()
+                        .contains('/')
+                );
+            } else {
+                // Unix: strings and on-disk layout are unchanged.
+                assert_eq!(
+                    cfg.general.download_dir,
+                    "C:/Users/x/tensorseed-test/downloads"
+                );
+                assert_eq!(cfg.general.state_db, "~/ts/state.sqlite");
+            }
+            Ok(())
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_expand_has_no_forward_slashes() {
+        Jail::expect_with(|jail| {
+            jail.set_env("USERPROFILE", r"C:\Users\ts");
+            jail.set_env("HOME", r"C:\Users\ts");
+            for p in ["~/a/b", "C:/x/y", r"C:\x/y"] {
+                let e = expand(p);
+                assert!(!e.to_string_lossy().contains('/'), "{p} -> {}", e.display());
+            }
             Ok(())
         });
     }

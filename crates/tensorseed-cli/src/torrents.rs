@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 pub use tensorseed_app::torrents::*;
+use tensorseed_core::paths::native_path;
 use tensorseed_core::verify::META_DIR;
 use tensorseed_torrent::engine::Engine;
 
@@ -123,6 +124,7 @@ pub async fn seed(
         }
     } else {
         for d in dirs {
+            let d = &native_path(d);
             if d.join(META_DIR).join(PULLED_TORRENT).exists() {
                 items.push(pulled_dir(d)?);
             } else {

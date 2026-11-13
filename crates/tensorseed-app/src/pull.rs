@@ -18,6 +18,7 @@ use tensorseed_core::keys::{RepoRef, RepoType, check_commit};
 use tensorseed_core::manifest::{
     FilePage, LatestPointer, Manifest, SCHEMA_FILEPAGE, SCHEMA_LATEST, SCHEMA_TOMBSTONE, Tombstone,
 };
+use tensorseed_core::paths::join_slash;
 use tensorseed_core::verify::{ExpectedFile, META_DIR};
 use tensorseed_fetch::state::StateDb;
 use tensorseed_hf::HfClient;
@@ -128,10 +129,11 @@ pub fn parse_repo(
 /// Default output directory for a repo: `<download_dir>/<org>/<name>`
 /// (datasets under `datasets/`).
 pub fn default_out(cfg: &Config, repo: &RepoRef) -> PathBuf {
+    // Split `org/name` into components so Windows paths use `\` only.
     let base = expand(&cfg.general.download_dir);
     match repo.repo_type {
-        RepoType::Model => base.join(&repo.id),
-        RepoType::Dataset => base.join("datasets").join(&repo.id),
+        RepoType::Model => join_slash(&base, &repo.id),
+        RepoType::Dataset => join_slash(&base.join("datasets"), &repo.id),
     }
 }
 
@@ -567,4 +569,58 @@ pub fn read_pull_record(dir: &Path) -> anyhow::Result<Option<PullRecord>> {
         bail!("{} has schema {:?}", p.display(), r.schema);
     }
     Ok(Some(r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with(download_dir: &str) -> Config {
+        let mut c = Config::default();
+        c.general.download_dir = download_dir.into();
+        c.normalize_paths();
+        c
+    }
+
+    fn names(p: &Path) -> Vec<String> {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn default_out_splits_repo_ids_into_components() {
+        let cfg = cfg_with("dl");
+        let ds = RepoRef::new(RepoType::Dataset, "openai/gsm8k").unwrap();
+        let m = RepoRef::new(RepoType::Model, "org/name").unwrap();
+        assert_eq!(
+            names(&default_out(&cfg, &ds)),
+            ["dl", "datasets", "openai", "gsm8k"]
+        );
+        assert_eq!(names(&default_out(&cfg, &m)), ["dl", "org", "name"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_out_layout_is_unchanged_on_unix() {
+        let cfg = cfg_with("/srv/dl");
+        let ds = RepoRef::new(RepoType::Dataset, "openai/gsm8k").unwrap();
+        assert_eq!(
+            default_out(&cfg, &ds),
+            PathBuf::from("/srv/dl/datasets/openai/gsm8k")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_out_has_no_mixed_separators_on_windows() {
+        let cfg = cfg_with("C:/Users/x/tensorseed-test/downloads");
+        let ds = RepoRef::new(RepoType::Dataset, "openai/gsm8k").unwrap();
+        let out = default_out(&cfg, &ds);
+        assert_eq!(
+            out.to_str().unwrap(),
+            r"C:\Users\x\tensorseed-test\downloads\datasets\openai\gsm8k"
+        );
+        assert!(!tensorseed_core::paths::has_mixed_separators(&out));
+    }
 }

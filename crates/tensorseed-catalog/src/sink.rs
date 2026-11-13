@@ -117,7 +117,7 @@ impl ObjectSink for DirSink {
         _cache: CachePolicy,
     ) -> Result<()> {
         check_key(key)?;
-        let path = self.root.join(key);
+        let path = tensorseed_core::paths::join_slash(&self.root, key);
         let parent = path
             .parent()
             .ok_or_else(|| CatalogError::Config(format!("bad key {key}")))?
@@ -146,7 +146,7 @@ impl ObjectSink for DirSink {
         _cache: CachePolicy,
     ) -> Result<()> {
         check_key(key)?;
-        let path = self.root.join(key);
+        let path = tensorseed_core::paths::join_slash(&self.root, key);
         if tokio::fs::canonicalize(&path).await.ok() == tokio::fs::canonicalize(file).await.ok()
             && path.exists()
         {

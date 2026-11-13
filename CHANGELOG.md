@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Windows: paths are built per component and config paths are normalized
+  to native separators, so `pull` and other commands no longer print mixed
+  paths like `C:/Users/x/downloads\datasets\openai/gsm8k`. Linux and macOS
+  paths and on-disk layout are unchanged. On Windows, an interrupted `pull`
+  started by an older build into such a mixed path restarts its job record
+  instead of resuming (files already downloaded are still reused).
 - `tensorseed catalog update-info` rewrites the signed catalog info
   (`ts/v1/catalog`) from the config, so a publisher can set or change
   `publisher_contact`, `publisher_policy_url`, webseed bases, and trackers

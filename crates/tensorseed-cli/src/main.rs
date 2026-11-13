@@ -59,7 +59,11 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let path = cli.config.clone().unwrap_or_else(config::default_path);
+    let path = cli
+        .config
+        .as_deref()
+        .map(tensorseed_core::paths::native_path)
+        .unwrap_or_else(config::default_path);
     let load = || config::load(&path);
     match &cli.command {
         Command::Completions { shell } => {

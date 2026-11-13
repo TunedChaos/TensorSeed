@@ -28,6 +28,7 @@ use tensorseed_core::manifest::{
     FileEntry, FilePage, IndexEntry, LatestPointer, LicenseInfo, Manifest, RepoInfo as MRepoInfo,
     SCHEMA_FILEPAGE, SCHEMA_INDEX, SCHEMA_LATEST, SCHEMA_MANIFEST, TorrentInfo, Totals,
 };
+use tensorseed_core::paths::join_slash;
 use tensorseed_core::time::now_rfc3339;
 use tensorseed_core::verify::META_DIR;
 use tensorseed_fetch::state::StateDb;
@@ -629,7 +630,7 @@ async fn harvest_one(
         };
         let sha256 = match &lfs_sha {
             Some(h) => h.clone(),
-            None => sha256_file(content_dir.join(&e.path))?.sha256,
+            None => sha256_file(join_slash(&content_dir, &e.path))?.sha256,
         };
         files.push(FileEntry {
             path: e.path.clone(),
@@ -727,7 +728,7 @@ async fn harvest_one(
             let key = format!("t/{}/{}", name, f.path);
             s.put_file(
                 &key,
-                &content_dir.join(&f.path),
+                &join_slash(&content_dir, &f.path),
                 "application/octet-stream",
                 CachePolicy::Immutable,
             )

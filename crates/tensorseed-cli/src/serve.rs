@@ -32,6 +32,7 @@ use tensorseed_core::keys::{PREFIX, RepoRef, RepoType, check_commit, index_prefi
 use tensorseed_core::manifest::{
     IndexEntry, Manifest, SCHEMA_INDEX, SCHEMA_TOMBSTONE, Tombstone, TorrentInfo,
 };
+use tensorseed_core::paths::join_slash;
 use tensorseed_core::verify::META_DIR;
 use tensorseed_serve::health::{self, Note, SharedStatus, Status, TorrentStatus};
 use tensorseed_serve::http::{self as web, CatalogDir, HttpConfig, HttpStats, Library, Published};
@@ -690,7 +691,10 @@ impl Daemon {
         rels.extend((1..=head.revision).map(delta_path));
         let mut copied = 0;
         for rel in rels {
-            let (p, ps) = (dir.join(&rel), dir.join(format!("{rel}.minisig")));
+            let (p, ps) = (
+                join_slash(dir, &rel),
+                join_slash(dir, &format!("{rel}.minisig")),
+            );
             if p.exists() && ps.exists() {
                 continue;
             }

@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use tensorseed_core::keys::{RepoRef, RepoType, index_prefix};
 use tensorseed_core::manifest::{FileEntry, IndexEntry, SCHEMA_INDEX};
+use tensorseed_core::paths::{join_slash, native_path};
 use tensorseed_core::verify::{ExpectedFile, META_DIR, VerifyOptions, verify_dir};
 use tensorseed_fetch::{
     FetchOptions, Fetcher, FileJob, JobSpec, Outcome, Source, SourceKind, job_id,
@@ -269,7 +270,11 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         manifest_raw = Some(resolved.raw);
     }
 
-    let out = args.out.clone().unwrap_or_else(|| default_out(cfg, &repo));
+    let out = args
+        .out
+        .as_deref()
+        .map(native_path)
+        .unwrap_or_else(|| default_out(cfg, &repo));
     std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
     let label = format!("{} {}@{}", repo.repo_type, repo.id, commit);
     let spec = JobSpec {
@@ -301,7 +306,9 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         before_swarm = Some(
             files
                 .iter()
-                .filter(|f| std::fs::metadata(out.join(&f.path)).is_ok_and(|m| m.len() == f.size))
+                .filter(|f| {
+                    std::fs::metadata(join_slash(&out, &f.path)).is_ok_and(|m| m.len() == f.size)
+                })
                 .map(|f| f.path.clone())
                 .collect(),
         );
@@ -585,11 +592,12 @@ pub async fn verify(cfg: &Config, args: &VerifyArgs) -> anyhow::Result<ExitCode>
     let (dir, repo_spec): (PathBuf, Option<String>) = match (&args.repo, target_is_dir) {
         (Some(r), _) => (
             args.dir
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(&args.target)),
+                .as_deref()
+                .map(native_path)
+                .unwrap_or_else(|| native_path(Path::new(&args.target))),
             Some(r.clone()),
         ),
-        (None, true) => (PathBuf::from(&args.target), None),
+        (None, true) => (native_path(Path::new(&args.target)), None),
         (None, false) => (PathBuf::new(), Some(args.target.clone())),
     };
     let repo = match &repo_spec {
@@ -601,7 +609,11 @@ pub async fn verify(cfg: &Config, args: &VerifyArgs) -> anyhow::Result<ExitCode>
         None => None,
     };
     let dir = match (&repo, dir.as_os_str().is_empty()) {
-        (Some((r, _)), true) => args.dir.clone().unwrap_or_else(|| default_out(cfg, r)),
+        (Some((r, _)), true) => args
+            .dir
+            .as_deref()
+            .map(native_path)
+            .unwrap_or_else(|| default_out(cfg, r)),
         _ => dir,
     };
     if !dir.is_dir() {

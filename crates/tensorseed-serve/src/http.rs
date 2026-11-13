@@ -338,7 +338,7 @@ async fn route(cfg: &HttpConfig, path: &str, headers: &HeaderMap, head: bool) ->
         };
         return file_response(
             cfg,
-            &p.dir.join(&rel),
+            &native_join(&p.dir, &segs[2..]),
             Some(size),
             content_type(&rel),
             "public, max-age=31536000, immutable",
@@ -359,7 +359,7 @@ async fn route(cfg: &HttpConfig, path: &str, headers: &HeaderMap, head: bool) ->
         };
         return file_response(
             cfg,
-            &cat.dir.join(&rel),
+            &native_join(&cat.dir, &segs[1..]),
             None,
             content_type(&rel),
             cache,
@@ -472,6 +472,16 @@ async fn file_response(
         h.insert(header::CONTENT_RANGE, v);
     }
     r
+}
+
+/// `dir` joined with URL path segments one component at a time, so the
+/// file opened (and any path in an error) uses native separators.
+fn native_join(dir: &Path, segs: &[String]) -> PathBuf {
+    let mut p = dir.to_path_buf();
+    for s in segs {
+        p.push(s);
+    }
+    p
 }
 
 #[cfg(test)]
