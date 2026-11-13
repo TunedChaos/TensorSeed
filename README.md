@@ -77,6 +77,8 @@ tensorseed pull org/name --retry-dead-mirrors  # try HTTP mirrors marked dead (c
 tensorseed pull org/name --seed-after 2h   # swarm first, then seed the verified copy
 tensorseed pull org/name --swarm-only --peer host:6881   # peers only: checks that a seeder works
 tensorseed pull org/name --include '*.gguf' --exclude '*.md'  # only selected files
+tensorseed list --commercial        # only licenses that permit commercial serving
+tensorseed serve-inference org/name # verify, then serve it with llama.cpp or vLLM
 
 # Publisher side:
 tensorseed catalog keygen           # minisign compatible, password protected
@@ -151,6 +153,27 @@ allowlist; `--allow-license <id>` or a watchlist entry
 the rights to without loosening it for anything else.
 
 Downloads resume after interruption; `tensorseed jobs` shows their state.
+
+### Serve inference from a verified copy
+
+`tensorseed serve-inference <dir|org/name>` re-hashes a pulled copy against
+the signed manifest, refuses to serve it if anything differs, checks the
+license, and starts an OpenAI compatible server you installed: llama.cpp
+(`llama-server`) for GGUF files, vLLM for safetensors. It waits until
+`/v1/models` answers, then prints the base URL and model id to list on any
+OpenAI compatible marketplace, and records what it serves in an unsigned
+`.tensorseed/served-weights.json`. No runtime is bundled; configure them in
+`[inference]` or put them on `PATH`, and `--print-command` prints the exact
+command instead. See [docs/SELL-INFERENCE.md](docs/SELL-INFERENCE.md) for
+the full walk through, including a TLS reverse proxy with an API key.
+
+Every entry in `list`, `show`, the explorer, and Desktop carries a
+commercial serving mark derived from its license id: `allowed`,
+`restricted` (allowed with conditions, such as the Llama licenses'
+700M monthly user cap and acceptable use policy), `forbidden`
+(non-commercial), or `unknown`. `serve-inference` refuses `forbidden`
+licenses unless you pass `--i-have-rights`. The marks are computed on the
+client, not signed, and are **not legal advice**: read the license.
 
 ### Use your Hugging Face token
 

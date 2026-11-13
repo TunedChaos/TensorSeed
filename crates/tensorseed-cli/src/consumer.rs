@@ -14,6 +14,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use tensorseed_core::commercial::{
+    Assessment, CommercialServing, DISCLAIMER as COMMERCIAL_DISCLAIMER, assess, assess_license_info,
+};
 use tensorseed_core::keys::{RepoRef, RepoType, index_prefix};
 use tensorseed_core::manifest::{FileEntry, IndexEntry, SCHEMA_INDEX};
 use tensorseed_core::paths::{join_slash, native_path};
@@ -312,7 +315,16 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
                 .map(|f| f.path.clone())
                 .collect(),
         );
-        if let Err(e) = swarm_download(cfg, args, t, &out, &files).await {
+        // The engine creates every file of the torrent, even unselected
+        // ones; remember which existed so its empty placeholders can go.
+        let existed: std::collections::HashSet<String> = expected
+            .iter()
+            .filter(|e| join_slash(&out, &e.path).exists())
+            .map(|e| e.path.clone())
+            .collect();
+        let r = swarm_download(cfg, args, t, &out, &files).await;
+        remove_swarm_placeholders(&out, &expected, &files, &existed);
+        if let Err(e) = r {
             if args.swarm_only {
                 return Err(e);
             }
@@ -473,6 +485,28 @@ fn http_sources(
         bail!("{path} has no HTTP sources (check fetch.source_order and --no-hf-fallback)");
     }
     Ok(sources)
+}
+
+/// Delete the empty files the torrent engine created for paths that were
+/// not selected and did not exist before the swarm ran, so a partial pull
+/// leaves only what was asked for (and `verify` reports them as skipped).
+fn remove_swarm_placeholders(
+    out: &Path,
+    expected: &[ExpectedFile],
+    selected: &[FileJob],
+    existed: &std::collections::HashSet<String>,
+) {
+    let wanted: std::collections::HashSet<&str> =
+        selected.iter().map(|f| f.path.as_str()).collect();
+    for e in expected {
+        if wanted.contains(e.path.as_str()) || existed.contains(&e.path) || e.size == 0 {
+            continue;
+        }
+        let p = join_slash(out, &e.path);
+        if std::fs::metadata(&p).is_ok_and(|m| m.is_file() && m.len() == 0) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 }
 
 /// Swarm first: let librqbit fetch what peers have, in place. The session
@@ -783,16 +817,102 @@ fn same_files(a: &[ExpectedFile], b: &[ExpectedFile]) -> bool {
     a == b
 }
 
+/// What `tensorseed list` prints and filters on.
+#[derive(Debug, Clone, Default)]
+pub struct ListOptions {
+    /// Repo id substring.
+    pub filter: Option<String>,
+    /// Only entries whose license permits commercial use (`allowed` or `restricted`).
+    pub commercial: bool,
+    /// Only entries with one of these commercial serving marks.
+    pub serving: Vec<CommercialServing>,
+    /// Print one JSON document instead of text.
+    pub json: bool,
+}
+
+impl ListOptions {
+    fn keeps(&self, rest: &str) -> bool {
+        self.filter.as_deref().is_none_or(|f| rest.contains(f))
+    }
+
+    fn keeps_mark(&self, a: &Assessment) -> bool {
+        (!self.commercial || a.value.permits_commercial())
+            && (self.serving.is_empty() || self.serving.contains(&a.value))
+    }
+}
+
+/// Schema of `tensorseed list --json`.
+pub const LIST_SCHEMA: &str = "ts.list/1";
+
+/// One row of `tensorseed list`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ListRow {
+    /// `model` or `dataset`.
+    #[serde(rename = "type")]
+    pub repo_type: String,
+    /// `org/name`.
+    pub repo: String,
+    /// Latest commit.
+    pub commit: String,
+    /// Total bytes of the latest revision.
+    pub total_bytes: u64,
+    /// License id from the index entry.
+    pub license: Option<String>,
+    /// Derived commercial serving mark (client side, not signed).
+    pub commercial_serving: CommercialServing,
+    /// Reason or conditions for the mark.
+    pub commercial_note: String,
+    /// True when every listing catalog took the revision down.
+    pub taken_down: bool,
+    /// Catalogs listing this revision (multi catalog mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalogs: Option<usize>,
+}
+
+impl ListRow {
+    fn new(rest: &str, commit: &str, ix: &IndexEntry, a: Assessment) -> Self {
+        let (ty, repo) = rest.split_once('/').unwrap_or(("model", rest));
+        Self {
+            repo_type: ty.to_string(),
+            repo: repo.to_string(),
+            commit: commit.to_string(),
+            total_bytes: ix.total_bytes,
+            license: ix.license_spdx.clone(),
+            commercial_serving: a.value,
+            commercial_note: a.note,
+            taken_down: ix.taken_down,
+            catalogs: None,
+        }
+    }
+}
+
+fn print_list_json(rows: &[ListRow]) -> anyhow::Result<()> {
+    let doc = serde_json::json!({
+        "schema": LIST_SCHEMA,
+        "disclaimer": COMMERCIAL_DISCLAIMER,
+        "entries": rows,
+    });
+    println!("{}", serde_json::to_string_pretty(&doc)?);
+    Ok(())
+}
+
+fn list_footer(n: usize, opts: &ListOptions) {
+    eprintln!("{n} entries");
+    if opts.commercial || !opts.serving.is_empty() || n > 0 {
+        eprintln!("note: {COMMERCIAL_DISCLAIMER}");
+    }
+}
+
 /// `tensorseed list`.
 pub async fn list(
     cfg: &Config,
-    filter: Option<&str>,
+    opts: &ListOptions,
     no_wait: bool,
     catalog: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
     if let Some(name) = catalog {
         let sub = cfg.subscription(Some(name))?;
-        return list_one(&cfg.for_subscription(&sub), filter, no_wait, false).await;
+        return list_one(&cfg.for_subscription(&sub), opts, no_wait, false).await;
     }
     let subs = cfg.subscriptions()?;
     if subs.len() <= 1 {
@@ -800,14 +920,14 @@ pub async fn list(
             Some(s) => cfg.for_subscription(s),
             None => cfg.clone(),
         };
-        return list_one(&view, filter, no_wait, false).await;
+        return list_one(&view, opts, no_wait, false).await;
     }
-    list_across(cfg, &subs, filter, no_wait).await
+    list_across(cfg, &subs, opts, no_wait).await
 }
 
 async fn list_one(
     cfg: &Config,
-    filter: Option<&str>,
+    opts: &ListOptions,
     no_wait: bool,
     with_agreement: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -815,10 +935,10 @@ async fn list_one(
     let (backend, id) = open_reader(cfg, None, no_wait).await?;
     let b = backend.as_dyn();
     let prefix = index_prefix();
-    let mut n = 0;
+    let mut rows = Vec::new();
     for key in b.keys(&id, &prefix).await? {
         let rest = &key[prefix.len()..];
-        if filter.is_some_and(|f| !rest.contains(f)) {
+        if !opts.keeps(rest) {
             continue;
         }
         let Some(e) = read_verified(b, &id, &key, &pk, &cfg.catalog.name).await? else {
@@ -829,28 +949,38 @@ async fn list_one(
         if ix.schema != SCHEMA_INDEX {
             bail!("{key} has schema {:?}", ix.schema);
         }
-        n += 1;
-        let agreement = if with_agreement {
-            format!("  {}", crate::follow::agreement_line(1, 1, false))
-        } else {
-            String::new()
-        };
-        println!(
-            "{rest}  {}  {} bytes  {}{}{agreement}",
-            ix.latest_commit.get(..12).unwrap_or(&ix.latest_commit),
-            ix.total_bytes,
-            ix.license_spdx.as_deref().unwrap_or("license unknown"),
-            if ix.taken_down { "  [taken down]" } else { "" }
-        );
+        let a = assess(ix.license_spdx.as_deref(), None);
+        if !opts.keeps_mark(&a) {
+            continue;
+        }
+        if !opts.json {
+            let agreement = if with_agreement {
+                format!("  {}", crate::follow::agreement_line(1, 1, false))
+            } else {
+                String::new()
+            };
+            println!(
+                "{rest}  {}  {} bytes  {}  serving:{}{}{agreement}",
+                ix.latest_commit.get(..12).unwrap_or(&ix.latest_commit),
+                ix.total_bytes,
+                ix.license_spdx.as_deref().unwrap_or("license unknown"),
+                a.value,
+                if ix.taken_down { "  [taken down]" } else { "" }
+            );
+        }
+        rows.push(ListRow::new(rest, &ix.latest_commit, &ix, a));
     }
-    eprintln!("{n} entries");
+    if opts.json {
+        print_list_json(&rows)?;
+    }
+    list_footer(rows.len(), opts);
     Ok(ExitCode::SUCCESS)
 }
 
 async fn list_across(
     cfg: &Config,
     subs: &[crate::config::Subscription],
-    filter: Option<&str>,
+    opts: &ListOptions,
     no_wait: bool,
 ) -> anyhow::Result<ExitCode> {
     // repo+commit -> (sub, IndexEntry, Option<fingerprint>)
@@ -892,7 +1022,7 @@ async fn list_across(
         };
         for key in keys {
             let rest = &key[prefix.len()..];
-            if filter.is_some_and(|f| !rest.contains(f)) {
+            if !opts.keeps(rest) {
                 continue;
             }
             let Some(e) = read_verified(b, &id, &key, &pk, &view.catalog.name).await? else {
@@ -902,6 +1032,9 @@ async fn list_across(
                 serde_json::from_str(&e.value).with_context(|| format!("parsing {key}"))?;
             if ix.schema != SCHEMA_INDEX {
                 bail!("{key} has schema {:?}", ix.schema);
+            }
+            if !opts.keeps_mark(&assess(ix.license_spdx.as_deref(), None)) {
+                continue;
             }
             let typ_and_id = rest.to_string();
             let (ty, repo_id) = rest.split_once('/').unwrap_or(("model", rest));
@@ -925,9 +1058,8 @@ async fn list_across(
     for (id, commit, sub, ix, fp) in rows {
         groups.entry((id, commit)).or_default().push((sub, ix, fp));
     }
-    let mut n = 0;
+    let mut out = Vec::new();
     for ((rest, commit), hits) in groups {
-        n += 1;
         let listed = hits.len();
         let mut fps: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
         for (_, _, fp) in &hits {
@@ -938,6 +1070,7 @@ async fn list_across(
         let conflict = fps.len() > 1;
         let agreeing = fps.values().copied().max().unwrap_or(listed);
         let ix = &hits[0].1;
+        let a = assess(ix.license_spdx.as_deref(), None);
         let down = hits.iter().filter(|(_, i, _)| i.taken_down).count();
         let down_tag = if down == listed && listed > 0 {
             "  [taken down]"
@@ -946,25 +1079,35 @@ async fn list_across(
         } else {
             ""
         };
-        println!(
-            "{rest}  {}  {} bytes  {}{}  {}",
-            commit.get(..12).unwrap_or(&commit),
-            ix.total_bytes,
-            ix.license_spdx.as_deref().unwrap_or("license unknown"),
-            down_tag,
-            crate::follow::agreement_line(agreeing, subs.len(), conflict)
-        );
+        if !opts.json {
+            println!(
+                "{rest}  {}  {} bytes  {}  serving:{}{}  {}",
+                commit.get(..12).unwrap_or(&commit),
+                ix.total_bytes,
+                ix.license_spdx.as_deref().unwrap_or("license unknown"),
+                a.value,
+                down_tag,
+                crate::follow::agreement_line(agreeing, subs.len(), conflict)
+            );
+        }
         if conflict {
             eprintln!(
                 "CONFLICT: {rest}@{commit} has different hashes; pass --catalog <name> to inspect one"
             );
         }
+        let mut row = ListRow::new(&rest, &commit, ix, a);
+        row.taken_down = down == listed && listed > 0;
+        row.catalogs = Some(listed);
+        out.push(row);
     }
-    eprintln!("{n} entries");
+    if opts.json {
+        print_list_json(&out)?;
+    }
+    list_footer(out.len(), opts);
     if errors > 0 {
         eprintln!("{errors} catalog(s) could not be read (other catalogs were listed)");
     }
-    if errors > 0 && n == 0 {
+    if errors > 0 && out.is_empty() {
         anyhow::bail!("no catalog could be read");
     }
     Ok(ExitCode::SUCCESS)
@@ -982,6 +1125,9 @@ pub async fn show(
     let (r, rev) = parse_repo(repo, repo_type, revision)?;
     let res = catalog_manifest(cfg, &r, rev.as_deref(), no_wait, catalog).await?;
     println!("{}", serde_json::to_string_pretty(&res.manifest)?);
+    let a = assess_license_info(&res.manifest.license);
+    eprintln!("commercial serving: {} ({})", a.value, a.note);
+    eprintln!("note: {COMMERCIAL_DISCLAIMER}");
     if let Some(t) = &res.tombstone
         && tombstone_covers(t, &res.manifest.hf_commit)
     {

@@ -1310,3 +1310,283 @@ async fn other_license_needs_explicit_override() {
     assert_eq!(man["license"]["class"], "unknown", "{m}");
     assert_eq!(man["license"]["hf_tag"], "other", "{m}");
 }
+
+/// A GGUF repo published in a signed catalog with `license`, then pulled.
+async fn pulled_gguf(
+    tmp: &Path,
+    server: &MockServer,
+    license: &str,
+) -> (PathBuf, PathBuf, Vec<u8>) {
+    let gguf: Vec<u8> = b"GGUF"
+        .iter()
+        .copied()
+        .chain((0..4096u32).map(|i| (i % 251) as u8))
+        .collect();
+    let fx = Fixture {
+        files: vec![
+            ("README.md".into(), b"# tiny\n".to_vec()),
+            ("tiny-q4.gguf".into(), gguf.clone()),
+        ],
+    };
+    let mut m = manifest(&fx, "org/tiny", C, &format!("{}/t/", server.uri()));
+    m.license.spdx = Some(license.into());
+    m.license.hf_tag = Some(license.into());
+    let pubdir = tmp.join("srv");
+    publish_catalog(&pubdir, &tmp.join("pstate"), &m, false).await;
+    mount_dir(server, &pubdir).await;
+    let name = m.content_name();
+    for (p, b) in &fx.files {
+        serve(server, &format!("/t/{name}/{p}"), b).await;
+    }
+    let cfg = write_config(tmp, &server.uri(), &key().public_key().to_base64(), "");
+    let o = run(&cfg, &["pull", "org/tiny", "--no-swarm"], &[]).await;
+    assert_eq!(code(&o), 0);
+    (cfg, tmp.join("dl/org/tiny"), gguf)
+}
+
+fn stderr(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_inference_verifies_before_serving() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let (cfg, dir, _) = pulled_gguf(tmp.path(), &server, "apache-2.0").await;
+    let dir_s = dir.to_str().unwrap();
+
+    // Commercial serving marks in list (text and JSON) and show.
+    let o = run(&cfg, &["list", "--no-wait"], &[]).await;
+    assert!(stdout(&o).contains("serving:allowed"), "{}", stdout(&o));
+    assert!(stderr(&o).contains("not legal advice"));
+    let o = run(&cfg, &["list", "--no-wait", "--json"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["schema"], "ts.list/1");
+    assert_eq!(v["entries"][0]["repo"], "org/tiny");
+    assert_eq!(v["entries"][0]["commercial_serving"], "allowed");
+    assert!(
+        v["disclaimer"]
+            .as_str()
+            .unwrap()
+            .contains("not legal advice")
+    );
+    let o = run(
+        &cfg,
+        &["list", "--no-wait", "--commercial-serving", "forbidden"],
+        &[],
+    )
+    .await;
+    assert!(!stdout(&o).contains("org/tiny"));
+    assert!(stderr(&o).contains("0 entries"));
+    let o = run(&cfg, &["list", "--no-wait", "--commercial"], &[]).await;
+    assert!(stdout(&o).contains("org/tiny"));
+    let o = run(&cfg, &["show", "org/tiny", "--no-wait"], &[]).await;
+    assert!(stderr(&o).contains("commercial serving: allowed"));
+
+    // --print-command: verified, then the exact llama.cpp command.
+    let o = run(
+        &cfg,
+        &[
+            "serve-inference",
+            dir_s,
+            "--no-wait",
+            "--print-command",
+            "--model-id",
+            "tiny",
+            "--",
+            "-ngl",
+            "0",
+        ],
+        &[("PATH", "")],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let s = stdout(&o);
+    assert!(s.contains("verified 2 files of org/tiny@"), "{s}");
+    assert!(s.contains("commercial serving allowed"), "{s}");
+    let model = tensorseed_core::paths::join_slash(&dir, "tiny-q4.gguf");
+    assert!(s.contains(&format!("--model {}", model.display())), "{s}");
+    assert!(
+        s.contains("--alias tiny --host 127.0.0.1 --port 8090 -ngl 0"),
+        "{s}"
+    );
+    assert!(stderr(&o).contains("llama-server was not found"));
+
+    // Without --print-command and without a runtime: a clear error.
+    let o = run(
+        &cfg,
+        &["serve-inference", "org/tiny", "--no-wait"],
+        &[("PATH", "")],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("was not found"), "{}", stderr(&o));
+
+    // vLLM needs a safetensors checkpoint.
+    let o = run(
+        &cfg,
+        &[
+            "serve-inference",
+            dir_s,
+            "--no-wait",
+            "--runtime",
+            "vllm",
+            "--print-command",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("safetensors"));
+
+    // A changed byte refuses to serve, and no record is written.
+    let p = dir.join("tiny-q4.gguf");
+    let mut b = std::fs::read(&p).unwrap();
+    b[100] ^= 0xff;
+    std::fs::write(&p, &b).unwrap();
+    let o = run(
+        &cfg,
+        &["serve-inference", dir_s, "--no-wait", "--print-command"],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("refusing to serve"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("tiny-q4.gguf"));
+    assert!(!dir.join(".tensorseed/served-weights.json").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_inference_reports_a_runtime_that_exits() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let (cfg, dir, _) = pulled_gguf(tmp.path(), &server, "mit").await;
+    // A fake llama-server that records its arguments and exits.
+    let bin = tmp.path().join("fake-llama-server");
+    let args_file = tmp.path().join("args.txt");
+    std::fs::write(
+        &bin,
+        format!("#!/bin/sh\necho \"$@\" > '{}'\necho \"key=${{LLAMA_API_KEY:-none}}\" >> '{}'\nexit 3\n", args_file.display(), args_file.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    append_toml(
+        &cfg,
+        &format!(
+            "\n[inference]\nllama_server = \"{}\"\nport = {port}\napi_key_env = \"TS_TEST_UPSTREAM\"\nready_timeout_secs = 20\n",
+            bin.display()
+        ),
+    );
+    // The key variable must be set.
+    let o = run(
+        &cfg,
+        &["serve-inference", dir.to_str().unwrap(), "--no-wait"],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("TS_TEST_UPSTREAM"), "{}", stderr(&o));
+
+    let o = run(
+        &cfg,
+        &["serve-inference", dir.to_str().unwrap(), "--no-wait"],
+        &[("TS_TEST_UPSTREAM", "s3cret-test-value")],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(
+        stderr(&o).contains("exited before it was ready"),
+        "{}",
+        stderr(&o)
+    );
+    // The key reaches the runtime through its environment, never argv or output.
+    let recorded = std::fs::read_to_string(&args_file).unwrap();
+    assert!(recorded.contains("--alias org/tiny"), "{recorded}");
+    assert!(recorded.contains("key=s3cret-test-value"));
+    assert!(!recorded.lines().next().unwrap().contains("s3cret"));
+    assert!(!stdout(&o).contains("s3cret") && !stderr(&o).contains("s3cret"));
+    assert!(!dir.join(".tensorseed/served-weights.json").exists());
+
+    // doctor checks the [inference] section.
+    let o = run(&cfg, &["doctor", "--offline", "--json"], &[]).await;
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let checks = v["checks"].as_array().unwrap();
+    let by = |id: &str| checks.iter().find(|c| c["id"] == id).cloned().unwrap();
+    assert_eq!(by("inference.llama_server")["status"], "ok");
+    assert_eq!(by("port.inference")["status"], "ok");
+    assert_eq!(by("inference.api_key")["status"], "fail");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_inference_refuses_non_commercial_licenses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let (cfg, dir, _) = pulled_gguf(tmp.path(), &server, "cc-by-nc-4.0").await;
+    let dir_s = dir.to_str().unwrap();
+    let o = run(
+        &cfg,
+        &["serve-inference", dir_s, "--no-wait", "--print-command"],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    let e = stderr(&o);
+    assert!(
+        e.contains("forbidden") && e.contains("--i-have-rights"),
+        "{e}"
+    );
+    assert!(!stdout(&o).contains("--model"));
+    let o = run(
+        &cfg,
+        &[
+            "serve-inference",
+            dir_s,
+            "--no-wait",
+            "--print-command",
+            "--i-have-rights",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stderr(&o).contains("--i-have-rights was passed"));
+    assert!(stdout(&o).contains("--model"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_inference_refuses_an_unsigned_copy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    // A signed catalog exists (with org/tiny), but org/hf comes from the Hub.
+    let (cfg, _, _) = pulled_gguf(tmp.path(), &server, "mit").await;
+    let fx = Fixture::new();
+    mount_hf_repo(&server, "org/hf", serde_json::json!(false), &fx).await;
+    let o = run(&cfg, &["pull", "--from-hf", "org/hf"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let dir = tmp.path().join("dl/org/hf");
+    let o = run(
+        &cfg,
+        &[
+            "serve-inference",
+            dir.to_str().unwrap(),
+            "--no-wait",
+            "--print-command",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1, "Hub hashes are not a signed manifest");
+    assert!(
+        stderr(&o).contains("no signed catalog manifest for org/hf"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(!stdout(&o).contains("vllm"));
+}

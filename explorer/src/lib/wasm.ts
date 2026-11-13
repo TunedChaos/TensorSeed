@@ -4,6 +4,7 @@
 import init, {
   CatalogVerifier,
   check_coin_rpc,
+  commercial_serving as wasm_commercial_serving,
   parse_manifest as wasm_parse_manifest,
 } from "../pkg/tensorseed_wasm.js";
 import wasmUrl from "../pkg/tensorseed_wasm_bg.wasm?url";
@@ -17,4 +18,4 @@ export function initWasm(): Promise<void> {
   return ready;
 }
 
-export { CatalogVerifier, check_coin_rpc, wasm_parse_manifest };
+export { CatalogVerifier, check_coin_rpc, wasm_commercial_serving, wasm_parse_manifest };

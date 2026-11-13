@@ -23,6 +23,8 @@
 //! - free disk space on the download directory;
 //! - the download directory, the DHT state file, and the state database
 //!   location are writable;
+//! - with an `[inference]` section: the llama.cpp and vLLM binaries, the
+//!   inference port, and the upstream API key variable;
 //! - publishers only: each enabled upload target has its credentials in the
 //!   environment (variable names are shown, values never are).
 //!
@@ -239,6 +241,119 @@ pub async fn run_with_config(cfg: &Config, opts: &Options) -> Vec<Check> {
     out.push(check_dht(cfg));
     out.push(check_state_db(cfg));
     out.extend(check_storage(cfg));
+    if let Some(inf) = &cfg.inference {
+        out.extend(check_inference(inf));
+    }
+    out
+}
+
+/// `[inference]`, when configured: runtime binaries, the listen port, and
+/// the upstream API key variable (its value is never shown).
+pub fn check_inference(inf: &crate::inference::InferenceConfig) -> Vec<Check> {
+    use crate::inference::{Runtime, find_binary};
+    let mut out = Vec::new();
+    let mut any = false;
+    for rt in Runtime::ALL {
+        let l = find_binary(inf, rt);
+        let id = format!("inference.{}", rt.default_binary().replace('-', "_"));
+        let title = format!("inference {}", rt.default_binary());
+        let what = match rt {
+            Runtime::LlamaCpp => "GGUF models",
+            Runtime::Vllm => "safetensors models",
+        };
+        let c = match (&l.found, l.configured) {
+            (Some(p), _) => {
+                any = true;
+                Check::new(
+                    id,
+                    title,
+                    Status::Ok,
+                    format!("{} found at {}", rt.label(), p.display()),
+                )
+            }
+            (None, true) => Check::new(
+                id,
+                title,
+                Status::Fail,
+                format!(
+                    "{} = {:?} is not an executable file or on PATH",
+                    rt.config_key(),
+                    l.wanted
+                ),
+            ),
+            (None, false) => Check::new(
+                id,
+                title,
+                Status::Ok,
+                format!(
+                    "{} not on PATH (needed only to serve {what}; set {})",
+                    l.wanted,
+                    rt.config_key()
+                ),
+            ),
+        };
+        out.push(c);
+    }
+    if !any && out.iter().all(|c| c.status == Status::Ok) {
+        out.push(Check::new(
+            "inference.runtime",
+            "inference runtime",
+            Status::Warn,
+            "[inference] is set but neither llama-server nor vllm was found; serve-inference can only --print-command".into(),
+        ));
+    }
+    match inf.listen() {
+        Ok(addr) => {
+            let (status, msg) = match TcpListener::bind(addr) {
+                Ok(l) => {
+                    drop(l);
+                    (Status::Ok, format!("{addr} is free"))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => (
+                    Status::Warn,
+                    format!(
+                        "{addr} is in use (a running inference server?); serve-inference cannot listen there"
+                    ),
+                ),
+                Err(e) => (Status::Fail, format!("cannot listen on {addr}: {e}")),
+            };
+            out.push(Check::new("port.inference", "inference port", status, msg));
+            let exposed = !addr.ip().is_loopback();
+            if inf.api_key_env.is_empty() {
+                out.push(Check::new(
+                    "inference.api_key",
+                    "inference api key",
+                    if exposed { Status::Warn } else { Status::Ok },
+                    if exposed {
+                        format!("listening on {addr} without an API key; set inference.api_key_env or keep host = \"127.0.0.1\" behind a reverse proxy")
+                    } else {
+                        "no upstream API key (loopback only; your reverse proxy must authenticate)".into()
+                    },
+                ));
+            } else {
+                let set = std::env::var_os(&inf.api_key_env).is_some_and(|v| !v.is_empty());
+                out.push(Check::new(
+                    "inference.api_key",
+                    "inference api key",
+                    if set { Status::Ok } else { Status::Fail },
+                    if set {
+                        format!("{} is set (value not shown)", inf.api_key_env)
+                    } else {
+                        format!(
+                            "inference.api_key_env names {}, which is not set",
+                            inf.api_key_env
+                        )
+                    },
+                ));
+            }
+        }
+        Err(e) => out.push(Check::new(
+            "port.inference",
+            "inference port",
+            Status::Fail,
+            format!("{e:#}"),
+        )),
+    }
     out
 }
 
@@ -1246,5 +1361,32 @@ mod tests {
         let (c, cfg) = check_config(&p);
         assert_eq!(c.status, Status::Fail);
         assert!(cfg.is_none());
+    }
+
+    #[test]
+    fn inference_checks() {
+        use crate::inference::InferenceConfig;
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut inf = InferenceConfig {
+            port: held.local_addr().unwrap().port(),
+            llama_server: "/nonexistent/llama-server".into(),
+            ..InferenceConfig::default()
+        };
+        let checks = check_inference(&inf);
+        let by = |id: &str| checks.iter().find(|c| c.id == id).cloned().unwrap();
+        assert_eq!(by("inference.llama_server").status, Status::Fail);
+        assert_eq!(by("port.inference").status, Status::Warn);
+        assert_eq!(by("inference.api_key").status, Status::Ok);
+        inf.host = "0.0.0.0".into();
+        inf.api_key_env = "TS_DOCTOR_TEST_UNSET_KEY_VAR".into();
+        let checks = check_inference(&inf);
+        let key = checks.iter().find(|c| c.id == "inference.api_key").unwrap();
+        assert_eq!(key.status, Status::Fail);
+        assert!(!key.message.contains("secret"));
+        inf.api_key_env.clear();
+        let checks = check_inference(&inf);
+        let key = checks.iter().find(|c| c.id == "inference.api_key").unwrap();
+        assert_eq!(key.status, Status::Warn, "exposed without a key");
+        drop(held);
     }
 }

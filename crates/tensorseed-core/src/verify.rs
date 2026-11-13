@@ -248,9 +248,11 @@ pub fn verify_dir(
                         break;
                     }
                     let mut st = verify_file(&paths[i], sorted[i]);
-                    if st == FileStatus::Missing
-                        && opts.allow_missing.iter().any(|p| p == &sorted[i].path)
-                    {
+                    let allowed = opts.allow_missing.iter().any(|p| p == &sorted[i].path);
+                    // An empty placeholder for a deliberately skipped file
+                    // (older pulls left these behind) holds no content.
+                    let placeholder = matches!(st, FileStatus::SizeMismatch { actual: 0, .. });
+                    if allowed && (st == FileStatus::Missing || placeholder) {
                         st = FileStatus::Skipped;
                     } else if st == FileStatus::Missing
                         && sorted[i].pickle_risk
@@ -411,6 +413,30 @@ mod tests {
         let r = verify_dir(d, &expected, allow).unwrap();
         assert_eq!(by_status(&r)["missing.gguf"], &FileStatus::Skipped);
         assert_eq!(by_status(&r)["pytorch_model.bin"], &FileStatus::Missing);
+
+        // An empty placeholder of a skipped file counts as skipped; an empty
+        // file that was not skipped is still a size mismatch.
+        std::fs::write(d.join("missing.gguf"), b"").unwrap();
+        let allow = VerifyOptions {
+            allow_missing_pickle: false,
+            allow_missing: vec!["missing.gguf".into()],
+            threads: 1,
+        };
+        let r = verify_dir(d, &expected, allow).unwrap();
+        assert_eq!(by_status(&r)["missing.gguf"], &FileStatus::Skipped);
+        let r = verify_dir(
+            d,
+            &expected,
+            VerifyOptions {
+                threads: 1,
+                ..VerifyOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            by_status(&r)["missing.gguf"],
+            FileStatus::SizeMismatch { actual: 0, .. }
+        ));
     }
 
     fn by_status(r: &VerifyReport) -> std::collections::BTreeMap<&str, &FileStatus> {

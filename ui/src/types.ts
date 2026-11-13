@@ -70,12 +70,23 @@ export type IndexEntry = {
   updated_at: string;
 };
 
+/** Commercial serving mark, derived on the client from the license id (not signed, not legal advice). */
+export type CommercialServing = "allowed" | "restricted" | "forbidden" | "unknown";
+
+export type CommercialAssessment = {
+  value: CommercialServing;
+  license: string | null;
+  note: string;
+};
+
 export type ListedEntry = {
   id: string;
   repoType: "model" | "dataset";
   indexKey: string;
   latestKey: string;
   index: IndexEntry;
+  /** Commercial serving mark for the index license, when the source computes it. */
+  commercial?: CommercialAssessment;
   /** Per entry signature result, when the source checks entries one by one (Desktop). */
   signature?: { ok: true } | { ok: false; error: string };
 };

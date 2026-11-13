@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatBytes, pullCommand } from "@tensorseed/ui/format";
-  import { loadManifest } from "../catalog";
+  import { commercialServing, loadManifest } from "../catalog";
+  import CommercialBadge from "@tensorseed/ui/components/CommercialBadge.svelte";
   import type { CatalogVerifier } from "../wasm";
   import type { ListedEntry } from "@tensorseed/ui/types";
   import CommandBox from "@tensorseed/ui/components/CommandBox.svelte";
@@ -8,6 +9,11 @@
   let { verifier, entry }: { verifier: CatalogVerifier; entry: ListedEntry } = $props();
 
   let manifest = $derived(loadManifest(verifier, entry));
+  let commercial = $derived(
+    manifest
+      ? commercialServing(manifest.license.spdx ?? manifest.license.hf_tag, manifest.license.class)
+      : (entry.commercial ?? null),
+  );
   let selected = $state<Record<string, boolean>>({});
 
   let includes = $derived(Object.entries(selected).filter(([, v]) => v).map(([k]) => k));
@@ -47,6 +53,13 @@
             <dt class="inline font-medium">License:</dt>
             <dd class="inline">{manifest.license.spdx ?? manifest.license.hf_tag ?? "unknown"} ({manifest.license.class})</dd>
           </div>
+          {#if commercial}
+            <div>
+              <dt class="inline font-medium">Commercial serving:</dt>
+              <dd class="inline"><CommercialBadge assessment={commercial} /> {commercial.note}.</dd>
+              <dd class="text-xs opacity-70">Derived from the license id; not legal advice. Read the license before selling access.</dd>
+            </div>
+          {/if}
           {#if manifest.license.attribution}
             <div><dt class="font-medium">Attribution:</dt> <dd>{manifest.license.attribution}</dd></div>
           {/if}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026 Tuned Chaos
 
-import { CatalogVerifier, check_coin_rpc, initWasm, wasm_parse_manifest } from "./wasm";
+import { CatalogVerifier, check_coin_rpc, initWasm, wasm_commercial_serving, wasm_parse_manifest } from "./wasm";
 import { catalogDir, joinUrl } from "@tensorseed/ui/format";
 import { DEFAULT_GRACE_BLOCKS, MAX_ARTIFACT_BYTES } from "./official";
 import { loadAnchors, saveAnchor } from "./storage";
@@ -9,6 +9,7 @@ import type {
   CatalogAgreement,
   CatalogConfig,
   CoinCheckJson,
+  CommercialAssessment,
   HeadInfo,
   IndexEntry,
   ListedEntry,
@@ -343,6 +344,7 @@ export function listEntries(verifier: CatalogVerifier): ListedEntry[] {
         indexKey,
         latestKey: `ts/v1/repo/${repoType}/${id}/latest`,
         index,
+        commercial: commercialServing(index.license_spdx, null),
       });
     } catch {
       continue;
@@ -402,4 +404,9 @@ export function agreements(catalogs: LoadedCatalog[]): CatalogAgreement[] {
     }
   }
   return out;
+}
+
+/** Commercial serving mark from the shared Rust table (wasm). Not legal advice. */
+export function commercialServing(license: string | null, licenseClass: string | null): CommercialAssessment {
+  return JSON.parse(wasm_commercial_serving(license ?? undefined, licenseClass ?? undefined)) as CommercialAssessment;
 }

@@ -136,6 +136,8 @@ pub struct EntryView {
     index_key: String,
     latest_key: String,
     index: IndexEntry,
+    /// Commercial serving mark for the index license (client side, not legal advice).
+    commercial: tensorseed_core::commercial::Assessment,
     signature: SignatureView,
 }
 
@@ -333,6 +335,7 @@ async fn read_entries(
             repo_type,
             latest_key: format!("ts/v1/repo/{repo_type}/{repo_id}/latest"),
             index_key: key.clone(),
+            commercial: tensorseed_core::commercial::assess(ix.license_spdx.as_deref(), None),
             index: ix,
             signature,
         });
@@ -398,10 +401,12 @@ mod tests {
                 updated_at: "2026-01-01T00:00:00Z".into(),
                 taken_down: false,
             },
+            commercial: tensorseed_core::commercial::assess(None, None),
             signature: SignatureView::Ok { ok: true },
         })
         .unwrap();
         assert_eq!(v["repoType"], "model");
+        assert_eq!(v["commercial"]["value"], "unknown");
         assert_eq!(v["indexKey"], "ts/v1/index/model/org/name");
         assert_eq!(v["index"]["latest_commit"], "0".repeat(40));
         assert_eq!(v["signature"]["ok"], true);

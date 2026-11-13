@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use tensorseed_core::commercial::CommercialServing;
 use tensorseed_core::keys::RepoType;
 
 /// Tensorseed: verifiable, chain anchored mirrors of open Hugging Face models.
@@ -89,6 +90,41 @@ impl From<RepoTypeArg> for RepoType {
     }
 }
 
+/// Commercial serving mark argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CommercialServingArg {
+    /// Permissive license.
+    Allowed,
+    /// Commercial use allowed with conditions.
+    Restricted,
+    /// Non-commercial or research only.
+    Forbidden,
+    /// Missing, custom, or unrecognized license.
+    Unknown,
+}
+
+impl From<CommercialServingArg> for CommercialServing {
+    fn from(v: CommercialServingArg) -> Self {
+        match v {
+            CommercialServingArg::Allowed => Self::Allowed,
+            CommercialServingArg::Restricted => Self::Restricted,
+            CommercialServingArg::Forbidden => Self::Forbidden,
+            CommercialServingArg::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// Runtime argument for `serve-inference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RuntimeArg {
+    /// llama.cpp for GGUF files, vLLM for safetensors.
+    Auto,
+    /// llama.cpp `llama-server`.
+    LlamaCpp,
+    /// vLLM `vllm serve`.
+    Vllm,
+}
+
 /// Top level commands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -153,11 +189,34 @@ pub enum Command {
     Serve(ServeArgs),
     /// Re-hash a local copy against a signed manifest or the Hub's hashes.
     Verify(VerifyArgs),
+    /// Serve a verified local copy through an OpenAI compatible inference
+    /// server (llama.cpp for GGUF, vLLM for safetensors).
+    ///
+    /// The copy is verified against the signed manifest first and is never
+    /// served when verification fails. Licenses marked forbidden for
+    /// commercial serving are refused unless `--i-have-rights` is passed.
+    /// No runtime is bundled; configure binaries in `[inference]` or put
+    /// them on PATH. See docs/SELL-INFERENCE.md.
+    ServeInference(ServeInferenceArgs),
     /// List catalog entries.
+    ///
+    /// Each row shows a commercial serving mark derived from the license id
+    /// (allowed, restricted, forbidden, or unknown). The mark is not legal
+    /// advice; read the license before serving a model commercially.
     List {
         /// Filter by repo id substring.
         #[arg(long)]
         filter: Option<String>,
+        /// Only entries whose license permits commercial use (marked
+        /// allowed or restricted).
+        #[arg(long)]
+        commercial: bool,
+        /// Only entries with this commercial serving mark (repeatable).
+        #[arg(long = "commercial-serving", value_enum, value_name = "MARK")]
+        commercial_serving: Vec<CommercialServingArg>,
+        /// Print one JSON document (`ts.list/1`) instead of text.
+        #[arg(long)]
+        json: bool,
         /// Use the local catalog copy without syncing.
         #[arg(long)]
         no_wait: bool,
@@ -625,6 +684,62 @@ pub struct DoctorArgs {
     pub no_whoami: bool,
 }
 
+/// `serve-inference` arguments.
+#[derive(Debug, Args)]
+pub struct ServeInferenceArgs {
+    /// A directory written by `pull`, or a repo id `org/name[@rev]` (served
+    /// from the pull default directory).
+    pub target: String,
+    /// Directory to serve when the target is a repo id.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+    /// Inference runtime.
+    #[arg(long, value_enum, default_value_t = RuntimeArg::Auto)]
+    pub runtime: RuntimeArg,
+    /// GGUF file to load, relative to the directory (needed when the repo
+    /// has more than one quantization).
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+    /// Model id the server reports on /v1/models and that you list on a
+    /// marketplace (default: the repo id).
+    #[arg(long, value_name = "ID")]
+    pub model_id: Option<String>,
+    /// Listen address (overrides inference.host).
+    #[arg(long)]
+    pub host: Option<String>,
+    /// Listen port (overrides inference.port).
+    #[arg(long)]
+    pub port: Option<u16>,
+    /// Public base URL buyers reach, usually your TLS reverse proxy (for
+    /// example `https://llm.example.com/v1`); recorded in served-weights.json.
+    #[arg(long, value_name = "URL")]
+    pub public_url: Option<String>,
+    /// Serve a model whose license is marked forbidden for commercial
+    /// serving, because you hold a separate license or will not charge.
+    #[arg(long = "i-have-rights")]
+    pub i_have_rights: bool,
+    /// Print the runtime command and exit without starting it.
+    #[arg(long)]
+    pub print_command: bool,
+    /// Seconds to wait for /v1/models to answer (overrides
+    /// inference.ready_timeout_secs).
+    #[arg(long, value_name = "SECS")]
+    pub ready_timeout: Option<u64>,
+    /// Use the local catalog copy without syncing.
+    #[arg(long)]
+    pub no_wait: bool,
+    /// Use this subscribed catalog for the manifest.
+    #[arg(long, value_name = "NAME")]
+    pub catalog: Option<String>,
+    /// Hashing threads for verification.
+    #[arg(long, default_value_t = 4)]
+    pub threads: usize,
+    /// Extra arguments passed to the runtime after the configured ones
+    /// (after `--`).
+    #[arg(last = true, value_name = "ARGS")]
+    pub extra: Vec<String>,
+}
+
 /// `verify` arguments.
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
@@ -714,6 +829,7 @@ impl Command {
             Self::Seed { .. } => "seed",
             Self::Serve(_) => "serve",
             Self::Verify(_) => "verify",
+            Self::ServeInference(_) => "serve-inference",
             Self::List { .. } => "list",
             Self::Show { .. } => "show",
             Self::Takedown { .. } => "takedown",

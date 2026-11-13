@@ -163,3 +163,16 @@ explorer UI exists so Desktop can reuse it.
       limits by day and local time; `--download-limit`, `--upload-limit`,
       `--max-peers` on `pull` and `seed`. Not available in librqbit 9.1:
       a global connection cap and protocol encryption (MSE/PE)
+- [x] Commercial serving marks (`allowed`, `restricted`, `forbidden`,
+      `unknown`) derived on the client from the license id and class, one
+      table in `tensorseed-core`, shown in `list` (`--commercial`,
+      `--commercial-serving`, `--json`), `show`, the explorer, and the
+      shared `EntryList`; not part of the signed format; not legal advice
+- [x] `serve-inference`: verify a local copy against the signed manifest,
+      license gate (`--i-have-rights` for `forbidden`), start llama.cpp or
+      vLLM from `[inference]` or PATH (or `--print-command`), wait for
+      `/v1/models`, write the unsigned `ts.served-weights/0` record; logic
+      in `tensorseed-app`; `doctor` checks `[inference]`; guide in
+      [SELL-INFERENCE.md](SELL-INFERENCE.md)
+- [ ] Signed weights statement (replaces `ts.served-weights/0`), format
+      designed with a marketplace partner

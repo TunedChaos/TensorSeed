@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 14)
+# Tensorseed: Project Specification (Revision 15)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). tensorseed.org and tensorseed.garden are reserved as redirects to tensorseed.dev.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 > Status: 0.2.0, an early release. Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+
+Revision 15 changes: commercial serving marks (11.1): a client side value (`allowed`, `restricted`, `forbidden`, `unknown`) derived from the license id and class already in index entries and manifests; the signed catalog format does not change. `serve-inference` (19.1) serves a verified local copy through llama.cpp or vLLM, configured in `[inference]`, and writes the unsigned, provisional `ts.served-weights/0` record. `list --json` prints `ts.list/1`.
 
 Revision 14 changes: public status is 0.2.0 (an early release). Everything in the 0.2.0 plan (section 18) ships: multi-catalog subscription, the explorer at explore.tensorseed.dev, `pull --include` / `--exclude`, the torrent, then Hugging Face, then HTTP mirrors default order, `tensorseed hf login` / `logout` / `status`, .deb and .rpm packages, shell completions, and man pages.
 
@@ -737,8 +739,9 @@ Single binary `tensorseed`.
 | `harvest [--watch] [--dry-run] [--only ...] [--status] [--allow-license ID]...` | Watchlist driven mirroring from the Hub (section 13). | done |
 | `pull <repo_id>[@commit] [--out DIR] [--from-hf\|--manifest-file\|--manifest-url] [--jobs N] [--allow-pickle] [--allow-gated] [--allow-license ID]... [--no-hf-fallback] [--retry-dead-mirrors] [--no-wait] [--ignore-tombstone] [--swarm\|--no-swarm\|--swarm-only] [--peer HOST:PORT] [--seed-after DURATION]` | Download and verify (8.2). Swarm first by default; HTTP mirrors and the Hub are failover. `--no-swarm` skips the swarm; `--swarm` is a compatibility alias; `--swarm-only` never uses HTTP or the Hub (exit 3 if the swarm does not deliver a file). `--retry-dead-mirrors` ignores cooldown marks on HTTP origins and clears them on success. | done |
 | `verify <dir\|repo_id[@commit]> [--repo] [--dir] [--hf] [--manifest-file] [--strict] [--threads N]` | Re-hash a local copy; exit 3 on mismatch. | done |
-| `list [--filter] [--no-wait]` | List catalog entries (from `index` keys). | done |
-| `show <repo_id>[@commit] [--revision]` | Print a manifest. | done |
+| `list [--filter] [--commercial] [--commercial-serving MARK]... [--json] [--no-wait] [--catalog NAME]` | List catalog entries (from `index` keys) with their commercial serving mark (11.1). `--commercial` keeps `allowed` and `restricted`; `--json` prints `ts.list/1`. | done |
+| `show <repo_id>[@commit] [--revision]` | Print a manifest; the commercial serving mark goes to stderr. | done |
+| `serve-inference <dir\|repo_id[@commit]> [--dir] [--runtime auto\|llama-cpp\|vllm] [--file GGUF] [--model-id ID] [--host] [--port] [--public-url URL] [--i-have-rights] [--print-command] [--ready-timeout SECS] [-- ARGS]` | Verify a local copy against the signed manifest, gate on the license, start an OpenAI compatible runtime, wait for `/v1/models`, and write `ts.served-weights/0` (19.1). | done (unreleased 0.3.0) |
 | `jobs [--show ID] [--clear ID]` | Inspect resumable download jobs. | done |
 | `seed [--dir DIR]... [--for DURATION] [--serve-catalog]` | Seed published revisions or pulled directories in place; `--serve-catalog` also serves the local catalog files on `serve.http_listen` (8.3). | done |
 | `serve [--for DURATION] [--serve-catalog] [--http ADDR] [--health ADDR\|off] [--fetch\|--no-fetch] [--dir DIR]... [--sync-interval SECS]` | Long running seeder: catalog loop, selection rules, takedowns, budget, auto fetch, HTTP webseed, catalog mirror, health endpoint, port mapping (8.3). | done |
@@ -896,6 +899,16 @@ alt_speed = true                 # follow [torrent.alt_speed]
 # seed_time_limit = "30d"        # unset: torrent.seed_time_limit
 # seed_limit_action = "pause"    # unset: torrent.seed_limit_action
 
+# [inference]                    # serve-inference (19.1); absent: defaults, and doctor skips it
+# llama_server = ""              # "" = llama-server on PATH
+# vllm = ""                      # "" = vllm on PATH
+# host = "127.0.0.1"             # an IP address; keep loopback behind a TLS proxy
+# port = 8090
+# llama_server_args = []
+# vllm_args = []
+# api_key_env = ""               # env var with an upstream key, passed as LLAMA_API_KEY / VLLM_API_KEY
+# ready_timeout_secs = 600
+
 [harvest]                        # section 13
 repos = []                       # ids or { id = "org/name", allow_license = ["other"] }
 authors = []
@@ -1013,6 +1026,16 @@ The S3 client is `object_store` (section 12): custom endpoints, path style or vi
 5. **Restricted / non-commercial / no-redistribution licenses:** never published by default.
 5a. **Explicit overrides:** a publisher who holds the rights (typically their own repo tagged `license: other`) can accept one license id for one run with `--allow-license <id>` on `harvest` or `publish`, or for one repo with a watchlist entry `{ id = "org/name", allow_license = ["other"] }`. Overrides lift only the license refusal: gated, private, disabled, takedown, and tombstone rules still apply, the default allowlist is unchanged, and the manifest keeps the honest class (an overridden `other` is recorded as `unknown`, never `open`). On `pull` the flag only silences the "would not be published" warning, since personal downloads are never refused for license.
 6. **Takedown process:** a published contact address in `CatalogInfo.publisher.contact` and a policy URL. On a valid request: write a `Tombstone` (one generation), delete webseed objects on every storage target, stop seeding on publisher nodes. `harvest` never fetches repos on its takedown list (`harvest.takedown`, `harvest.takedown_file`) or tombstoned in the catalog. Seed daemons honor tombstones by default and stop seeding. Limits are stated publicly: past DataLayer history and existing swarm copies cannot be recalled.
+
+
+### 11.1 Commercial serving marks
+
+Separate from the publishing policy above (which is about redistribution), clients derive whether a model may be served to paying users. The value is computed from fields the catalog already signs: `license_spdx` in index entries, and `license.spdx`, `license.hf_tag`, and `license.class` in manifests. It is never stored in the catalog, so no schema, signature, or older client is affected, and an improved table needs only a client update.
+
+- Values: `allowed` (permissive, no field of use limits), `restricted` (commercial use with conditions; a note names the main ones, for example the Llama licenses' 700M monthly active user clause and Acceptable Use Policy, the Gemma Prohibited Use Policy, OpenRAIL use restrictions, AGPL network source duties), `forbidden` (non-commercial or research only), `unknown` (missing, `other`, custom, or not in the table).
+- One table, `LICENSE_TABLE` in `tensorseed-core` (`commercial.rs`), keyed by lowercase Hugging Face license id. Ids not in it fall through to a non-commercial rule (an `nc` part, or naming non-commercial or research use: `forbidden`) and then to `unknown`. The license class only adds context to an `unknown` note.
+- Surfaces: `list` (text, `--commercial`, `--commercial-serving`, and `ts.list/1` JSON with `commercial_serving` and `commercial_note`), `show` (stderr), the explorer and the shared `EntryList` (badge and filter, through the wasm `commercial_serving` binding), Desktop (`EntryView.commercial`), and the `serve-inference` license gate.
+- Every surface states that the marks are derived from the license id only and are not legal advice.
 
 ---
 
@@ -1352,3 +1375,35 @@ Design only in this revision; 0.3.0 comes after 0.2.0. Hugging Face models and d
 - Updates: Desktop includes the Tauri in-app updater, verifying update signatures with a dedicated updater key (separate from the release key) against a static feed on tensorseed.dev. The app sends no telemetry.
 
 **Order.** 0.3.0 starts after the 0.2.0 explorer UI exists, so Desktop can reuse it. CLI packaging and the `gui` launcher stub can be designed earlier, but the app itself is a 0.3.0 milestone.
+
+### 19.1 Serving inference from a verified copy
+
+`tensorseed serve-inference` lets anyone with a verified copy run it behind an OpenAI compatible server and list it on any OpenAI compatible marketplace or gateway (guide: [SELL-INFERENCE.md](SELL-INFERENCE.md)). It is generic: no marketplace code, no wallet, no token. The logic is in `tensorseed_app::inference` so Desktop can reuse it.
+
+1. **Verify.** Re-hash the directory against the signed manifest: the stored `.tensorseed/manifest.json` signed entry, else the catalog. Files the pull deliberately skipped may be absent; any other missing or different file, an unsigned manifest, a dataset, or a covering tombstone refuses to serve.
+2. **License gate.** `forbidden` (11.1) refuses unless `--i-have-rights`; `restricted` and `unknown` warn with the note.
+3. **Runtime.** GGUF goes to llama.cpp `llama-server` (`--model <file> --alias <id> --host --port`), safetensors checkpoints (`config.json` plus `.safetensors`) to vLLM (`vllm serve <dir> --served-model-name <id> --host --port`), then `[inference]` extra arguments, then arguments after `--`. Several GGUF candidates (projector files and later shards excluded) need `--file`. vLLM is refused while the directory holds files outside the manifest, because it loads from the whole directory. Binaries come from `[inference]` or PATH; nothing is bundled. `--print-command` prints the command (the API key referenced by variable name) and exits.
+4. **Ready.** Poll `<base_url>/models` until it lists a model, the runtime exits, or `ready_timeout_secs` passes. With `inference.api_key_env`, the key is handed to the runtime in `LLAMA_API_KEY` or `VLLM_API_KEY` (never on the command line) and sent as a bearer token when polling.
+5. **Record.** Write `.tensorseed/served-weights.json`:
+
+```json
+{
+  "schema": "ts.served-weights/0",
+  "signed": false,
+  "note": "Unsigned placeholder. The signed weights statement format is not decided yet; do not rely on this file as proof.",
+  "catalog": { "name": "tensorseed", "publisher_key_id": "CE1E0E3D543DFFB8",
+               "manifest_key": "ts/v1/repo/model/<org>/<name>/rev/<commit>",
+               "manifest_sha256": "<sha256 of the signed manifest value>" },
+  "type": "model", "repo": "<org>/<name>", "revision": "<commit>",
+  "license": { "id": "apache-2.0", "class": "open", "commercial_serving": "allowed", "rights_asserted": false },
+  "runtime": "llama-cpp", "entrypoint": { "kind": "gguf", "path": "<file>.gguf" },
+  "served_model_id": "<id>", "base_url": "http://127.0.0.1:8090/v1",
+  "public_base_url": "https://llm.example.com/v1",
+  "files": [ { "path": "...", "size": 0, "sha256": "..." } ],
+  "created_at": "2026-11-13T21:01:42Z"
+}
+```
+
+Version 0 is unsigned and provisional. A signed weights statement, designed with a marketplace partner, will replace it under a new schema; the format is not decided. Even signed, such a statement attests what the seller claims to serve, not what actually runs.
+
+`doctor` adds `inference.llama_server`, `inference.vllm`, `port.inference`, and `inference.api_key` checks when `[inference]` is present (an explicitly configured binary that is missing fails; a missing key variable fails; a non loopback host without a key warns).

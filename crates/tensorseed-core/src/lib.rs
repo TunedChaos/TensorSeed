@@ -64,6 +64,7 @@
 #![warn(rustdoc::broken_intra_doc_links)]
 
 pub mod canonical;
+pub mod commercial;
 pub mod error;
 pub mod hash;
 pub mod keys;

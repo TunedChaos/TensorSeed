@@ -10,6 +10,7 @@ mod consumer;
 mod doctor;
 mod harvest;
 mod hf_auth;
+mod inference;
 mod keys;
 mod mirrors;
 mod serve;
@@ -111,9 +112,21 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Verify(args) => consumer::verify(&load()?, args).await,
         Command::List {
             filter,
+            commercial,
+            commercial_serving,
+            json,
             no_wait,
             catalog,
-        } => consumer::list(&load()?, filter.as_deref(), *no_wait, catalog.as_deref()).await,
+        } => {
+            let opts = consumer::ListOptions {
+                filter: filter.clone(),
+                commercial: *commercial,
+                serving: commercial_serving.iter().map(|&c| c.into()).collect(),
+                json: *json,
+            };
+            consumer::list(&load()?, &opts, *no_wait, catalog.as_deref()).await
+        }
+        Command::ServeInference(args) => inference::run(&load()?, args).await,
         Command::Show {
             repo,
             repo_type,

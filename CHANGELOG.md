@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Commercial serving marks: every catalog entry gets a derived
+  `commercial_serving` value (`allowed`, `restricted`, `forbidden`, or
+  `unknown`) with a short note, computed on the client from the license id
+  and class already in the catalog. Nothing in the signed catalog format
+  changes. One mapping table (`tensorseed-core` `commercial`) feeds the
+  CLI, the explorer (through the wasm bindings), and Desktop. `list` shows
+  the mark on every row and takes `--commercial` (allowed or restricted),
+  `--commercial-serving <mark>`, and `--json` (`ts.list/1`); `show` prints
+  the mark on stderr; the explorer and the shared `EntryList` show a badge
+  and a filter. Every surface says the marks are not legal advice.
+- `tensorseed serve-inference <dir|org/name>` serves a verified local copy
+  through an OpenAI compatible runtime: llama.cpp (`llama-server`) for
+  GGUF, vLLM for safetensors. It re-hashes the copy against the signed
+  manifest and refuses to serve on any mismatch, an unsigned manifest, or a
+  takedown; refuses `forbidden` licenses unless `--i-have-rights`, and warns
+  on `restricted` and `unknown`; waits for `/v1/models`; prints the base URL
+  and model id; and writes an unsigned, versioned
+  `.tensorseed/served-weights.json` (`ts.served-weights/0`), a placeholder
+  for a signed weights statement whose format is not decided yet. New
+  `[inference]` section (binary paths, host, port, extra arguments, an API
+  key variable passed as `LLAMA_API_KEY` or `VLLM_API_KEY`, ready timeout);
+  `--print-command` prints the exact command. No runtime is bundled. The
+  logic is in `tensorseed-app` for Desktop. `doctor` checks `[inference]`
+  when it is present. Guide: `docs/SELL-INFERENCE.md`.
+- `pull --include` no longer leaves empty placeholder files for unselected
+  paths (the torrent engine created them), and `verify` reports such
+  placeholders left by older pulls as skipped instead of failing.
 - `tensorseed doctor` is implemented. It checks the config, each followed
   catalog (reachable, head signature, Chia anchor), the published mirror
   list and whether the mirrors answer, where the Hugging Face token comes

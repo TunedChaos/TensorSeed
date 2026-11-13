@@ -391,3 +391,13 @@ alt_speed = true                 # follow the [torrent.alt_speed] schedule
 # seed_ratio_limit = 2.0
 # seed_time_limit = "30d"
 # seed_limit_action = "pause"
+
+# [inference]                    # `tensorseed serve-inference` (docs/SELL-INFERENCE.md)
+# llama_server = ""              # "" = llama-server on PATH; or a full path
+# vllm = ""                      # "" = vllm on PATH; or a full path
+# host = "127.0.0.1"             # keep loopback and put a TLS reverse proxy in front
+# port = 8090
+# llama_server_args = []         # e.g. ["-c", "8192", "-ngl", "99"]
+# vllm_args = []                 # e.g. ["--max-model-len", "8192"]
+# api_key_env = ""               # env var holding an upstream API key (never stored here)
+# ready_timeout_secs = 600       # wait this long for /v1/models

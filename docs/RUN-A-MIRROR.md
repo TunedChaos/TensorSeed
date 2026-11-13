@@ -436,6 +436,11 @@ meant for you, not the internet.
   redistribution, and takedowns propagate automatically. You are still
   responsible for what you serve where you live; use `exclude`, `types`,
   and `license_classes` to narrow it.
+- **Sell inference**: a verified copy you seed can also back an OpenAI
+  compatible endpoint, which can help pay for bandwidth and hardware.
+  `tensorseed serve-inference` verifies the copy, checks the license, and
+  starts llama.cpp or vLLM; see [SELL-INFERENCE.md](SELL-INFERENCE.md).
+  `tensorseed list --commercial` shows which entries permit it.
 - **Help**: `tensorseed doctor` (config, catalog and chain anchor, mirrors,
   ports, disk space, writable directories; `--json` for scripts) and
   `tensorseed serve -v` for debug logs; issues on the project repository.

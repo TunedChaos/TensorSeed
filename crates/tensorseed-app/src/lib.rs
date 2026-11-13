@@ -12,6 +12,7 @@ pub mod config;
 pub mod doctor;
 pub mod follow;
 pub mod hf;
+pub mod inference;
 pub mod mirrors;
 pub mod pull;
 pub mod serve_config;

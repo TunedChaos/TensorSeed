@@ -58,6 +58,11 @@ pub struct Config {
     /// Extra catalogs to follow (`[[catalogs]]`). Empty keeps the top-level
     /// `[catalog]` / `[file]` / `[chia]` block as the sole subscription.
     pub catalogs: Vec<CatalogSub>,
+    /// Local inference runtimes for `serve-inference` (`[inference]`).
+    /// `None` when the section is absent; [`Config::inference`] then gives
+    /// the defaults, and `doctor` skips the inference checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference: Option<crate::inference::InferenceConfig>,
 }
 
 /// `[harvest]`: what `tensorseed harvest` mirrors from the Hub.
@@ -496,6 +501,12 @@ impl Config {
 }
 
 impl Config {
+    /// `[inference]` settings, or the defaults when the section is absent.
+    #[must_use]
+    pub fn inference(&self) -> crate::inference::InferenceConfig {
+        self.inference.clone().unwrap_or_default()
+    }
+
     /// Rewrite every filesystem path setting to native separators, so
     /// `config show`, log lines, and the paths actually opened agree. A no-op
     /// on Unix; on Windows `C:/dl` becomes `C:\\dl`. URLs are not touched.
@@ -535,6 +546,13 @@ impl Config {
         for c in &mut self.catalogs {
             if let Some(s) = c.state_dir.as_mut() {
                 n(s);
+            }
+        }
+        if let Some(i) = self.inference.as_mut() {
+            for s in [&mut i.llama_server, &mut i.vllm] {
+                if s.contains('/') || s.contains('\\') {
+                    n(s);
+                }
             }
         }
     }
@@ -2006,6 +2024,9 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     cfg.storage.validate()?;
     cfg.torrent.validate()?;
     cfg.serve.validate()?;
+    if let Some(i) = &cfg.inference {
+        i.validate()?;
+    }
     if !cfg.catalog.publisher_pubkey.is_empty() {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }

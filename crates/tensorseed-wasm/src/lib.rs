@@ -239,6 +239,36 @@ pub fn parse_manifest(value_json: &str) -> Result<String, JsError> {
     to_json(&m)
 }
 
+/// Commercial serving mark for a license id (`license_spdx` of an index
+/// entry, or a manifest's `license.spdx`), with the publisher's license
+/// class when known (`open`, `attribution`, `restricted`, `unknown`).
+/// Returns `{"value", "license", "note"}` as JSON; `value` is `allowed`,
+/// `restricted`, `forbidden`, or `unknown`. Derived on the client; not legal
+/// advice ([`commercial_disclaimer`]).
+///
+/// # Errors
+///
+/// Only if the result cannot be serialized.
+#[wasm_bindgen]
+pub fn commercial_serving(
+    license: Option<String>,
+    class: Option<String>,
+) -> Result<String, JsError> {
+    let class = class
+        .as_deref()
+        .and_then(|c| serde_json::from_value(serde_json::Value::String(c.to_string())).ok());
+    to_json(&tensorseed_core::commercial::assess(
+        license.as_deref(),
+        class,
+    ))
+}
+
+/// The "not legal advice" text shown next to commercial serving marks.
+#[wasm_bindgen]
+pub fn commercial_disclaimer() -> String {
+    tensorseed_core::commercial::DISCLAIMER.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +387,20 @@ mod tests {
             st.check_head(&pk, &fork_head, 1).unwrap_err(),
             tensorseed_verify::Error::Fork { revision: 1 }
         ));
+    }
+
+    #[test]
+    fn commercial_serving_json() {
+        let v: serde_json::Value =
+            serde_json::from_str(&commercial_serving(Some("Apache-2.0".into()), None).unwrap())
+                .unwrap();
+        assert_eq!(v["value"], "allowed");
+        let v: serde_json::Value = serde_json::from_str(
+            &commercial_serving(Some("vendor-terms".into()), Some("attribution".into())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["value"], "unknown");
+        assert!(v["note"].as_str().unwrap().contains("attribution"));
+        assert!(commercial_disclaimer().contains("not legal advice"));
     }
 }

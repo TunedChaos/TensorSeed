@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatBytes, sizeBucket } from "../format";
   import type { ListedEntry } from "../types";
+  import CommercialBadge from "./CommercialBadge.svelte";
 
   let {
     entries,
@@ -18,6 +19,8 @@
   let typeFilter = $state<"all" | "model" | "dataset">("all");
   let licenseFilter = $state("all");
   let sizeFilter = $state<"all" | "tiny" | "small" | "medium" | "large">("all");
+  let servingFilter = $state<"all" | "commercial" | "allowed" | "restricted" | "forbidden" | "unknown">("all");
+  let hasMarks = $derived(entries.some((e) => e.commercial));
 
   let licenses = $derived.by(() => {
     const set = new Set<string>();
@@ -34,6 +37,10 @@
       const lic = e.index.license_spdx ?? "unknown";
       if (licenseFilter !== "all" && lic !== licenseFilter) return false;
       if (sizeFilter !== "all" && sizeBucket(e.index.total_bytes) !== sizeFilter) return false;
+      if (servingFilter !== "all") {
+        const v = e.commercial?.value ?? "unknown";
+        if (servingFilter === "commercial" ? v !== "allowed" && v !== "restricted" : v !== servingFilter) return false;
+      }
       if (q && !e.id.toLowerCase().includes(q) && !lic.toLowerCase().includes(q)) return false;
       return true;
     });
@@ -73,8 +80,24 @@
         <option value="large">Over 1 GiB</option>
       </select>
     </label>
+    {#if hasMarks}
+      <label class="form-control">
+        <span class="label py-1"><span class="label-text">Commercial serving</span></span>
+        <select class="select select-bordered" bind:value={servingFilter} aria-label="Filter by commercial serving">
+          <option value="all">Any</option>
+          <option value="commercial">Commercial use possible</option>
+          <option value="allowed">Allowed</option>
+          <option value="restricted">Restricted</option>
+          <option value="forbidden">Forbidden</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </label>
+    {/if}
   </div>
   <p class="text-sm" aria-live="polite">{filtered.length} of {entries.length} entries</p>
+  {#if hasMarks}
+    <p class="text-xs opacity-70">Commercial serving marks come from the license id only and are not legal advice. Read the license before selling access to a model.</p>
+  {/if}
   <div class="overflow-x-auto">
     <table class="table table-zebra">
       <thead>
@@ -99,7 +122,12 @@
               {/if}
             </th>
             <td>{e.repoType}</td>
-            <td>{e.index.license_spdx ?? "unknown"}</td>
+            <td>
+              {e.index.license_spdx ?? "unknown"}
+              {#if e.commercial}
+                <CommercialBadge assessment={e.commercial} />
+              {/if}
+            </td>
             <td>{formatBytes(e.index.total_bytes)}</td>
             <td><code class="text-xs">{e.index.latest_commit.slice(0, 12)}</code></td>
             {#if showSignature}
