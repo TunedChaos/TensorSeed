@@ -42,9 +42,9 @@ if ! python3 -c "import segno" >/dev/null 2>&1; then
     python3 -m venv "${QR_VENV}"
     "${QR_VENV}/bin/pip" install -q segno
   fi
-  "${QR_VENV}/bin/python" "${ROOT}/site/generate-xch-qr.py"
+  "${QR_VENV}/bin/python" "${ROOT}/scripts/generate-xch-qr.py"
 else
-  python3 "${ROOT}/site/generate-xch-qr.py"
+  python3 "${ROOT}/scripts/generate-xch-qr.py"
 fi
 ADDR="$(tr -d "[:space:]" < "${ROOT}/site/xch-donate-address.txt")"
 if ! grep -F -q "${ADDR}" "${ROOT}/site/index.html"; then

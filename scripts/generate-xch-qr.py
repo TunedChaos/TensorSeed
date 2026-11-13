@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate site/xch-donate.svg from site/xch-donate-address.txt.
 
-Run from the repo root or from site/. Needs the segno package (pure Python,
-no network at encode time). deploy.sh installs it into a local venv if needed.
+Run from the repo root. Needs the segno package (pure Python, no network
+at encode time). deploy.sh installs it into a local venv if needed.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-SITE = Path(__file__).resolve().parent
+SITE = Path(__file__).resolve().parent.parent / "site"
 ADDRESS_FILE = SITE / "xch-donate-address.txt"
 OUTPUT = SITE / "xch-donate.svg"
 
