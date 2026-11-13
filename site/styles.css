@@ -210,7 +210,7 @@ pre.copyable code {
 
 .support-btn {
   display: inline-block;
-  margin: 0 0 1rem;
+  margin: 0 0.5rem 0.75rem 0;
   padding: 0.55rem 1.1rem;
   background: var(--accent);
   color: var(--bg);

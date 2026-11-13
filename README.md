@@ -300,10 +300,12 @@ be added to the official catalog, open a "Request a catalog mirror" issue
 
 ## Support
 
-Tensorseed is an open source project by Tuned Chaos. To help pay for
-storage and the official seeder, see the
-[Support](https://tensorseed.dev/#support) section on the website.
-Support is not a tax-deductible donation.
+Tensorseed is an open source project by Tuned Chaos, and support goes
+through the studio. To help pay for storage and the official seeder, use
+[GitHub Sponsors](https://github.com/sponsors/TunedChaos) or the
+[Tuned Chaos supporters page](https://tunedchaos.com/supporters/), which
+has a card form (pick Tensorseed in the project dropdown) and a Chia (XCH)
+address. Support is not a tax-deductible donation.
 
 ## License
 
