@@ -66,7 +66,7 @@ dist: (clean-dist)
             *)         exe="{{ bin }}" ;;
         esac
         cp "target/${triple}/dist/${exe}" "$stage/"
-        cp LICENSE README.md "$stage/"
+        cp LICENSE README.md RELEASE-KEY.md "$stage/"
         mkdir -p "$stage/docs" "$stage/config"
         cp docs/RUN-A-MIRROR.md "$stage/docs/"
         cp config/tensorseed.example.toml config/mirrors.example.toml "$stage/config/"
@@ -83,14 +83,64 @@ dist: (clean-dist)
     done
     (cd {{ dist_dir }} && sha256sum {{ bin }}-* > SHA256SUMS && cat SHA256SUMS)
 
-# Sign dist/SHA256SUMS with minisign. The key path is only passed through; it is never stored.
-sign key:
-    minisign -S -s "{{ key }}" -m {{ dist_dir }}/SHA256SUMS -t "tensorseed {{ version }} release"
-    @echo "wrote {{ dist_dir }}/SHA256SUMS.minisig"
+# Key id of the catalog publisher key. Release signing must never use it.
+catalog_key_id := "CE1E0E3D543DFFB8"
 
-# Verify dist/SHA256SUMS against a minisign public key file, then the archives.
-verify-dist pubkey:
-    minisign -V -p "{{ pubkey }}" -m {{ dist_dir }}/SHA256SUMS
+# Create the offline release signing key pair in <dir> (minisign; prompts for a passphrase). See RELEASE-KEY.md.
+release-keygen dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v minisign >/dev/null || { echo "minisign is not installed (https://jedisct1.github.io/minisign/)" >&2; exit 1; }
+    dir="{{ dir }}"
+    sk="$dir/tensorseed-release.key"
+    pk="$dir/tensorseed-release.pub"
+    for f in "$sk" "$pk"; do
+        if [ -e "$f" ]; then echo "refusing to overwrite $f" >&2; exit 1; fi
+    done
+    mkdir -p "$dir"
+    chmod 700 "$dir" 2>/dev/null || true
+    umask 077
+    echo "Creating the Tensorseed release key. minisign asks for a passphrase:"
+    echo "use a long random one and store it in your password manager."
+    minisign -G -s "$sk" -p "$pk" -c "tensorseed release key"
+    chmod 600 "$sk"
+    chmod 644 "$pk"
+    echo
+    echo "Secret key: $sk (encrypted, mode 600). Keep it offline; never copy it to a server or CI."
+    echo "Public key: $pk"
+    echo
+    sed -n 2p "$pk"
+    echo
+    echo "Next steps:"
+    echo "  1. Back up $sk and the passphrase separately (see RELEASE-KEY.md)."
+    echo "  2. Publish the public key line above in README.md, docs/RUN-A-MIRROR.md and RELEASE-KEY.md."
+    echo "  3. Sign a release: just dist && just sign $sk"
+
+# Sign dist/SHA256SUMS with the offline RELEASE key (never the catalog key). The key path is only passed through; it is never stored.
+sign release_key:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sums="{{ dist_dir }}/SHA256SUMS"
+    [ -f "$sums" ] || { echo "$sums not found; run just dist first" >&2; exit 1; }
+    tmp="$sums.minisig.tmp"
+    trap 'rm -f "$tmp"' EXIT
+    minisign -S -s "{{ release_key }}" -m "$sums" -x "$tmp" -t "tensorseed {{ version }} release SHA256SUMS"
+    # The key id is bytes 2..10 of the signature line, shown reversed in hex.
+    kid="$(sed -n 2p "$tmp" | python3 -c 'import sys, base64; print(base64.b64decode(sys.stdin.read().strip())[2:10][::-1].hex().upper())')"
+    if [ "$kid" = "{{ catalog_key_id }}" ]; then
+        echo "refusing: {{ release_key }} is the catalog publisher key ({{ catalog_key_id }}); sign releases with the release key" >&2
+        exit 1
+    fi
+    mv "$tmp" "$sums.minisig"
+    trap - EXIT
+    echo "wrote $sums.minisig (release key id $kid)"
+
+# Verify dist/SHA256SUMS with the release public key (a .pub file or the base64 key line), then the archives.
+verify-dist release_pubkey:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    k="{{ release_pubkey }}"
+    if [ -f "$k" ]; then minisign -V -p "$k" -m {{ dist_dir }}/SHA256SUMS; else minisign -V -P "$k" -m {{ dist_dir }}/SHA256SUMS; fi
     cd {{ dist_dir }} && sha256sum -c SHA256SUMS
 
 # Run the whole test suite (unit, integration, doc tests).

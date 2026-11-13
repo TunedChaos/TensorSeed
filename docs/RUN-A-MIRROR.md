@@ -42,16 +42,27 @@ Release archives are built with `just dist` (see
 
 Each archive is named `tensorseed-<version>-<target>.tar.gz` (`.zip` on
 Windows) and ships with a `SHA256SUMS` file and its minisign signature
-`SHA256SUMS.minisig`. Check both before running anything, using the release
-public key published with the release:
+`SHA256SUMS.minisig`. They are signed with the **release key**, which is
+deliberately not the catalog publisher key: the catalog key has to live on
+an online publishing host, while the release key stays offline, so a
+compromised catalog key can never sign a binary. Do not verify releases
+with the catalog key.
+
+```text
+Release public key: not published yet (no signed releases exist so far)
+```
+
+Check both files before running anything:
 
 ```sh
-minisign -Vm SHA256SUMS -p tensorseed-release.pub
+minisign -Vm SHA256SUMS -P <release public key>
 sha256sum -c --ignore-missing SHA256SUMS
 tar xzf tensorseed-0.1.0-x86_64-unknown-linux-musl.tar.gz
 install -m 0755 tensorseed-0.1.0-x86_64-unknown-linux-musl/tensorseed ~/.local/bin/
 tensorseed --version
 ```
+
+Key roles and rotation are described in [RELEASE-KEY.md](../RELEASE-KEY.md).
 
 ### From source
 

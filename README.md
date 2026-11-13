@@ -182,6 +182,25 @@ then `just dist`. Windows contributors can build natively with
 `cargo build --release` (MSVC), or use the justfile from Git Bash or WSL.
 Details in [CONTRIBUTING.md](CONTRIBUTING.md#cross-platform-builds).
 
+### Release signatures
+
+Release archives come with `SHA256SUMS` and `SHA256SUMS.minisig`, signed by
+the **release key**, which is a different key from the catalog publisher key
+(key separation: the catalog key lives on an online publishing host, the
+release key stays offline, so a leaked catalog key cannot sign binaries).
+
+```text
+Release public key: not published yet (no signed releases exist so far)
+```
+
+```sh
+minisign -Vm SHA256SUMS -P <release public key>
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+Key roles, storage, and rotation: [RELEASE-KEY.md](RELEASE-KEY.md).
+Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
+
 Configuration: copy `config/tensorseed.example.toml` to
 `~/.config/tensorseed/tensorseed.toml`. Secrets (HF token, storage keys, the
 publisher key password) are only read from environment variables, never from the
