@@ -46,6 +46,8 @@ percent-encoding = "2"
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
 bytes = "1"
+# Local wall clock time for scheduled speed limits.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 getrandom = "0.4"
 object_store = { version = "0.14", default-features = false, features = ["aws"] }
 rpassword = "7"

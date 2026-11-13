@@ -3478,6 +3478,7 @@ name = "tensorseed-app"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "figment",
  "fs4",
  "futures-util",

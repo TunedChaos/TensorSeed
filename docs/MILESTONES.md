@@ -154,3 +154,12 @@ explorer UI exists so Desktop can reuse it.
       installed, otherwise prints a download link (does not link a GUI)
 - [ ] Desktop packaging: Windows installer (MSI or NSIS); Linux .deb,
       .rpm, AppImage, and Flatpak. CLI packages remain GUI-free.
+- [x] Standard torrent options in `[torrent]` for `pull`, `seed`, and
+      `serve`, in `tensorseed-app` so Desktop can reuse them: download
+      cap, per torrent peer limit, per torrent rate caps, uTP for pull and
+      seed, SOCKS5 proxy, bind interface (not on Windows), concurrent
+      init limit, seeding ratio and time limits (pause or remove; per
+      revision in `serve`, kept across restarts), and scheduled alt speed
+      limits by day and local time; `--download-limit`, `--upload-limit`,
+      `--max-peers` on `pull` and `seed`. Not available in librqbit 9.1:
+      a global connection cap and protocol encryption (MSE/PE)

@@ -512,6 +512,7 @@ async fn swarm_download(
     let engine = Engine::start(crate::torrents::engine_options(cfg, false, out)?)
         .await
         .context("starting the BitTorrent engine")?;
+    let _speed = tensorseed_app::swarm::apply_plan(engine.rate_handle(), cfg.torrent.speed_plan()?);
     let t0 = std::time::Instant::now();
     let r = engine
         .download(

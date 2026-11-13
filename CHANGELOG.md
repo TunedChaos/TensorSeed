@@ -18,6 +18,24 @@
   paths and on-disk layout are unchanged. On Windows, an interrupted `pull`
   started by an older build into such a mixed path restarts its job record
   instead of resuming (files already downloaded are still reused).
+- Standard torrent options in `[torrent]` (documented in SPEC 7.1 and
+  the example config). Defaults keep today's behaviour.
+  `download_limit_kbps` (pull and seed; it was always unlimited before),
+  `max_peers_per_torrent`, `torrent_upload_limit_kbps` and
+  `torrent_download_limit_kbps` per torrent, `utp` for pull and seed,
+  `proxy_url` (SOCKS5), `bind_interface` (Linux and macOS),
+  `concurrent_init_limit`, seeding stop rules `seed_ratio_limit`,
+  `seed_time_limit`, and `seed_limit_action` (`pause` or `remove`; files
+  are never deleted), and `[torrent.alt_speed]` with day of week and
+  local time windows, applied live. `pull` and `seed` take
+  `--download-limit`, `--upload-limit`, and `--max-peers`; `seed` also
+  takes `--ratio-limit` and `--seed-time` and exits once every torrent
+  reached a limit. `serve` applies the stop rules per revision across
+  restarts (`seed_stats` in `serve-state.json`, overridable in
+  `[serve]`), follows the schedule unless `serve.alt_speed = false`, and
+  applies `serve.download_limit_kbps` to background fetches too. There is
+  no global connection cap and no protocol encryption setting, because
+  librqbit 9.1 implements neither.
 - `tensorseed catalog update-info` rewrites the signed catalog info
   (`ts/v1/catalog`) from the config, so a publisher can set or change
   `publisher_contact`, `publisher_policy_url`, webseed bases, and trackers

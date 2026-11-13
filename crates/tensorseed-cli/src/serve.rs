@@ -16,6 +16,11 @@
 //! endpoint on localhost. State (what was seeded, lifetime byte counters)
 //! is kept in `<data_dir>/serve-state.json`, so a restart resumes seeding
 //! before the first sync finishes. SIGTERM and SIGINT stop it cleanly.
+//!
+//! Seeding stop rules (`seed_ratio_limit`, `seed_time_limit`) count per
+//! revision across restarts (`seed_stats` in the state file). A revision
+//! that reaches one is paused or removed from the swarm, never deleted, and
+//! is not restarted while the limit holds.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -25,6 +30,9 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
+use tensorseed_app::swarm::{
+    LimitHit, SeedLimitAction, SeedLimits, SeedTotals, SeedTracker, SpeedSchedule, apply_plan,
+};
 use tensorseed_catalog::CatalogId;
 use tensorseed_catalog::file::{HEAD_PATH, Head, delta_path};
 use tensorseed_catalog::minisign::PublicKey;
@@ -53,10 +61,6 @@ pub const STATE_SCHEMA: &str = "ts.servestate/1";
 
 /// Retry a failed download after this long.
 const FETCH_RETRY_SECS: u64 = 3600;
-
-fn kbps(k: u64) -> Option<u32> {
-    (k > 0).then(|| u32::try_from(k.saturating_mul(1024)).unwrap_or(u32::MAX))
-}
 
 fn unix_now() -> u64 {
     tensorseed_catalog::file::unix_now()
@@ -90,6 +94,8 @@ struct PersistedServe {
     catalog_revision: u64,
     head_expires_unix: Option<u64>,
     revisions: Vec<PersistedRev>,
+    /// Per revision upload and seeding time, for the seeding stop rules.
+    seed_stats: BTreeMap<String, SeedTotals>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +126,9 @@ struct Seeding {
     owned: bool,
     bytes: u64,
     only: Option<Vec<String>>,
+    tracker: SeedTracker,
+    /// Paused by a seeding stop rule.
+    paused: Option<LimitHit>,
 }
 
 type FetchResult = (String, Result<(), String>);
@@ -148,6 +157,11 @@ struct Daemon {
     skipped: Vec<Note>,
     taken_down: Vec<Note>,
     catalog_dir: Option<PathBuf>,
+    seed_limits: SeedLimits,
+    seed_stats: BTreeMap<String, SeedTotals>,
+    /// Revisions removed from the swarm by a seeding stop rule.
+    limited: BTreeMap<String, LimitHit>,
+    _speed: SpeedSchedule,
 }
 
 /// `tensorseed serve`.
@@ -203,16 +217,20 @@ impl Daemon {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
 
+        let plan = sc.speed_plan(&cfg.torrent)?;
+        let seed_limits = sc.seed_limits(&cfg.torrent)?;
         let mut eo = engine_options(&cfg, true, &data_dir)?;
         eo.utp = sc.utp;
-        if sc.upload_limit_kbps > 0 {
-            eo.upload_bps = kbps(sc.upload_limit_kbps);
-        }
-        eo.download_bps = kbps(sc.download_limit_kbps);
+        eo.upload_bps = plan.normal.upload_bps;
+        eo.download_bps = plan.normal.download_bps;
         let (up_bps, down_bps) = (eo.upload_bps, eo.download_bps);
         let engine = Engine::start(eo)
             .await
             .context("starting the BitTorrent engine")?;
+        let speed = apply_plan(engine.rate_handle(), plan);
+        if speed.is_scheduled() {
+            println!("speed    alt speed schedule on ([torrent.alt_speed])");
+        }
         let listen = engine.listen_addr();
         if let Some(a) = listen {
             println!(
@@ -317,6 +335,7 @@ impl Daemon {
             _ => None,
         };
         let (fetch_tx, fetch_rx) = mpsc::unbounded_channel();
+        let seed_stats = base.seed_stats.clone();
         let mut d = Self {
             cfg,
             data_dir,
@@ -341,6 +360,10 @@ impl Daemon {
             skipped: Vec::new(),
             taken_down: Vec::new(),
             catalog_dir,
+            seed_limits,
+            seed_stats,
+            limited: BTreeMap::new(),
+            _speed: speed,
         };
         d.resume().await;
         d.refresh_status();
@@ -365,7 +388,7 @@ impl Daemon {
             let Ok(repo) = RepoRef::new(r.repo_type, r.repo_id.clone()) else {
                 continue;
             };
-            if t.name != r.name || !r.dir.is_dir() {
+            if t.name != r.name || !r.dir.is_dir() || self.removed_by_limit(&r.name, r.bytes) {
                 continue;
             }
             match self
@@ -439,7 +462,10 @@ impl Daemon {
                 }
                 _ = sync_tick.tick() => self.cycle().await,
                 Some((name, r)) = self.fetch_rx.recv() => self.fetch_done(name, r).await,
-                _ = stats_tick.tick() => self.refresh_status(),
+                _ = stats_tick.tick() => {
+                    self.enforce_seed_limits().await;
+                    self.refresh_status();
+                }
                 _ = persist_tick.tick() => self.persist(),
                 _ = report_tick.tick() => self.report(),
             }
@@ -944,6 +970,15 @@ impl Daemon {
             if self.seeding.contains_key(&n) || self.fetching.contains_key(&n) {
                 continue;
             }
+            let bytes = self.desired[&n].manifest.totals.bytes;
+            if self.removed_by_limit(&n, bytes) {
+                let hit = self.limited[&n];
+                self.skipped.push(Note {
+                    item: n,
+                    detail: format!("seed limit: {hit}"),
+                });
+                continue;
+            }
             match self.seed_local(&n).await {
                 Ok(true) => {}
                 Ok(false) if self.cfg.serve.fetch => {
@@ -984,6 +1019,11 @@ impl Daemon {
         };
         if let Some(l) = &self.library {
             l.remove(n);
+        }
+        if takedown {
+            self.seed_stats.remove(n);
+        } else {
+            self.save_totals(n, &s);
         }
         if let Err(e) = self.engine.remove(&s.handle).await {
             tracing::warn!("stopping {n}: {e}");
@@ -1118,6 +1158,19 @@ impl Daemon {
             torrent.info_hash_v1_hex().unwrap_or_default(),
             torrent.info_hash_v2_hex()
         );
+        let prior = self.seed_stats.get(n).copied().unwrap_or_default();
+        let mut paused = None;
+        if let Some(hit) = self.seed_limits.check_totals(&prior, bytes) {
+            // Pause action (remove is handled before seeding): keep it
+            // paused from the start.
+            match self.engine.pause(&handle).await {
+                Ok(()) => {
+                    println!("paused   {n}: {hit}");
+                    paused = Some(hit);
+                }
+                Err(e) => tracing::warn!("pausing {n}: {e}"),
+            }
+        }
         self.seeding.insert(
             n.to_owned(),
             Seeding {
@@ -1129,9 +1182,108 @@ impl Daemon {
                 owned,
                 bytes,
                 only,
+                tracker: SeedTracker::new(prior),
+                paused,
             },
         );
         Ok(())
+    }
+
+    /// True (and recorded in `limited`) when `n` already reached a seeding
+    /// limit and the action is `remove`, so it must not be seeded again.
+    fn removed_by_limit(&mut self, n: &str, bytes: u64) -> bool {
+        if self.seed_limits.action != SeedLimitAction::Remove {
+            self.limited.remove(n);
+            return false;
+        }
+        let hit = self
+            .seed_stats
+            .get(n)
+            .and_then(|t| self.seed_limits.check_totals(t, bytes));
+        match hit {
+            Some(h) => {
+                self.limited.insert(n.to_owned(), h);
+                true
+            }
+            None => {
+                self.limited.remove(n);
+                false
+            }
+        }
+    }
+
+    fn save_totals(&mut self, n: &str, s: &Seeding) {
+        if s.paused.is_some() {
+            return; // already saved when it was paused
+        }
+        let t = s.tracker.totals(s.handle.progress().uploaded);
+        self.seed_stats.insert(n.to_owned(), t);
+    }
+
+    /// Count seeding time and upload per revision, and pause or remove the
+    /// ones that reached a limit (every stats tick).
+    async fn enforce_seed_limits(&mut self) {
+        let now = std::time::Instant::now();
+        let mut remove = Vec::new();
+        let names: Vec<String> = self.seeding.keys().cloned().collect();
+        for n in names {
+            let Some(s) = self.seeding.get_mut(&n) else {
+                continue;
+            };
+            if let Some(hit) = s.paused {
+                if self
+                    .seed_limits
+                    .check_totals(
+                        &self.seed_stats.get(&n).copied().unwrap_or_default(),
+                        s.bytes,
+                    )
+                    .is_none()
+                {
+                    // Limits were raised: seed again from the saved totals.
+                    if self.engine.resume(&s.handle).await.is_ok() {
+                        println!("resumed  {n}: below the seed limits again (was {hit})");
+                        s.paused = None;
+                        s.tracker =
+                            SeedTracker::new(self.seed_stats.get(&n).copied().unwrap_or_default());
+                    }
+                }
+                continue;
+            }
+            let p = s.handle.progress();
+            let totals = s.tracker.tick(now, p.live && p.error.is_none(), p.uploaded);
+            self.seed_stats.insert(n.clone(), totals);
+            let Some(hit) = self.seed_limits.check_totals(&totals, s.bytes) else {
+                continue;
+            };
+            match self.seed_limits.action {
+                SeedLimitAction::Pause => match self.engine.pause(&s.handle).await {
+                    Ok(()) => {
+                        println!("paused   {n}: {hit}");
+                        s.paused = Some(hit);
+                    }
+                    Err(e) => tracing::warn!("pausing {n}: {e}"),
+                },
+                SeedLimitAction::Remove => remove.push((n, hit)),
+            }
+        }
+        for (n, hit) in remove {
+            let Some(s) = self.seeding.remove(&n) else {
+                continue;
+            };
+            if let Some(l) = &self.library {
+                l.remove(&n);
+            }
+            if let Err(e) = self.engine.remove(&s.handle).await {
+                tracing::warn!("removing {n}: {e}");
+            }
+            // Files stay on disk (no prune): the limit is not a takedown.
+            println!("removed  {n}: {hit} (files kept)");
+            self.skipped.push(Note {
+                item: n.clone(),
+                detail: format!("seed limit: {hit}"),
+            });
+            self.limited.insert(n, hit);
+        }
     }
 
     fn pump_fetches(&mut self) {
@@ -1238,10 +1390,11 @@ impl Daemon {
                     info_hash_v1: s.torrent.info_hash_v1_hex().unwrap_or_default(),
                     uploaded_bytes: p.uploaded,
                     peers: s.handle.peers(),
-                    state: match p.error {
-                        Some(e) => format!("error: {e}"),
-                        None if p.live => "live".into(),
-                        None => "checking".into(),
+                    state: match (p.error, s.paused) {
+                        (Some(e), _) => format!("error: {e}"),
+                        (None, Some(hit)) => format!("paused: {hit}"),
+                        (None, None) if p.live => "live".into(),
+                        (None, None) => "checking".into(),
                     },
                     owned: s.owned,
                 }
@@ -1291,6 +1444,13 @@ impl Daemon {
                     only: s.only.clone(),
                 })
                 .collect(),
+            seed_stats: {
+                let mut m = self.seed_stats.clone();
+                for (n, s) in self.seeding.iter().filter(|(_, s)| s.paused.is_none()) {
+                    m.insert(n.clone(), s.tracker.totals(s.handle.progress().uploaded));
+                }
+                m
+            },
         };
         let r = serde_json::to_vec_pretty(&doc)
             .map_err(anyhow::Error::from)
@@ -1388,6 +1548,16 @@ async fn fetch_revision(
         swarm_only: false,
         peer: Vec::new(),
         seed_after: None,
+        limits: crate::cli::SwarmArgs::default(),
+    };
+    // Fetches run their own engine; serve's swarm download cap applies too.
+    let mut fetch_cfg;
+    let cfg = if cfg.serve.download_limit_kbps > 0 {
+        fetch_cfg = cfg.clone();
+        fetch_cfg.torrent.download_limit_kbps = cfg.serve.download_limit_kbps;
+        &fetch_cfg
+    } else {
+        cfg
     };
     let code = crate::consumer::pull(cfg, &args).await?;
     if code != ExitCode::SUCCESS {
@@ -1478,8 +1648,49 @@ mod tests {
             s.port_mapping = true;
             s.port_mapping_lease_secs = 10;
         }));
-        assert_eq!(kbps(0), None);
-        assert_eq!(kbps(2), Some(2048));
+        assert!(bad(|s| s.seed_ratio_limit = Some(-1.0)));
+        assert!(bad(|s| s.seed_time_limit = Some("3w".into())));
+    }
+
+    #[test]
+    fn serve_caps_and_seed_limits_inherit_from_torrent() {
+        let mut t = crate::config::Torrent {
+            upload_limit_kbps: 100,
+            download_limit_kbps: 50,
+            seed_ratio_limit: 2.0,
+            seed_time_limit: "7d".into(),
+            ..Default::default()
+        };
+        let mut s = ServeConfig::default();
+        let p = s.speed_plan(&t).unwrap();
+        // Upload falls back to [torrent]; serve's download cap is its own.
+        assert_eq!(p.normal.upload_bps, Some(100 * 1024));
+        assert_eq!(p.normal.download_bps, None);
+        s.upload_limit_kbps = 10;
+        s.download_limit_kbps = 20;
+        let p = s.speed_plan(&t).unwrap();
+        assert_eq!(p.normal.upload_bps, Some(10 * 1024));
+        assert_eq!(p.normal.download_bps, Some(20 * 1024));
+        let l = s.seed_limits(&t).unwrap();
+        assert_eq!(l.ratio, Some(2.0));
+        assert_eq!(l.time, Some(Duration::from_secs(7 * 86400)));
+        assert_eq!(l.action, SeedLimitAction::Pause);
+        s.seed_ratio_limit = Some(0.0);
+        s.seed_time_limit = Some(String::new());
+        s.seed_limit_action = Some(SeedLimitAction::Remove);
+        let l = s.seed_limits(&t).unwrap();
+        assert!(l.is_unlimited());
+        assert_eq!(l.action, SeedLimitAction::Remove);
+        // alt_speed = false ignores the [torrent.alt_speed] schedule.
+        t.alt_speed.enabled = true;
+        t.alt_speed.window = vec![tensorseed_app::swarm::SpeedWindow {
+            days: vec![],
+            start: "00:00".into(),
+            end: "24:00".into(),
+        }];
+        assert!(s.speed_plan(&t).unwrap().is_scheduled());
+        s.alt_speed = false;
+        assert!(!s.speed_plan(&t).unwrap().is_scheduled());
     }
 
     #[test]

@@ -15,4 +15,5 @@ pub mod hf;
 pub mod mirrors;
 pub mod pull;
 pub mod serve_config;
+pub mod swarm;
 pub mod torrents;

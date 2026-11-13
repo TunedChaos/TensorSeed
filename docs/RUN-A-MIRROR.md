@@ -180,6 +180,26 @@ download_limit_kbps = 0          # swarm download cap
 http_upload_limit_kbps = 0       # cap for the optional HTTP webseed
 ```
 
+Off peak schedules and seeding stop rules (local time; see SPEC 7.1):
+
+```toml
+[torrent]
+max_peers_per_torrent = 0        # 0 = 128 per torrent
+seed_ratio_limit = 0.0           # e.g. 5.0: pause a revision after 5x its size uploaded
+seed_time_limit = ""             # e.g. "30d"
+seed_limit_action = "pause"      # or "remove" (files are kept)
+
+[torrent.alt_speed]              # serve follows it unless serve.alt_speed = false
+enabled = true
+upload_limit_kbps = 512          # while a window is active
+download_limit_kbps = 0
+
+[[torrent.alt_speed.window]]
+days = ["weekdays"]
+start = "08:00"
+end = "23:00"
+```
+
 Takedowns: when the publisher tombstones a revision, every seeder stops
 serving it at its next sync and (with `prune = true`) deletes its copy.
 

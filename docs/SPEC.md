@@ -535,6 +535,7 @@ Decided in the M0 spike ([M0-TORRENT-SPIKE.md](M0-TORRENT-SPIKE.md)).
 - **Integrity does not depend on the engine.** Swarm bytes land in place, then every file is hashed with SHA-256 against the signed manifest before it counts as present; `Metainfo::verify_file` can also recheck the BEP 52 root.
 - Trackers: a short configurable list (`torrent.trackers`, http, https, or udp) plus DHT. Private trackers are not used. Static peers (`torrent.peers`, `pull --peer`) help reach known seed boxes.
 - The `.torrent` file sits next to the content in storage, at `t/<content name>.torrent` beside `t/<content name>/` (10.1), so every webseed base also serves it; its URLs are stored in the manifest. A later catalog revision of the same commit may rewrite that file (for example to add webseeds or trackers) while the info dict stays the same, so `t/<content name>.torrent` must not be uploaded or served with a long-lived immutable Cache-Control. The payload under `t/<content name>/` is immutable.
+- **Swarm options** (`[torrent]`, used by `pull` and `seed`; `serve` takes the same ones and keeps its own caps and uTP switch in `[serve]`). Defaults keep the earlier behaviour. `upload_limit_kbps` and `download_limit_kbps` cap the whole session (0 = unlimited; `--upload-limit` and `--download-limit` override them on `pull` and `seed`); `torrent_upload_limit_kbps` and `torrent_download_limit_kbps` cap each torrent on top. `max_peers_per_torrent` (0 = librqbit's 128; `--max-peers`) limits peer connections per torrent; librqbit 9.1 has no session wide connection cap, so there is no global limit setting. `utp` turns on uTP for `pull` and `seed`. `proxy_url` sends outgoing peer connections through a SOCKS5 proxy (`socks5://` or `socks5h://`, optional `user:pass@`; listening, DHT, and uTP traffic do not go through it, so pair it with `dht = false` and `utp = false` when everything must go through the proxy). `bind_interface` binds the sockets to one network device (Linux and macOS; rejected on Windows, where `listen_addr` set to the interface's address is the alternative). `concurrent_init_limit` (0 = 3) is how many torrents are checked at once on start. Seeding stop rules: `seed_ratio_limit` (uploaded bytes over torrent size, 0 = none) and `seed_time_limit` (active seeding time, `30m`, `12h`, `7d`; empty = none), with `seed_limit_action = "pause"` (default) or `"remove"`; files are never deleted. `seed` exits once every torrent reached a rule; `serve` applies them per revision across restarts (8.3). `[torrent.alt_speed]` holds scheduled alternative caps: `enabled`, `upload_limit_kbps`, `download_limit_kbps` (0 = unlimited while active), and `[[torrent.alt_speed.window]]` entries with `days` (`mon`..`sun`, `weekdays`, `weekends`, `all`; empty = every day), `start`, and `end` (`HH:MM` local time, end exclusive, `24:00` for midnight; an end before the start runs overnight and belongs to the start day). Windows follow the wall clock, so on DST days a window inside the skipped hour does not run and one inside the repeated hour runs twice; the schedule is re-checked every 30 seconds and applied live to the session caps. Protocol encryption (MSE/PE) is not offered: librqbit 9.1 does not implement it, so all peer traffic is plain BitTorrent.
 
 ### 7.2 Webseeds (BEP 19)
 
@@ -624,7 +625,7 @@ Implemented (Revision 9). `tensorseed serve [--for DURATION] [--serve-catalog] [
 - **Where revisions come from.** Selected revisions are looked up as `t/<content name>/` (with `t/<content name>.torrent`) under `serve.data_dir` (downloaded by the daemon, "owned"), `storage.local_dir`, every enabled `provider = "torrent"` target, and `serve.dirs`. The local torrent must match the signed manifest (`Metainfo::check_manifest`: name, files, sizes, BEP 52 roots, info hashes), then librqbit checks every piece before the revision is announced, so a revision is only seeded and served when it matches the catalog. If no torrent file is on disk, it is fetched from the manifest's `torrent_file_urls`. With `fetch = true`, missing revisions are downloaded into `<data_dir>/t/<content name>/` with the pull pipeline (8.2: swarm first when `fetch_swarm`, using the same no-peer and stall failover as pull, then webseeds, mirrors, the Hub; every file SHA-256 checked), one at a time in the background so takedowns stay prompt; a failed download is retried after an hour. An incomplete owned copy (crash mid download) is resumed rather than seeded.
 - **Selection.** `select` globs (`*` matches across `/`) with `exclude`, plus the `[harvest]` watchlist with `select_watchlist`; `types`, `license_classes`, `latest_only`, `max_revision_bytes`, and the `max_bytes` disk budget (sum of all seeded revisions). Priority for the budget: first matching `select` pattern, then latest before older revisions, then newer `published_at`. The default `select = ["*"]` with `fetch = false` seeds everything of the catalog that is already on disk and downloads nothing.
 - **Takedowns.** A tombstone covering a revision (or an index entry marked `taken_down`) stops seeding and HTTP serving at the next sync (default every 300 s). Owned copies are deleted with `prune = true` (default), also when a revision is deselected; published trees (`storage.local_dir`, `serve.dirs`) are never deleted by `serve`. An in-flight download of a revision that is taken down is cancelled.
-- **Limits.** Upload cap from `serve.upload_limit_kbps` (falls back to `torrent.upload_limit_kbps`), swarm download cap `serve.download_limit_kbps`, HTTP upload cap `serve.http_upload_limit_kbps` shared by all connections.
+- **Limits.** Upload cap from `serve.upload_limit_kbps` (falls back to `torrent.upload_limit_kbps`), swarm download cap `serve.download_limit_kbps` (also applied to background fetches), HTTP upload cap `serve.http_upload_limit_kbps` shared by all connections. The `[torrent.alt_speed]` schedule replaces the swarm caps while a window is active unless `serve.alt_speed = false`. Peer limits, proxy, bind interface, per torrent caps, and `concurrent_init_limit` come from `[torrent]` (see 7.1, swarm options). Seeding stop rules (`seed_ratio_limit`, `seed_time_limit`, `seed_limit_action`, each overridable in `[serve]`) apply per revision: upload and active seeding time are counted per revision and kept across restarts in `serve-state.json` (`seed_stats`). A revision that reaches a limit is paused (it stays in the session, HTTP serving continues) or removed from the swarm and from HTTP; its files are never deleted for a limit, and it is not started again while the limit holds. Health shows paused revisions as `paused: <reason>` and removed ones under skipped.
 - **NAT traversal.** uTP (BEP 29) is on by default in `serve` (`serve.utp`): librqbit 9.1 accepts and dials uTP on the UDP side of `torrent.listen_port` next to TCP (librqbit itself still defaults to TCP only, so `pull` and `seed` keep TCP only). Port mapping is off by default because it opens a port on the router; `serve.port_mapping = true` tries NAT-PMP (RFC 6886, which PCP routers also answer) on the default gateway, then UPnP IGD (`WANIPConnection` / `WANPPPConnection` `AddPortMapping`), for TCP and UDP, with one hour leases renewed at half time and deleted on shutdown. If the router grants a different external port, the daemon warns (peers learn the local port). uTP is not hole punching: two peers that are both behind NAT without a mapping still cannot connect.
 - **HTTP serving** (`serve.http_listen`, off by default): `GET /t/<content name>.torrent` and `GET /t/<content name>/<path>` for every seeded revision, which is the BEP 19 layout, so `http://host:port/` works as a `mirrors.toml` entry or a webseed base (`.../t/`). Single `Range` requests get 206 with `Content-Range`, unsatisfiable ones 416, `HEAD` works, only files listed in the torrent are reachable (no `.tensorseed/` state, no traversal), files whose size changed on disk are refused, and a revision disappears from HTTP the moment it stops seeding.
 - **`--serve-catalog`** (`serve.serve_catalog`, needs `http_listen`): after each sync the daemon copies `head.json`, every `deltas/*.json`, the head's snapshot, and `mirrors.toml`, each with its `.minisig`, from the sync source into `<data_dir>/catalog/<catalog>/`, checking every signature against the pinned key, and serves them at `/<catalog>/`, so the daemon is a valid `file.mirror_urls` entry. `seed --serve-catalog` serves the publisher's own `<storage.local_dir>/<catalog>/` on `serve.http_listen`.
@@ -633,7 +634,7 @@ Implemented (Revision 9). `tensorseed serve [--for DURATION] [--serve-catalog] [
 - **Field test (two real hosts, 2026-11-12).** A home seeder behind NAT and a hosted server: the home router answered neither NAT-PMP nor UPnP (a host firewall can also drop SSDP replies), and the server's firewall dropped the swarm and HTTP ports, so no direct connection was possible without opening a port. Over SSH port forwards instead, `pull --swarm-only` moved the 5.36 GB GGUF revision from the server's `serve` to the home host entirely over the swarm in 455 s (about 11.8 MB/s, limited by the SSH tunnel), and `verify` passed; the home seeder uploaded at about 3 MB/s (its upstream). HTTP range requests and the catalog mirror on the server returned the expected bytes. Seeders need `torrent.listen_port` open for TCP and UDP (and `serve.http_listen`'s port for HTTP).
 - **Not yet:** a free disk space check before fetching (only the byte budget applies), BitTorrent seeding of catalog snapshots, announcing a different external port than the local one, and Chia head expiry (the Chia backend reports its generation only).
 
-`tensorseed seed` stays the simple one shot seeder: it seeds every revision under `storage.local_dir`, every enabled `provider = "torrent"` storage target `dir`, or the directories passed with `--dir`, in place, honors `torrent.upload_limit_kbps`, `dht`, and `lsd`, and runs until `--for <duration>` or Ctrl-C. The `[seed]` config block is superseded by `[serve]` and ignored.
+`tensorseed seed` stays the simple one shot seeder: it seeds every revision under `storage.local_dir`, every enabled `provider = "torrent"` storage target `dir`, or the directories passed with `--dir`, in place, honors the `[torrent]` swarm options (7.1), `dht`, and `lsd`, and runs until `--for <duration>`, Ctrl-C, or every torrent reached a seeding stop rule. `--upload-limit`, `--download-limit` (KiB/s), `--max-peers`, `--ratio-limit`, and `--seed-time` override the matching keys for one run; its stop rule counters start at zero each run. The `[seed]` config block is superseded by `[serve]` and ignored.
 
 ---
 
@@ -813,6 +814,26 @@ pull_swarm = true                # pull uses the swarm when the manifest has a t
 swarm_no_peer_secs = 30          # fall back to HTTP if no peer connects (0 = disable)
 swarm_stall_secs = 60            # fall back to HTTP if no byte progress (0 = disable)
 swarm_timeout_secs = 600         # overall cap on the swarm pass, then HTTP fills the rest
+download_limit_kbps = 0          # pull and seed; 0 = unlimited
+max_peers_per_torrent = 0        # 0 = 128 (librqbit default); no global connection cap
+utp = false                      # uTP for pull and seed (serve: serve.utp)
+proxy_url = ""                   # socks5:// or socks5h:// for outgoing peer connections
+bind_interface = ""              # e.g. "wg0"; Linux and macOS only
+concurrent_init_limit = 0        # 0 = 3
+torrent_upload_limit_kbps = 0    # per torrent; 0 = unlimited
+torrent_download_limit_kbps = 0
+seed_ratio_limit = 0.0           # 0 = no limit
+seed_time_limit = ""             # "" = no limit; 30m, 12h, 7d
+seed_limit_action = "pause"      # or "remove"; files are never deleted
+
+[torrent.alt_speed]              # scheduled caps, local wall clock time
+enabled = false
+upload_limit_kbps = 0
+download_limit_kbps = 0
+# [[torrent.alt_speed.window]]   # days: mon..sun, weekdays, weekends, all
+# days = ["weekdays"]
+# start = "09:00"
+# end = "17:00"                  # before start: overnight; "24:00" ends at midnight
 
 [fetch]
 dead_mirror_cooldown_secs = 3600 # skip a dead HTTP origin this long; 0 disables persistence
@@ -870,6 +891,10 @@ http_upload_limit_kbps = 0
 serve_catalog = false
 health_listen = "127.0.0.1:6880"
 check_timeout_secs = 3600
+alt_speed = true                 # follow [torrent.alt_speed]
+# seed_ratio_limit = 2.0         # unset: torrent.seed_ratio_limit
+# seed_time_limit = "30d"        # unset: torrent.seed_time_limit
+# seed_limit_action = "pause"    # unset: torrent.seed_limit_action
 
 [harvest]                        # section 13
 repos = []                       # ids or { id = "org/name", allow_license = ["other"] }

@@ -102,7 +102,12 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             )
             .await
         }
-        Command::Pull(args) => consumer::pull(&load()?, args).await,
+        Command::Pull(args) => {
+            let mut cfg = load()?;
+            args.limits.apply(&mut cfg.torrent);
+            cfg.torrent.validate()?;
+            consumer::pull(&cfg, args).await
+        }
         Command::Verify(args) => consumer::verify(&load()?, args).await,
         Command::List {
             filter,
@@ -131,7 +136,21 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             dir,
             duration,
             serve_catalog,
-        } => torrents::seed(&load()?, dir, duration.as_deref(), *serve_catalog).await,
+            limits,
+            ratio_limit,
+            seed_time,
+        } => {
+            let mut cfg = load()?;
+            limits.apply(&mut cfg.torrent);
+            if let Some(r) = ratio_limit {
+                cfg.torrent.seed_ratio_limit = *r;
+            }
+            if let Some(t) = seed_time {
+                cfg.torrent.seed_time_limit.clone_from(t);
+            }
+            cfg.torrent.validate()?;
+            torrents::seed(&cfg, dir, duration.as_deref(), *serve_catalog).await
+        }
         Command::Serve(args) => serve::run(load()?, args).await,
         Command::Jobs { show, clear } => {
             consumer::jobs(&load()?, show.as_deref(), clear.as_deref())

@@ -889,6 +889,40 @@ pub struct Torrent {
     pub swarm_stall_secs: u64,
     /// Longest the swarm pass waits overall before HTTP takes over.
     pub swarm_timeout_secs: u64,
+    /// Download cap in KiB/s for `pull` and `seed`, 0 means unlimited.
+    pub download_limit_kbps: u64,
+    /// Peer connections per torrent, 0 for the engine default (128). The
+    /// engine has no session wide connection cap.
+    pub max_peers_per_torrent: u32,
+    /// Also accept and dial uTP (UDP on the listen port) for `pull` and
+    /// `seed`. `serve` uses `serve.utp`.
+    pub utp: bool,
+    /// SOCKS5 proxy for outgoing peer connections:
+    /// `socks5://[user:pass@]host:port`, or `socks5h://` to resolve host
+    /// names through the proxy. Empty: direct. Listening, DHT, and uTP do
+    /// not go through the proxy.
+    pub proxy_url: String,
+    /// Bind torrent sockets to this network interface (for example a VPN
+    /// device such as `wg0`). Linux and macOS only. Empty: any interface.
+    pub bind_interface: String,
+    /// Torrents checked at the same time when a session starts, 0 for the
+    /// engine default (3).
+    pub concurrent_init_limit: u32,
+    /// Upload cap per torrent in KiB/s, 0 means unlimited.
+    pub torrent_upload_limit_kbps: u64,
+    /// Download cap per torrent in KiB/s, 0 means unlimited.
+    pub torrent_download_limit_kbps: u64,
+    /// Stop seeding a torrent once it uploaded this multiple of its size
+    /// (2.0 is a 2:1 share ratio). 0 means no limit.
+    pub seed_ratio_limit: f64,
+    /// Stop seeding a torrent after it seeded this long (`30m`, `12h`,
+    /// `7d`). Empty means no limit.
+    pub seed_time_limit: String,
+    /// What stopping means: `pause` (stays in the session, paused) or
+    /// `remove` (taken out of the session). Files are never deleted.
+    pub seed_limit_action: crate::swarm::SeedLimitAction,
+    /// Scheduled alternative speed limits (`[torrent.alt_speed]`).
+    pub alt_speed: crate::swarm::AltSpeed,
 }
 
 impl Default for Torrent {
@@ -908,6 +942,18 @@ impl Default for Torrent {
             swarm_no_peer_secs: 30,
             swarm_stall_secs: 60,
             swarm_timeout_secs: 600,
+            download_limit_kbps: 0,
+            max_peers_per_torrent: 0,
+            utp: false,
+            proxy_url: String::new(),
+            bind_interface: String::new(),
+            concurrent_init_limit: 0,
+            torrent_upload_limit_kbps: 0,
+            torrent_download_limit_kbps: 0,
+            seed_ratio_limit: 0.0,
+            seed_time_limit: String::new(),
+            seed_limit_action: crate::swarm::SeedLimitAction::Pause,
+            alt_speed: crate::swarm::AltSpeed::default(),
         }
     }
 }
@@ -942,7 +988,13 @@ impl Torrent {
         Ok(out)
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
+    /// Check `[torrent]` values (also run by [`load`]); call it again after
+    /// command line overrides.
+    ///
+    /// # Errors
+    ///
+    /// Fails on the first invalid value, naming the key.
+    pub fn validate(&self) -> anyhow::Result<()> {
         let pl = self.piece_length;
         if pl != 0 && (pl < 16 * 1024 || !pl.is_power_of_two() || pl > 1 << 30) {
             anyhow::bail!(
@@ -960,8 +1012,76 @@ impl Torrent {
                 anyhow::bail!("torrent.trackers: unsupported tracker URL {t:?}");
             }
         }
+        check_proxy_url(&self.proxy_url)?;
+        check_bind_interface(&self.bind_interface)?;
+        self.seed_limits()?;
+        self.speed_plan()?;
         Ok(())
     }
+
+    /// `[torrent]` seeding stop rules.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a negative ratio or a malformed `seed_time_limit`.
+    pub fn seed_limits(&self) -> anyhow::Result<crate::swarm::SeedLimits> {
+        crate::swarm::SeedLimits::new(
+            self.seed_ratio_limit,
+            &self.seed_time_limit,
+            self.seed_limit_action,
+        )
+        .map_err(|e| anyhow::anyhow!("torrent.{e:#}"))
+    }
+
+    /// Caps for `pull` and `seed`: `upload_limit_kbps` and
+    /// `download_limit_kbps`, with `[torrent.alt_speed]` on top.
+    ///
+    /// # Errors
+    ///
+    /// Fails when an `alt_speed` window is invalid.
+    pub fn speed_plan(&self) -> anyhow::Result<crate::swarm::SpeedPlan> {
+        crate::swarm::SpeedPlan::new(
+            crate::swarm::RateLimits::from_kbps(self.upload_limit_kbps, self.download_limit_kbps),
+            &self.alt_speed,
+        )
+    }
+}
+
+/// `torrent.proxy_url`: empty, or `socks5://` / `socks5h://` with a host
+/// and port.
+fn check_proxy_url(u: &str) -> anyhow::Result<()> {
+    if u.trim().is_empty() {
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(u)
+        .map_err(|e| anyhow::anyhow!("torrent.proxy_url is not a URL: {e}"))?;
+    if !["socks5", "socks5h"].contains(&url.scheme()) {
+        anyhow::bail!(
+            "torrent.proxy_url: only socks5:// and socks5h:// proxies are supported, not {}://",
+            url.scheme()
+        );
+    }
+    if url.host_str().is_none_or(str::is_empty) || url.port().is_none() {
+        anyhow::bail!("torrent.proxy_url needs a host and a port (socks5://host:1080)");
+    }
+    Ok(())
+}
+
+/// `torrent.bind_interface`: empty, or an interface name (not on Windows).
+fn check_bind_interface(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() {
+        return Ok(());
+    }
+    if cfg!(windows) {
+        anyhow::bail!(
+            "torrent.bind_interface is not supported on Windows; set torrent.listen_addr to the \
+             interface's address instead"
+        );
+    }
+    if name.contains('\0') || name.contains('/') || name.trim() != name {
+        anyhow::bail!("torrent.bind_interface {name:?} is not an interface name");
+    }
+    Ok(())
 }
 
 /// One entry in [`Fetch::source_order`].
@@ -1998,6 +2118,153 @@ mod tests {
             assert!(cfg.mirrors.fetch_published);
             assert!(!cfg.targets.is_empty());
             assert_eq!(cfg.fetch.source_order, default_source_order());
+            // The documented torrent options are the defaults.
+            let d = Torrent::default();
+            let t = &cfg.torrent;
+            assert_eq!(
+                (t.download_limit_kbps, t.max_peers_per_torrent, t.utp),
+                (d.download_limit_kbps, d.max_peers_per_torrent, d.utp)
+            );
+            assert_eq!(
+                (&t.proxy_url, &t.bind_interface),
+                (&d.proxy_url, &d.bind_interface)
+            );
+            assert_eq!(t.concurrent_init_limit, d.concurrent_init_limit);
+            assert_eq!(t.seed_limits().unwrap(), d.seed_limits().unwrap());
+            assert_eq!(t.alt_speed, d.alt_speed);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn torrent_options_default_to_old_behaviour_and_validate() {
+        let cfg = Config::default();
+        let t = &cfg.torrent;
+        t.validate().unwrap();
+        assert!(t.seed_limits().unwrap().is_unlimited());
+        assert!(!t.speed_plan().unwrap().is_scheduled());
+        let eo = crate::torrents::engine_options(&cfg, true, Path::new("/tmp")).unwrap();
+        assert_eq!(eo.download_bps, None);
+        assert!(!eo.utp && eo.tcp);
+        assert_eq!(eo.peers_per_torrent, None);
+        assert_eq!(eo.proxy_url, None);
+        assert_eq!(eo.bind_device, None);
+        assert_eq!(eo.concurrent_init_limit, None);
+        assert_eq!(
+            (eo.torrent_upload_bps, eo.torrent_download_bps),
+            (None, None)
+        );
+
+        let ok = |f: fn(&mut Torrent)| {
+            let mut t = Torrent::default();
+            f(&mut t);
+            t.validate()
+        };
+        ok(|t| t.proxy_url = "socks5://127.0.0.1:1080".into()).unwrap();
+        ok(|t| t.proxy_url = "socks5h://user:pw@proxy.example.org:1080".into()).unwrap();
+        assert!(ok(|t| t.proxy_url = "http://proxy.example.org:8080".into()).is_err());
+        assert!(ok(|t| t.proxy_url = "socks5://proxy.example.org".into()).is_err());
+        assert!(ok(|t| t.proxy_url = "not a url".into()).is_err());
+        assert!(ok(|t| t.seed_ratio_limit = -0.5).is_err());
+        assert!(ok(|t| t.seed_time_limit = "2 weeks".into()).is_err());
+        ok(|t| t.seed_time_limit = "14d".into()).unwrap();
+        assert!(ok(|t| t.bind_interface = "wg0/x".into()).is_err());
+        if cfg!(windows) {
+            assert!(ok(|t| t.bind_interface = "wg0".into()).is_err());
+        } else {
+            ok(|t| t.bind_interface = "wg0".into()).unwrap();
+        }
+        assert!(
+            ok(|t| {
+                t.alt_speed.enabled = true;
+                t.alt_speed.window = vec![crate::swarm::SpeedWindow {
+                    days: vec!["someday".into()],
+                    start: "01:00".into(),
+                    end: "02:00".into(),
+                }];
+            })
+            .is_err()
+        );
+
+        let mut cfg = Config::default();
+        let t = &mut cfg.torrent;
+        t.download_limit_kbps = 300;
+        t.max_peers_per_torrent = 40;
+        t.utp = true;
+        t.proxy_url = " socks5://127.0.0.1:1080 ".into();
+        t.concurrent_init_limit = 1;
+        t.torrent_upload_limit_kbps = 64;
+        let eo = crate::torrents::engine_options(&cfg, false, Path::new("/tmp")).unwrap();
+        assert_eq!(eo.download_bps, Some(300 * 1024));
+        assert!(eo.utp);
+        assert_eq!(eo.peers_per_torrent, Some(40));
+        assert_eq!(eo.proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert_eq!(eo.concurrent_init_limit, Some(1));
+        assert_eq!(eo.torrent_upload_bps, Some(64 * 1024));
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // figment::Error is large; fine in tests
+    fn torrent_options_parse_from_toml() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tensorseed.toml",
+                r#"
+[torrent]
+seed_ratio_limit = 1.5
+seed_time_limit = "12h"
+seed_limit_action = "remove"
+
+[torrent.alt_speed]
+enabled = true
+upload_limit_kbps = 100
+
+[[torrent.alt_speed.window]]
+days = ["weekdays"]
+start = "09:00"
+end = "17:00"
+
+[serve]
+seed_ratio_limit = 3.0
+alt_speed = false
+"#,
+            )?;
+            let cfg = load(Path::new("tensorseed.toml")).map_err(|e| e.to_string())?;
+            let l = cfg.torrent.seed_limits().map_err(|e| e.to_string())?;
+            assert_eq!(l.ratio, Some(1.5));
+            assert_eq!(l.time, Some(std::time::Duration::from_secs(12 * 3600)));
+            assert_eq!(l.action, crate::swarm::SeedLimitAction::Remove);
+            assert!(
+                cfg.torrent
+                    .speed_plan()
+                    .map_err(|e| e.to_string())?
+                    .is_scheduled()
+            );
+            let sl = cfg
+                .serve
+                .seed_limits(&cfg.torrent)
+                .map_err(|e| e.to_string())?;
+            assert_eq!(sl.ratio, Some(3.0));
+            assert_eq!(sl.time, l.time);
+            assert!(
+                !cfg.serve
+                    .speed_plan(&cfg.torrent)
+                    .map_err(|e| e.to_string())?
+                    .is_scheduled()
+            );
+            Ok(())
+        });
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tensorseed.toml",
+                "[torrent]\nseed_limit_action = \"delete\"\n",
+            )?;
+            assert!(load(Path::new("tensorseed.toml")).is_err());
+            jail.create_file(
+                "tensorseed.toml",
+                "[torrent]\nproxy_url = \"http://proxy:8080\"\n",
+            )?;
+            assert!(load(Path::new("tensorseed.toml")).is_err());
             Ok(())
         });
     }

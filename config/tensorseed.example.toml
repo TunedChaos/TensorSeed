@@ -106,6 +106,41 @@ pull_swarm = true                # pull uses the swarm when the manifest has a t
 swarm_no_peer_secs = 30          # fall back to HTTP if no peer connects (0 = disable; ignored by --swarm-only)
 swarm_stall_secs = 60            # fall back to HTTP if no byte progress (0 = disable; ignored by --swarm-only)
 swarm_timeout_secs = 600         # overall cap on the swarm pass, then HTTP fills the rest
+# Swarm limits for pull and seed (serve has its own caps in [serve]).
+# --download-limit, --upload-limit, and --max-peers override them per run.
+download_limit_kbps = 0          # 0 = unlimited
+max_peers_per_torrent = 0        # 0 = engine default (128); there is no global connection cap
+utp = false                      # also uTP (UDP on listen_port) for pull and seed; serve uses serve.utp
+proxy_url = ""                   # outgoing peers via SOCKS5: "socks5://host:1080" or "socks5h://user:pass@host:1080"
+bind_interface = ""              # bind sockets to a device such as "wg0" (Linux and macOS only)
+concurrent_init_limit = 0        # torrents checked at once on start; 0 = engine default (3)
+torrent_upload_limit_kbps = 0    # per torrent caps, on top of the totals above; 0 = unlimited
+torrent_download_limit_kbps = 0
+# Seeding stop rules for seed and pull --seed-after (serve can override
+# them in [serve]). 0 and "" mean no limit. Files are never deleted.
+seed_ratio_limit = 0.0           # e.g. 2.0: stop after uploading twice the torrent's size
+seed_time_limit = ""             # e.g. "7d", "12h", "30m"
+seed_limit_action = "pause"      # "pause" (stay in the session, paused) or "remove"
+# Protocol encryption (MSE/PE) is not available: the built-in engine
+# (librqbit 9.1) does not implement it, so there is no setting.
+
+# Scheduled alternative speed limits, in local time. While a window is
+# active these caps replace the totals above (and serve's caps unless
+# serve.alt_speed = false). Days: mon..sun, weekdays, weekends, all (empty
+# means every day). A window whose end is before its start runs overnight
+# and belongs to its start day. Times follow the wall clock across DST.
+[torrent.alt_speed]
+enabled = false
+upload_limit_kbps = 0            # 0 = unlimited while the window is active
+download_limit_kbps = 0
+# [[torrent.alt_speed.window]]
+# days = ["weekdays"]
+# start = "09:00"
+# end = "17:00"
+# [[torrent.alt_speed.window]]
+# days = ["fri"]
+# start = "23:00"
+# end = "06:00"                  # Friday 23:00 to Saturday 06:00
 
 # HTTP downloads (spec 8.2). A connect failure or repeated transient
 # failures marks a mirror origin dead in general.state_db. Later files and
@@ -348,3 +383,11 @@ http_upload_limit_kbps = 0
 serve_catalog = false            # mirror the signed catalog files and serve them at /<catalog>/
 health_listen = "127.0.0.1:6880" # JSON health endpoint; "" = off
 check_timeout_secs = 3600        # longest piece check per revision before seeding
+alt_speed = true                 # follow the [torrent.alt_speed] schedule
+# Per revision seeding stop rules; unset uses the [torrent] value. Counts
+# survive restarts (serve-state.json). A revision that reaches one is
+# paused or removed from the swarm (files kept, HTTP serving of a paused
+# revision continues) and is not restarted while the limit holds.
+# seed_ratio_limit = 2.0
+# seed_time_limit = "30d"
+# seed_limit_action = "pause"

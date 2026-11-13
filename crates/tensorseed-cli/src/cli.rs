@@ -135,6 +135,17 @@ pub enum Command {
         /// Also subscribe to and serve the catalog (not implemented yet).
         #[arg(long)]
         serve_catalog: bool,
+        /// Swarm limits for this run.
+        #[command(flatten)]
+        limits: SwarmArgs,
+        /// Stop seeding a torrent once it uploaded this multiple of its size
+        /// (overrides torrent.seed_ratio_limit; 0 for no limit).
+        #[arg(long, value_name = "RATIO")]
+        ratio_limit: Option<f64>,
+        /// Stop seeding a torrent after it seeded this long (30m, 12h, 7d;
+        /// overrides torrent.seed_time_limit; 0 for no limit).
+        #[arg(long, value_name = "DURATION")]
+        seed_time: Option<String>,
     },
     /// Run the long lived seeder: sync the catalog on a timer, seed the
     /// selected revisions, drop takedowns, optionally fetch new revisions,
@@ -528,6 +539,40 @@ pub struct PullArgs {
     /// or forever).
     #[arg(long)]
     pub seed_after: Option<String>,
+    /// Swarm limits for this run (also used by `--seed-after`).
+    #[command(flatten)]
+    pub limits: SwarmArgs,
+}
+
+/// Swarm limits shared by `pull` and `seed`; each overrides a `[torrent]`
+/// key for this run.
+#[derive(Debug, Clone, Default, Args)]
+pub struct SwarmArgs {
+    /// Download cap in KiB/s, 0 for unlimited (torrent.download_limit_kbps).
+    #[arg(long, value_name = "KIBPS")]
+    pub download_limit: Option<u64>,
+    /// Upload cap in KiB/s, 0 for unlimited (torrent.upload_limit_kbps).
+    #[arg(long, value_name = "KIBPS")]
+    pub upload_limit: Option<u64>,
+    /// Peer connections per torrent, 0 for the default of 128
+    /// (torrent.max_peers_per_torrent).
+    #[arg(long, value_name = "N")]
+    pub max_peers: Option<u32>,
+}
+
+impl SwarmArgs {
+    /// Apply the overrides to `t`.
+    pub fn apply(&self, t: &mut tensorseed_app::config::Torrent) {
+        if let Some(k) = self.download_limit {
+            t.download_limit_kbps = k;
+        }
+        if let Some(k) = self.upload_limit {
+            t.upload_limit_kbps = k;
+        }
+        if let Some(n) = self.max_peers {
+            t.max_peers_per_torrent = n;
+        }
+    }
 }
 
 /// `serve` arguments (each overrides the matching `[serve]` key).

@@ -139,23 +139,36 @@ pub fn dht_persistence_path() -> PathBuf {
 ///
 /// Fails when a configured address or peer is invalid or the data directory cannot be resolved.
 pub fn engine_options(cfg: &Config, listen: bool, dir: &Path) -> anyhow::Result<EngineOptions> {
-    let ip: IpAddr = cfg.torrent.listen_addr.parse()?;
+    let t = &cfg.torrent;
+    let ip: IpAddr = t.listen_addr.parse()?;
     Ok(EngineOptions {
         listen: listen.then(|| SocketAddr::new(ip, cfg.torrent.listen_port)),
         dht: cfg.torrent.dht,
         trackers: true,
         lsd: cfg.torrent.lsd,
-        upload_bps: match cfg.torrent.upload_limit_kbps {
-            0 => None,
-            k => Some(u32::try_from(k.saturating_mul(1024)).unwrap_or(u32::MAX)),
-        },
-        download_bps: None,
-        utp: false,
+        upload_bps: crate::swarm::kbps_to_bps(t.upload_limit_kbps),
+        download_bps: crate::swarm::kbps_to_bps(t.download_limit_kbps),
+        utp: t.utp,
         tcp: true,
         default_dir: dir.to_owned(),
         dht_persistence: Some(dht_persistence_path()),
         ipv4_only: ip.is_ipv4(),
+        peers_per_torrent: nonzero(t.max_peers_per_torrent),
+        proxy_url: non_empty(&t.proxy_url),
+        bind_device: non_empty(&t.bind_interface),
+        concurrent_init_limit: nonzero(t.concurrent_init_limit),
+        torrent_upload_bps: crate::swarm::kbps_to_bps(t.torrent_upload_limit_kbps),
+        torrent_download_bps: crate::swarm::kbps_to_bps(t.torrent_download_limit_kbps),
     })
+}
+
+fn nonzero(n: u32) -> Option<usize> {
+    (n > 0).then(|| usize::try_from(n).unwrap_or(usize::MAX))
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_owned())
 }
 
 /// Parse `30s`, `10m`, `2h`, `1d`, or `forever` (also `0`).

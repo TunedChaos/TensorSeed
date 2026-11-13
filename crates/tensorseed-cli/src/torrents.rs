@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use tensorseed_app::swarm::{LimitHit, SeedLimitAction, SeedLimits, SeedTotals, SeedTracker};
 pub use tensorseed_app::torrents::*;
 use tensorseed_core::paths::native_path;
 use tensorseed_core::verify::META_DIR;
@@ -35,7 +36,9 @@ pub async fn run_seeder(
         .await
         .context("starting the BitTorrent engine")?;
     let addr = engine.listen_addr();
-    let mut handles = Vec::new();
+    let limits = cfg.torrent.seed_limits()?;
+    let _speed = tensorseed_app::swarm::apply_plan(engine.rate_handle(), cfg.torrent.speed_plan()?);
+    let mut seeds = Vec::new();
     let mut failed = 0;
     for it in &items {
         match engine
@@ -55,7 +58,21 @@ pub async fn run_seeder(
                     it.torrent.info_hash_v1_hex().unwrap_or_default(),
                     it.torrent.info_hash_v2_hex()
                 );
-                handles.push((it.torrent.name.clone(), h));
+                let size = it
+                    .torrent
+                    .files
+                    .iter()
+                    .filter(|f| it.only.as_ref().is_none_or(|o| o.contains(&f.path)))
+                    .map(|f| f.length)
+                    .sum();
+                seeds.push(Seeded {
+                    name: it.torrent.name.clone(),
+                    handle: h,
+                    size,
+                    tracker: SeedTracker::new(SeedTotals::default()),
+                    stopped: None,
+                    uploaded: 0,
+                });
             }
             Err(e) => {
                 failed += 1;
@@ -63,25 +80,43 @@ pub async fn run_seeder(
             }
         }
     }
-    if handles.is_empty() {
+    if seeds.is_empty() {
         engine.stop().await;
         bail!("no torrent could be seeded");
     }
     if let Some(a) = addr {
         println!(
             "listening on {a}; {} torrent(s), {failed} failed",
-            handles.len()
+            seeds.len()
         );
     }
-    let report = |handles: &[(String, tensorseed_torrent::engine::Handle)]| {
-        for (n, h) in handles {
-            let p = h.progress();
-            println!("  {n}: uploaded {} bytes", p.uploaded);
+    if !limits.is_unlimited() {
+        println!(
+            "seed limits: {}; then {}",
+            describe_limits(&limits),
+            match limits.action {
+                SeedLimitAction::Pause => "pause",
+                SeedLimitAction::Remove => "remove",
+            }
+        );
+    }
+    let report = |seeds: &[Seeded]| {
+        for s in seeds {
+            let up = if s.stopped.is_some() {
+                s.uploaded
+            } else {
+                s.handle.progress().uploaded
+            };
+            match &s.stopped {
+                Some(hit) => println!("  {}: uploaded {up} bytes (stopped: {hit})", s.name),
+                None => println!("  {}: uploaded {up} bytes", s.name),
+            }
         }
     };
     let deadline = duration.map(|d| tokio::time::Instant::now() + d);
     let mut tick = tokio::time::interval(Duration::from_secs(300));
     tick.tick().await;
+    let mut limit_tick = tokio::time::interval(Duration::from_secs(5));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
@@ -91,16 +126,75 @@ pub async fn run_seeder(
                     None => std::future::pending().await,
                 }
             } => break,
-            _ = tick.tick() => report(&handles),
+            _ = tick.tick() => report(&seeds),
+            _ = limit_tick.tick(), if !limits.is_unlimited() => {
+                if enforce_limits(&engine, &limits, &mut seeds).await {
+                    println!("every torrent reached its seed limit");
+                    break;
+                }
+            }
         }
     }
-    report(&handles);
+    report(&seeds);
     engine.stop().await;
     Ok(if failed > 0 {
         ExitCode::from(crate::consumer::EXIT_VERIFY_FAILED)
     } else {
         ExitCode::SUCCESS
     })
+}
+
+struct Seeded {
+    name: String,
+    handle: tensorseed_torrent::engine::Handle,
+    size: u64,
+    tracker: SeedTracker,
+    stopped: Option<LimitHit>,
+    uploaded: u64,
+}
+
+fn describe_limits(l: &SeedLimits) -> String {
+    let mut v = Vec::new();
+    if let Some(r) = l.ratio {
+        v.push(format!("ratio {r}"));
+    }
+    if let Some(t) = l.time {
+        v.push(format!("{}s seeding", t.as_secs()));
+    }
+    v.join(", ")
+}
+
+/// Pause or remove torrents that reached a limit. True when none is left
+/// seeding.
+async fn enforce_limits(engine: &Engine, limits: &SeedLimits, seeds: &mut [Seeded]) -> bool {
+    let now = std::time::Instant::now();
+    for s in seeds.iter_mut().filter(|s| s.stopped.is_none()) {
+        let p = s.handle.progress();
+        let totals = s
+            .tracker
+            .tick(now, p.live && !s.handle.is_paused(), p.uploaded);
+        let Some(hit) = limits.check_totals(&totals, s.size) else {
+            continue;
+        };
+        let r = match limits.action {
+            SeedLimitAction::Pause => engine.pause(&s.handle).await,
+            SeedLimitAction::Remove => engine.remove(&s.handle).await,
+        };
+        match r {
+            Ok(()) => println!(
+                "{} {}: {hit}",
+                match limits.action {
+                    SeedLimitAction::Pause => "paused  ",
+                    SeedLimitAction::Remove => "removed ",
+                },
+                s.name
+            ),
+            Err(e) => println!("FAILED   stopping {}: {e}", s.name),
+        }
+        s.uploaded = totals.uploaded_bytes;
+        s.stopped = Some(hit);
+    }
+    seeds.iter().all(|s| s.stopped.is_some())
 }
 
 /// `tensorseed seed`.

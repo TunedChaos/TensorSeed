@@ -11,6 +11,7 @@ homepage.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 figment.workspace = true
 fs4.workspace = true
 futures-util.workspace = true

@@ -69,6 +69,20 @@ pub struct ServeConfig {
     pub health_listen: String,
     /// Longest time to check one revision's pieces before seeding it.
     pub check_timeout_secs: u64,
+    /// Per revision share ratio limit; unset uses `torrent.seed_ratio_limit`,
+    /// 0 means no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_ratio_limit: Option<f64>,
+    /// Per revision seeding time limit (`7d`); unset uses
+    /// `torrent.seed_time_limit`, empty means no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_time_limit: Option<String>,
+    /// `pause` or `remove` a revision that hit a limit; unset uses
+    /// `torrent.seed_limit_action`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_limit_action: Option<crate::swarm::SeedLimitAction>,
+    /// Apply the `[torrent.alt_speed]` schedule to serve's swarm caps.
+    pub alt_speed: bool,
 }
 
 impl Default for ServeConfig {
@@ -98,6 +112,10 @@ impl Default for ServeConfig {
             serve_catalog: false,
             health_listen: "127.0.0.1:6880".into(),
             check_timeout_secs: 3600,
+            seed_ratio_limit: None,
+            seed_time_limit: None,
+            seed_limit_action: None,
+            alt_speed: true,
         }
     }
 }
@@ -139,7 +157,56 @@ impl ServeConfig {
         if self.port_mapping && self.port_mapping_lease_secs < 120 {
             bail!("serve.port_mapping_lease_secs must be at least 120");
         }
+        let t = crate::config::Torrent::default();
+        self.seed_limits(&t)?;
         Ok(())
+    }
+
+    /// Per revision seeding stop rules: these `[serve]` overrides on top of
+    /// `[torrent]`.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a negative ratio or a malformed time limit.
+    pub fn seed_limits(
+        &self,
+        torrent: &crate::config::Torrent,
+    ) -> anyhow::Result<crate::swarm::SeedLimits> {
+        crate::swarm::SeedLimits::new(
+            self.seed_ratio_limit.unwrap_or(torrent.seed_ratio_limit),
+            self.seed_time_limit
+                .as_deref()
+                .unwrap_or(&torrent.seed_time_limit),
+            self.seed_limit_action.unwrap_or(torrent.seed_limit_action),
+        )
+        .map_err(|e| anyhow::anyhow!("serve.{e:#}"))
+    }
+
+    /// Serve's swarm caps: `upload_limit_kbps` (falling back to
+    /// `torrent.upload_limit_kbps`) and `download_limit_kbps`, with the
+    /// `[torrent.alt_speed]` schedule when `alt_speed` is on.
+    ///
+    /// # Errors
+    ///
+    /// Fails when an `alt_speed` window is invalid.
+    pub fn speed_plan(
+        &self,
+        torrent: &crate::config::Torrent,
+    ) -> anyhow::Result<crate::swarm::SpeedPlan> {
+        let up = if self.upload_limit_kbps > 0 {
+            self.upload_limit_kbps
+        } else {
+            torrent.upload_limit_kbps
+        };
+        let off = crate::swarm::AltSpeed::default();
+        crate::swarm::SpeedPlan::new(
+            crate::swarm::RateLimits::from_kbps(up, self.download_limit_kbps),
+            if self.alt_speed {
+                &torrent.alt_speed
+            } else {
+                &off
+            },
+        )
     }
 
     /// The `tensorseed_serve` selection rules for this config, including the
