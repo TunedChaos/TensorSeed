@@ -1407,6 +1407,7 @@ async fn fetch_revision(
         no_wait: true,
         ignore_tombstone: false,
         swarm: cfg.serve.fetch_swarm,
+        no_swarm: !cfg.serve.fetch_swarm,
         swarm_only: false,
         peer: Vec::new(),
         seed_after: None,

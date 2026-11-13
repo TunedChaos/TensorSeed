@@ -384,17 +384,23 @@ pub struct PullArgs {
     /// Download even if the repo is tombstoned.
     #[arg(long)]
     pub ignore_tombstone: bool,
-    /// Download from the BitTorrent swarm first (up to
-    /// torrent.swarm_timeout_secs), then fill gaps over HTTP. Every file is
-    /// checked against the manifest either way.
-    #[arg(long)]
+    /// Use the BitTorrent swarm first (the default when the manifest has a
+    /// torrent and torrent.pull_swarm is on). HTTP mirrors and the Hub fill
+    /// gaps. Accepted as a no-op alias so older command lines still work;
+    /// it also forces the swarm on if pull_swarm is off.
+    #[arg(long, conflicts_with = "no_swarm")]
     pub swarm: bool,
-    /// Like --swarm, but never download over HTTP or from the Hub: files the
-    /// swarm does not deliver fail (exit 3). Useful to test seeders.
+    /// Skip the swarm and download over HTTP mirrors and the Hub only.
+    #[arg(long, conflicts_with = "swarm_only")]
+    pub no_swarm: bool,
+    /// Use only the BitTorrent swarm: never download over HTTP or from the
+    /// Hub. Files the swarm does not deliver fail (exit 3). Useful to test
+    /// seeders. Waits up to torrent.swarm_timeout_secs and does not apply
+    /// the no-peer or stall failover rules.
     #[arg(long, conflicts_with = "from_hf")]
     pub swarm_only: bool,
-    /// Extra peer to dial (`host:port`), repeatable; implies nothing without
-    /// --swarm.
+    /// Extra peer to dial (`host:port`), repeatable. Used when the swarm is
+    /// used (the default on pull).
     #[arg(long)]
     pub peer: Vec<String>,
     /// After a verified download, seed it for this long (30s, 10m, 2h, 1d,
@@ -556,6 +562,39 @@ mod tests {
                 "--from-hf",
                 "--manifest-file",
                 "m.json"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pull_swarm_flags() {
+        let cli = Cli::try_parse_from(["tensorseed", "pull", "org/name", "--no-swarm"]).unwrap();
+        match cli.command {
+            Command::Pull(a) => assert!(a.no_swarm && !a.swarm && !a.swarm_only),
+            _ => panic!("expected pull"),
+        }
+        let cli = Cli::try_parse_from(["tensorseed", "pull", "org/name", "--swarm"]).unwrap();
+        match cli.command {
+            Command::Pull(a) => assert!(a.swarm && !a.no_swarm),
+            _ => panic!("expected pull"),
+        }
+        // --from-hf with the default swarm flag is accepted; pull skips the
+        // swarm silently because there is no torrent.
+        assert!(
+            Cli::try_parse_from(["tensorseed", "pull", "org/name", "--from-hf", "--swarm"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["tensorseed", "pull", "org/name", "--no-swarm", "--swarm"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "tensorseed",
+                "pull",
+                "org/name",
+                "--from-hf",
+                "--swarm-only"
             ])
             .is_err()
         );

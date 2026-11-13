@@ -492,7 +492,20 @@ pub struct Torrent {
     /// Peers (`host:port`) to dial for every torrent, for example your own
     /// seed boxes.
     pub peers: Vec<String>,
-    /// Longest `pull --swarm` waits on peers before HTTP takes over.
+    /// Use the BitTorrent swarm on `pull` when the manifest has a torrent.
+    /// HTTP mirrors and the Hub fill gaps (or take over if no peers appear).
+    /// `--no-swarm` turns this off; `--swarm` turns it on even when this is
+    /// false. `--from-hf` never uses the swarm.
+    pub pull_swarm: bool,
+    /// Give up on the swarm if no peer connects within this many seconds
+    /// after the torrent is live, then fill remaining files over HTTP.
+    /// 0 disables the rule. Ignored for `--swarm-only`.
+    pub swarm_no_peer_secs: u64,
+    /// Give up on the swarm if verified bytes do not increase for this many
+    /// seconds, then fill remaining files over HTTP. 0 disables the rule.
+    /// Ignored for `--swarm-only`.
+    pub swarm_stall_secs: u64,
+    /// Longest the swarm pass waits overall before HTTP takes over.
     pub swarm_timeout_secs: u64,
 }
 
@@ -509,6 +522,9 @@ impl Default for Torrent {
             dht: true,
             lsd: false,
             peers: Vec::new(),
+            pull_swarm: true,
+            swarm_no_peer_secs: 30,
+            swarm_stall_secs: 60,
             swarm_timeout_secs: 600,
         }
     }

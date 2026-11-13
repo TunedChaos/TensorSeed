@@ -70,7 +70,9 @@ token_file = ""                  # e.g. "~/.config/tensorseed/hf_token" (chmod 6
 
 # BitTorrent (spec section 7.1; results in docs/M0-TORRENT-SPIKE.md).
 # harvest writes t/<name>.torrent next to each revision; `tensorseed seed`
-# serves them; `pull --swarm` and `--seed-after` use the swarm.
+# serves them. `pull` uses the swarm first when a torrent is present (HTTP
+# mirrors and the Hub are failover). `--seed-after` seeds after a verified pull.
+# pull does not open a listen port; only seed, serve, and --seed-after do.
 [torrent]
 create = true                    # build a torrent for every harvested revision
 hybrid = true                    # v1+v2; the built-in engine (librqbit) needs hybrids
@@ -82,7 +84,10 @@ upload_limit_kbps = 0            # 0 = unlimited
 dht = true
 lsd = false                      # BEP 14 local service discovery on the LAN
 peers = []                       # "host:port" peers to dial, e.g. your seed boxes
-swarm_timeout_secs = 600         # pull --swarm waits this long, then HTTP fills the rest
+pull_swarm = true                # pull uses the swarm when the manifest has a torrent; --no-swarm to skip
+swarm_no_peer_secs = 30          # fall back to HTTP if no peer connects (0 = disable; ignored by --swarm-only)
+swarm_stall_secs = 60            # fall back to HTTP if no byte progress (0 = disable; ignored by --swarm-only)
+swarm_timeout_secs = 600         # overall cap on the swarm pass, then HTTP fills the rest
 
 # Where published objects go: signed catalog files under "<catalog name>/" and,
 # for webseeds, model files under "t/". Default is local disk only: no account

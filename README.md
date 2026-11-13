@@ -8,7 +8,8 @@ Website: [tensorseed.dev](https://tensorseed.dev)
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
 > v1+v2 torrents, `seed` serves them, `serve` keeps seeding what you already
-> pulled, and `pull --swarm` / `--seed-after` use the swarm. The
+> pulled, and `pull` uses the BitTorrent swarm first (HTTP mirrors and the
+> Hub are failover). `--seed-after` still seeds after a verified pull. The
 > official catalog is anchored on Chia mainnet, and clients check the file
 > catalog against the Chia store by default (strict). `takedown` and `doctor`
 > still print "not implemented yet". Expect breaking changes.
@@ -31,7 +32,7 @@ original host goes away, and lets anyone check that a copy is genuine.
   can be exported from one backend and imported into another with signatures intact.
 - **Bytes over BitTorrent v2.** Model files travel as hybrid v1+v2 (BEP 52)
   torrents that Tensorseed builds itself in pure Rust, plus optional BEP 19 HTTP
-  webseeds so downloads work even with zero peers. The built-in swarm engine is
+  webseeds so a download can fall back to HTTP when the swarm is quiet. The built-in swarm engine is
   librqbit; see [docs/M0-TORRENT-SPIKE.md](docs/M0-TORRENT-SPIKE.md) for why.
   Storage is local disk by default; add any number of named
   `[[storage.target]]` blocks (R2, B2, Vultr, Wasabi, MinIO, AWS, any S3, another
@@ -56,9 +57,10 @@ tensorseed verify --hf hf-internal-testing/tiny-random-gpt2     # re-checks agai
 
 # With a signed catalog configured (catalog.publisher_pubkey, file.base_url):
 tensorseed list
-tensorseed pull org/name            # webseeds first, the Hub as fallback
+tensorseed pull org/name            # swarm first, then HTTP mirrors, then the Hub
 tensorseed verify org/name          # against the signed manifest; exit 3 on mismatch
-tensorseed pull org/name --swarm --seed-after 2h   # peers first, HTTP fills gaps, then seed
+tensorseed pull org/name --no-swarm # skip the swarm; HTTP mirrors then the Hub
+tensorseed pull org/name --seed-after 2h   # swarm first, then seed the verified copy
 tensorseed pull org/name --swarm-only --peer host:6881   # peers only: checks that a seeder works
 
 # Publisher side:

@@ -124,6 +124,19 @@ pub struct EngineStats {
     pub torrents: usize,
 }
 
+/// Why [`Engine::download`] returned before every file was complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadStop {
+    /// Every selected piece is present and checked.
+    Finished,
+    /// The overall timeout passed.
+    Timeout,
+    /// No peer connected within the no-peer window.
+    NoPeers,
+    /// Verified bytes did not increase within the stall window.
+    Stall,
+}
+
 /// Download options.
 #[derive(Debug, Clone, Default)]
 pub struct DownloadOptions {
@@ -131,6 +144,12 @@ pub struct DownloadOptions {
     pub peers: Vec<SocketAddr>,
     /// Only these torrent paths (default: every file).
     pub only: Option<Vec<String>>,
+    /// Give up if no peer is connected this long after the torrent is live.
+    /// `None` disables the rule (wait for the overall timeout).
+    pub no_peer: Option<Duration>,
+    /// Give up if verified bytes do not increase for this long after the
+    /// torrent is live. `None` disables the rule.
+    pub stall: Option<Duration>,
 }
 
 /// v1 file indices (pads count) of the given non pad paths, as librqbit
@@ -296,28 +315,66 @@ impl Engine {
         }
     }
 
-    /// Download `t` into `out_dir` from the swarm. Returns when done or when
-    /// `timeout` passes (then `finished` is false and the partial pieces stay
-    /// on disk for the HTTP fallback to replace).
+    /// Download `t` into `out_dir` from the swarm. Returns when done, when
+    /// `timeout` passes, or when a no-peer or stall rule in `o` fires (then
+    /// `finished` is false and the partial pieces stay on disk for the HTTP
+    /// fallback to replace).
     ///
     /// # Errors
     ///
     /// [`TorrentError::Engine`] if librqbit rejects the torrent or the download
-    /// fails. A timeout is not an error.
+    /// fails. A timeout or early failover is not an error.
     pub async fn download(
         &self,
         t: &Metainfo,
         out_dir: &Path,
         o: DownloadOptions,
         timeout: Duration,
-    ) -> Result<(Handle, Progress), TorrentError> {
+    ) -> Result<(Handle, Progress, DownloadStop), TorrentError> {
         let h = self.add(t, out_dir, o.peers, o.only.as_deref()).await?;
-        let r = tokio::time::timeout(timeout, h.handle.wait_until_completed()).await;
-        if let Ok(Err(e)) = r {
-            return Err(eng(e));
+        let t0 = Instant::now();
+        let mut live_at: Option<Instant> = None;
+        let mut last_have = 0u64;
+        let mut last_progress_at = t0;
+        let mut saw_peer = false;
+        loop {
+            let p = h.progress();
+            if let Some(e) = p.error {
+                return Err(eng(e));
+            }
+            if p.finished {
+                return Ok((h, p, DownloadStop::Finished));
+            }
+            if p.live && live_at.is_none() {
+                live_at = Some(Instant::now());
+                last_have = p.have;
+                last_progress_at = Instant::now();
+            }
+            if h.peers() > 0 {
+                saw_peer = true;
+            }
+            if p.have > last_have {
+                last_have = p.have;
+                last_progress_at = Instant::now();
+            }
+            if t0.elapsed() >= timeout {
+                return Ok((h, p, DownloadStop::Timeout));
+            }
+            if let Some(start) = live_at {
+                if let Some(np) = o.no_peer
+                    && !saw_peer
+                    && start.elapsed() >= np
+                {
+                    return Ok((h, p, DownloadStop::NoPeers));
+                }
+                if let Some(st) = o.stall
+                    && last_progress_at.elapsed() >= st
+                {
+                    return Ok((h, p, DownloadStop::Stall));
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        let p = h.progress();
-        Ok((h, p))
     }
 
     /// Stop and forget a torrent (files stay on disk).
@@ -432,19 +489,22 @@ mod tests {
         let mut o = EngineOptions::loopback(0, &out);
         o.listen = None;
         let client = Engine::start(o).await.unwrap();
-        let (_h, p) = client
+        let (_h, p, stop) = client
             .download(
                 &t,
                 &out,
                 DownloadOptions {
                     peers: vec![addr],
-                    only: None,
+                    ..Default::default()
                 },
                 Duration::from_secs(60),
             )
             .await
             .unwrap();
-        assert!(p.finished, "{p:?}");
+        assert!(
+            p.finished && stop == DownloadStop::Finished,
+            "{p:?} {stop:?}"
+        );
         for f in &t.files {
             let got = out.join(&f.path);
             assert!(t.verify_file(&f.path, &got).unwrap(), "{}", f.path);
@@ -476,19 +536,22 @@ mod tests {
         let addr = seeder.listen_addr().unwrap();
         let out = d.path().join("out");
         let client = Engine::start(utp(&out)).await.unwrap();
-        let (h, p) = client
+        let (h, p, stop) = client
             .download(
                 &t,
                 &out,
                 DownloadOptions {
                     peers: vec![addr],
-                    only: None,
+                    ..Default::default()
                 },
                 Duration::from_secs(60),
             )
             .await
             .unwrap();
-        assert!(p.finished, "{p:?}");
+        assert!(
+            p.finished && stop == DownloadStop::Finished,
+            "{p:?} {stop:?}"
+        );
         for f in &t.files {
             assert!(t.verify_file(&f.path, &out.join(&f.path)).unwrap());
         }
@@ -533,5 +596,38 @@ mod tests {
             .await
             .unwrap();
         e.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn download_gives_up_quickly_when_no_peers() {
+        let (d, t) = setup(true).await;
+        let out = d.path().join("out");
+        let mut o = EngineOptions::loopback(0, &out);
+        o.listen = None;
+        o.dht = false;
+        o.trackers = false;
+        let client = Engine::start(o).await.unwrap();
+        let t0 = Instant::now();
+        let (_h, p, stop) = client
+            .download(
+                &t,
+                &out,
+                DownloadOptions {
+                    no_peer: Some(Duration::from_secs(2)),
+                    stall: Some(Duration::from_secs(30)),
+                    ..Default::default()
+                },
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        client.stop().await;
+        assert_eq!(stop, DownloadStop::NoPeers, "{p:?} {stop:?}");
+        assert!(!p.finished);
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "no-peer failover took too long: {:?}",
+            t0.elapsed()
+        );
     }
 }

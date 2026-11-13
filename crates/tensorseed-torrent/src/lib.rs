@@ -19,7 +19,7 @@
 //! Publishers build one torrent per (repo, commit) with [`build_torrent`];
 //! its info hashes go into the signed manifest, so a torrent fetched from
 //! any mirror can be checked with [`Metainfo::check_manifest`]. Volunteer
-//! seeders (`tensorseed serve`) and swarm downloads (`pull --swarm`) run
+//! seeders (`tensorseed serve`) and swarm downloads (`pull`, by default) run
 //! through [`engine`], which keeps files in place and re-verifies them.
 //!
 //! # Examples

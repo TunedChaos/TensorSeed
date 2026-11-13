@@ -350,10 +350,9 @@ fn state_db(cfg: &Config) -> anyhow::Result<Arc<StateDb>> {
 
 /// `tensorseed pull`.
 pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
-    let use_swarm = args.swarm || args.swarm_only;
-    let wants_torrent = use_swarm || args.seed_after.is_some();
-    if wants_torrent && args.from_hf {
-        bail!("--swarm and --seed-after need a Tensorseed manifest with a torrent, not --from-hf");
+    let use_swarm = swarm_wanted(cfg, args);
+    if args.seed_after.is_some() && args.from_hf {
+        bail!("--seed-after needs a Tensorseed manifest with a torrent, not --from-hf");
     }
     let seed_after = args
         .seed_after
@@ -484,8 +483,13 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         // priority; the Hub stays the last resort.
         let mut seeds = m.clone();
         seeds.webseeds = crate::mirrors::webseed_bases(cfg, &m.webseeds);
-        if wants_torrent {
-            torrent = Some(crate::torrents::fetch_for_manifest(m, &seeds.webseeds).await?);
+        if use_swarm || args.seed_after.is_some() {
+            if m.torrent.is_some() {
+                torrent = Some(crate::torrents::fetch_for_manifest(m, &seeds.webseeds).await?);
+            } else if args.seed_after.is_some() {
+                bail!("--seed-after needs a Tensorseed manifest with a torrent");
+            }
+            // No torrent on the revision: skip the swarm silently and use HTTP.
         }
         for f in &m.files {
             let ef = ExpectedFile::from_manifest(f);
@@ -652,9 +656,25 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Swarm first: let librqbit fetch what peers have, in place. Nothing it
-/// writes is trusted: the HTTP fetcher that runs next hashes every file
-/// against the manifest, keeps the ones that match, and downloads the rest.
+/// Whether this pull should try the swarm. `--from-hf` and `--no-swarm`
+/// skip it; `--swarm-only` and `--swarm` force it on; otherwise
+/// `torrent.pull_swarm` (on by default) is used. A missing torrent is
+/// skipped later, silently.
+fn swarm_wanted(cfg: &Config, args: &PullArgs) -> bool {
+    if args.from_hf || args.no_swarm {
+        false
+    } else if args.swarm_only || args.swarm {
+        true
+    } else {
+        cfg.torrent.pull_swarm
+    }
+}
+
+/// Swarm first: let librqbit fetch what peers have, in place. The session
+/// is outbound only (no listen port). Nothing it writes is trusted: the
+/// HTTP fetcher that runs next hashes every file against the manifest,
+/// keeps the ones that match, and downloads the rest. `--seed-after` is
+/// the only path that starts a listening seeder after a verified pull.
 async fn swarm_download(
     cfg: &Config,
     args: &PullArgs,
@@ -662,7 +682,7 @@ async fn swarm_download(
     out: &Path,
     files: &[FileJob],
 ) -> anyhow::Result<()> {
-    use tensorseed_torrent::engine::{DownloadOptions, Engine};
+    use tensorseed_torrent::engine::{DownloadOptions, DownloadStop, Engine};
     let mut peers = cfg.torrent.peer_addrs()?;
     for p in &args.peer {
         use std::net::ToSocketAddrs;
@@ -672,6 +692,18 @@ async fn swarm_download(
         );
     }
     let timeout = Duration::from_secs(cfg.torrent.swarm_timeout_secs.max(1));
+    // --swarm-only has no HTTP fallback, so wait the full timeout.
+    let (no_peer, stall) = if args.swarm_only {
+        (None, None)
+    } else {
+        (
+            (cfg.torrent.swarm_no_peer_secs > 0)
+                .then_some(Duration::from_secs(cfg.torrent.swarm_no_peer_secs)),
+            (cfg.torrent.swarm_stall_secs > 0)
+                .then_some(Duration::from_secs(cfg.torrent.swarm_stall_secs)),
+        )
+    };
+    // listen = false: outbound connections only; pull does not open a port.
     let engine = Engine::start(crate::torrents::engine_options(cfg, false, out)?)
         .await
         .context("starting the BitTorrent engine")?;
@@ -683,23 +715,43 @@ async fn swarm_download(
             DownloadOptions {
                 peers,
                 only: Some(files.iter().map(|f| f.path.clone()).collect()),
+                no_peer,
+                stall,
             },
             timeout,
         )
         .await;
     match r {
-        Ok((h, p)) => {
-            println!(
-                "swarm  {} of {} bytes in {:.1}s{}",
-                p.have,
-                p.total,
-                t0.elapsed().as_secs_f64(),
-                match (p.finished, args.swarm_only) {
-                    (true, _) => "",
-                    (false, true) => " (--swarm-only: the rest fails)",
-                    (false, false) => " (HTTP sources fill the rest)",
-                }
-            );
+        Ok((h, p, stop)) => {
+            let line = match (stop, args.swarm_only) {
+                (DownloadStop::Finished, _) => format!(
+                    "swarm  {} of {} bytes in {:.1}s",
+                    p.have,
+                    p.total,
+                    t0.elapsed().as_secs_f64()
+                ),
+                (DownloadStop::NoPeers, _) => format!(
+                    "swarm  no peers after {}s; using HTTP sources",
+                    cfg.torrent.swarm_no_peer_secs
+                ),
+                (DownloadStop::Stall, _) => format!(
+                    "swarm  no progress for {}s; using HTTP sources",
+                    cfg.torrent.swarm_stall_secs
+                ),
+                (DownloadStop::Timeout, true) => format!(
+                    "swarm  {} of {} bytes in {:.1}s (--swarm-only: the rest fails)",
+                    p.have,
+                    p.total,
+                    t0.elapsed().as_secs_f64()
+                ),
+                (DownloadStop::Timeout, false) => format!(
+                    "swarm  {} of {} bytes in {:.1}s (HTTP sources fill the rest)",
+                    p.have,
+                    p.total,
+                    t0.elapsed().as_secs_f64()
+                ),
+            };
+            println!("{line}");
             let _ = engine.remove(&h).await;
         }
         Err(e) if args.swarm_only => println!("swarm  unavailable ({e})"),

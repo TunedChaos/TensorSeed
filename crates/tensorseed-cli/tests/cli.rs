@@ -734,10 +734,41 @@ async fn harvest_discovers_mirrors_publishes_and_is_idempotent() {
     let sub = tmp.path().join("sub");
     std::fs::create_dir_all(&sub).unwrap();
     let scfg = write_config(&sub, &mirror.uri(), &pk, "");
-    let o = run(&scfg, &["pull", "org/a", "--no-hf-fallback"], &[]).await;
+    let o = run(
+        &scfg,
+        &["pull", "org/a", "--no-hf-fallback", "--no-swarm"],
+        &[],
+    )
+    .await;
     assert_eq!(code(&o), 0);
-    assert!(stdout(&o).contains("ok     model.safetensors (webseed)"));
+    let s = stdout(&o);
+    assert!(!s.contains("swarm  "), "{s}");
+    assert!(s.contains("ok     model.safetensors (webseed)"));
     let o = run(&scfg, &["verify", "org/a"], &[]).await;
+    assert_eq!(code(&o), 0);
+
+    // Default pull tries the swarm first. With no seeders and a short
+    // no-peer window it falls back to HTTP quickly.
+    let fb = sub.join("fallback");
+    let fb_s = fb.to_str().unwrap();
+    let o = run(
+        &scfg,
+        &["pull", "org/a", "--no-hf-fallback", "--out", fb_s],
+        &[
+            ("TENSORSEED_TORRENT__DHT", "false"),
+            ("TENSORSEED_TORRENT__SWARM_NO_PEER_SECS", "2"),
+            ("TENSORSEED_TORRENT__SWARM_STALL_SECS", "30"),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0);
+    let s = stdout(&o);
+    assert!(
+        s.contains("swarm  no peers after 2s; using HTTP sources"),
+        "{s}"
+    );
+    assert!(s.contains("ok     model.safetensors (webseed)"), "{s}");
+    let o = run(&scfg, &["verify", fb_s], &[]).await;
     assert_eq!(code(&o), 0);
 
     // Harvest also built a hybrid torrent with the webseed in it.

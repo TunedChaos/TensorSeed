@@ -116,7 +116,9 @@ pub async fn fetch_for_manifest(m: &Manifest, bases: &[String]) -> anyhow::Resul
 }
 
 /// Engine options from `[torrent]`. `listen = false` makes a download only
-/// session.
+/// session (outbound connections, no listen port): that is what `pull`
+/// uses, so a pull does not require an open port and does not seed unless
+/// `--seed-after` starts a listening seeder afterwards.
 pub fn engine_options(cfg: &Config, listen: bool, dir: &Path) -> anyhow::Result<EngineOptions> {
     let ip: IpAddr = cfg.torrent.listen_addr.parse()?;
     Ok(EngineOptions {
