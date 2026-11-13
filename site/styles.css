@@ -174,3 +174,37 @@ footer {
   word-break: break-all;
   color: var(--ink);
 }
+
+pre.copyable code {
+  user-select: all;
+  -webkit-user-select: all;
+  cursor: text;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+
+.qr {
+  display: block;
+  width: 12rem;
+  height: 12rem;
+  margin: 0 0 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: #efe8d4;
+}
+
+#support-thanks {
+  display: none;
+}
+
+#support-thanks:target {
+  display: block;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  padding: 1.15rem 1.2rem 0.4rem;
+  margin-top: 1.5rem;
+}
+

@@ -35,6 +35,23 @@ echo "CLOUDFLARE_ACCOUNT_ID is set (length ${#CLOUDFLARE_ACCOUNT_ID})"
 
 cd "${ROOT}"
 
+echo "Generating the XCH support QR"
+QR_VENV="${WRANGLER_CACHE_DIR}/qr-venv"
+if ! python3 -c "import segno" >/dev/null 2>&1; then
+  if [ ! -x "${QR_VENV}/bin/python" ]; then
+    python3 -m venv "${QR_VENV}"
+    "${QR_VENV}/bin/pip" install -q segno
+  fi
+  "${QR_VENV}/bin/python" "${ROOT}/site/generate-xch-qr.py"
+else
+  python3 "${ROOT}/site/generate-xch-qr.py"
+fi
+ADDR="$(tr -d "[:space:]" < "${ROOT}/site/xch-donate-address.txt")"
+if ! grep -F -q "${ADDR}" "${ROOT}/site/index.html"; then
+  echo "site/index.html is missing the XCH address from site/xch-donate-address.txt" >&2
+  exit 1
+fi
+
 echo "Deploying tensorseed from site/"
 pnpm dlx wrangler pages deploy site --project-name tensorseed --branch main
 

@@ -295,6 +295,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). To request that a Hugging Face repo
 be added to the official catalog, open a "Request a catalog mirror" issue
 (gated and restricted-license repos are refused).
 
+## Support
+
+Tensorseed is an open source project by Tuned Chaos. To help pay for
+storage and the official seeder, see the
+[Support](https://tensorseed.dev/#support) section on the website.
+Support is not a tax-deductible donation.
+
 ## License
 
 Copyright 2026 Tuned Chaos.
