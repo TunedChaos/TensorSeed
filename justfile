@@ -68,7 +68,7 @@ dist: (clean-dist)
         cp "target/${triple}/dist/${exe}" "$stage/"
         cp LICENSE README.md RELEASE-KEY.md "$stage/"
         mkdir -p "$stage/docs" "$stage/config"
-        cp docs/RUN-A-MIRROR.md "$stage/docs/"
+        cp docs/RUN-A-MIRROR.md docs/PUBLISH-A-CATALOG.md "$stage/docs/"
         cp config/tensorseed.example.toml config/mirrors.example.toml "$stage/config/"
         case "$triple" in
             *windows*) (cd {{ dist_dir }} && python3 -c 'import sys, zipfile, pathlib

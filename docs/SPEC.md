@@ -505,6 +505,20 @@ Default: `strict` when `chia.catalog_store_id` is set, and `off` with an info no
 
 What this adds over the file backend alone: a host, mirror, or seeder can no longer get a validly signed head accepted unless the chain anchors it, which closes split views and blocks use of a stolen publisher signing key without the Chia store owner wallet. A cache cannot hold strict clients back for longer than the grace window. Publishing now needs both the publisher signing key and the store owner wallet.
 
+### 6.15 Independent catalogs (decentralization path)
+
+Anyone can run a separate catalog with their own publisher key, their own Chia DataLayer store, and their own signed file catalog on any static host or S3 target. The commands already exist (`catalog keygen`, `catalog create`, `catalog anchor`, `publish`, `harvest`, `catalog resign-head`, `mirror publish`). The operator guide is [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md). Nobody but the official publisher can write to the official tensorseed.dev catalog: its store only accepts updates from its owner wallet, and every entry must verify against its pinned key.
+
+Chia proves integrity and latest state of *that publisher's* catalog, not publisher honesty. File trust comes from each entry's `hf_commit` and per-file hashes, which anyone can audit against Hugging Face while the repo is still up. Torrents are deterministic, so two catalogs that publish the same HF commit share one info hash and one swarm.
+
+In 0.1.0 a client follows one catalog per config file: pin the third party's `catalog.name`, `catalog.publisher_pubkey`, `chia.catalog_store_id`, and `file.base_url` in a separate file and pass `--config`. 0.2.0 is the multi-catalog milestone:
+
+- `[[catalogs]]` (or equivalent) lists several catalogs, each with its own key, store id, and base URL, verified independently (same strict chain check per catalog).
+- When two or more subscribed catalogs list the same revision, the client shows whether their file hashes agree.
+- The catalog explorer (8.4) ships a "use another catalog" form that accepts a key, store id, and base URL.
+
+Delegated writers on the official catalog (CHIP-0035) remain optional and separate; they are not the decentralization path.
+
 ## 7. Content layer
 
 ### 7.1 BitTorrent v2
@@ -645,7 +659,7 @@ Crate split needed first. `tensorseed-core` is already almost portable (serde, s
 - Modes: `strict` (default), `warn`, and `off`, with exactly the CLI semantics. Strict refuses to show a head the chain does not anchor; warn shows it with a banner; off skips the coin lookup and says so. All endpoints that answer must agree; unreachable endpoints are skipped, and none answering is reported as "chain unreachable" (strict then shows the last verified state from local storage, clearly marked as such).
 - The highest accepted revision and root are kept in `localStorage` (or IndexedDB), so the browser refuses rollbacks across visits like the CLI does.
 
-**Pinned values.** The publisher key and store id are compiled into the page and shown on every view; a "use another catalog" form accepts a different key, store id, and base URL for third party catalogs.
+**Pinned values.** The publisher key and store id are compiled into the page and shown on every view; a "use another catalog" form accepts a different key, store id, and base URL for third party catalogs. Shipping that form is part of 0.2.0, together with multi-catalog subscription in the client (6.15).
 
 **Views.**
 
@@ -1089,6 +1103,11 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 
 **M4: Catalog explorer**
 - Static site at tensorseed.dev (generated from the catalog) listing repos, licenses, sizes, magnets, webseeds, attribution text, and catalog generation history. Hosted on any static host; it has no privileged role.
+
+**0.2.0: Multi-catalog subscription**
+- Clients subscribe to several independent catalogs at once (`[[catalogs]]`, each with its own publisher key, store id, and base URL), each verified on its own.
+- When catalogs agree (or disagree) on the hashes of the same HF commit, the client shows that.
+- Explorer "use another catalog" form (8.4). Operator guide for running a catalog is in 0.1.0: [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md).
 
 ---
 

@@ -15,7 +15,8 @@ Website: [tensorseed.dev](https://tensorseed.dev)
 > still print "not implemented yet". Expect breaking changes.
 
 **Want to help keep models available?** Run a mirror or seeder: see
-[docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md).
+[docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md). **Want to publish your own
+catalog?** See [docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md).
 
 ## What it is
 
@@ -42,8 +43,10 @@ original host goes away, and lets anyone check that a copy is genuine.
   because the client checks them against the catalog before accepting them.
 
 Read the full design in [docs/SPEC.md](docs/SPEC.md), the plan in
-[docs/MILESTONES.md](docs/MILESTONES.md), and the volunteer guide in
-[docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md). API docs: `cargo doc
+[docs/MILESTONES.md](docs/MILESTONES.md), the volunteer guide in
+[docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md), and how to run an
+independent catalog in
+[docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md). API docs: `cargo doc
 --workspace --no-deps --open` (or `just doc-open`).
 
 ## Use it
@@ -155,6 +158,8 @@ tensorseed catalog anchor           # publisher: bootstrap or repair the chain a
 The check trusts the coin endpoints only to say whether the store coin exists
 and is spent; the root itself is proven locally. Details and limits are in the
 spec. Running a Chia publisher: [docs/CHIA-RUNBOOK.md](docs/CHIA-RUNBOOK.md).
+Running your own catalog (own key, own store, own host):
+[docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md).
 
 ## Workspace layout
 
@@ -220,7 +225,9 @@ directories are `~/.local/share/tensorseed/` on Unix and
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). To request that a Hugging Face repo
+be added to the official catalog, open a "Request a catalog mirror" issue
+(gated and restricted-license repos are refused).
 
 ## License
 

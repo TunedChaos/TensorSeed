@@ -91,3 +91,17 @@ the HTTP side of M1 and M2 is already done.
 - [ ] Lists repos, licenses, sizes, magnets, webseeds, attribution text
 - [ ] Catalog generation history
 - [ ] Hosted on any static host, with no privileged role
+
+## 0.2.0: Multi-catalog subscription
+
+Independent catalogs are already possible in 0.1.0 (own key, own Chia store,
+own file catalog; see [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md)). A client
+can follow only one catalog per config file. 0.2.0 is about following
+several at once, and about showing agreement between them:
+
+- [ ] `[[catalogs]]` (or equivalent): each entry has its own publisher key,
+      store id, and base URL, verified independently with the same strict
+      chain check
+- [ ] When two or more subscribed catalogs list the same revision, show
+      whether their file hashes agree
+- [ ] Catalog explorer "use another catalog" form (key, store id, base URL)

@@ -1,0 +1,64 @@
+name: Request a catalog mirror
+description: Ask for a Hugging Face repo to be published in the official Tensorseed catalog
+title: "[mirror] "
+labels: ["mirror-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request that a Hugging Face model or dataset be
+        published in the official Tensorseed catalog.
+
+        Gated and restricted-license repos are refused. Tensorseed only
+        publishes open (and, when policy allows, attribution-style) Hugging
+        Face models and datasets. Opening this issue does not write to the
+        catalog; only the official publisher can do that.
+
+        To run an independent catalog instead, see docs/PUBLISH-A-CATALOG.md in this repository.
+  - type: input
+    id: repo_id
+    attributes:
+      label: Hugging Face repo id
+      description: The org/name on Hugging Face, for example google/bert-base-uncased.
+      placeholder: org/name
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type
+      options:
+        - Model
+        - Dataset
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision or commit (optional)
+      description: A branch, tag, or 40-character commit SHA. Leave blank for the current default branch.
+    validations:
+      required: false
+  - type: input
+    id: license
+    attributes:
+      label: License
+      description: The SPDX id or Hugging Face license tag, for example apache-2.0 or mit.
+      placeholder: apache-2.0
+    validations:
+      required: true
+  - type: input
+    id: size
+    attributes:
+      label: Approximate size
+      description: For example 1.2 GB or 400 MB.
+      placeholder: 1.2 GB
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Why it is at risk
+      description: Why this repo should be preserved. For example, the upstream publisher is leaving, the files already disappeared once, or it is widely used and only available on the Hub.
+    validations:
+      required: true

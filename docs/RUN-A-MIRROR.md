@@ -10,6 +10,9 @@ broken or malicious mirror can only be slow or missing, never wrong.
 This guide covers running `tensorseed serve`, the long running seeder, and
 optionally publishing your copy as an HTTP webseed or S3 compatible mirror.
 The design behind it is in [SPEC.md](SPEC.md) (sections 6.14, 8.3, 10.1).
+To run an independent catalog (own key, own Chia store, own host), see
+[PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md). Nobody but the official
+publisher can write to the official catalog at tensorseed.dev.
 
 Contents:
 
@@ -24,6 +27,7 @@ Contents:
 9. [Run it as a service (systemd)](#9-run-it-as-a-service-systemd)
 10. [Monitoring: the health endpoint](#10-monitoring-the-health-endpoint)
 11. [Operating notes](#11-operating-notes)
+12. [Publish your own catalog](#12-publish-your-own-catalog)
 
 ## 1. Install
 
@@ -322,7 +326,8 @@ rclone's own config or environment, never in `tensorseed.toml`.
 
 If you also publish your own catalog, use `[[storage.target]]` blocks
 instead: `tensorseed harvest` and `publish` upload to every enabled target.
-See `config/tensorseed.example.toml` and SPEC section 10.1.
+See [PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md),
+`config/tensorseed.example.toml`, and SPEC section 10.1.
 
 ## 8. Getting your mirror listed
 
@@ -351,6 +356,11 @@ There are two kinds of listing, and only HTTP mirrors need one:
 Anyone can also use an unlisted mirror right away by adding it to their own
 local list (`tensorseed mirror add <url>`); it is verified exactly like a
 listed one.
+
+To ask for a Hugging Face repo to be published in the official catalog,
+open a "Request a catalog mirror" issue on the project repository. Gated
+and restricted-license repos are refused. That is a request to the official
+publisher; it does not write to the catalog yourself.
 
 ## 9. Run it as a service (systemd)
 
@@ -408,3 +418,12 @@ meant for you, not the internet.
   and `license_classes` to narrow it.
 - **Help**: `tensorseed doctor` (when implemented) and
   `tensorseed serve -v` for debug logs; issues on the project repository.
+
+## 12. Publish your own catalog
+
+Seeding what you pulled does not make you a catalog publisher, and nothing
+in this guide writes to the official tensorseed.dev catalog. If you want
+your own signed, chain-anchored catalog of Hugging Face repos, follow
+[PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md). Clients can follow it in
+0.1.0 by pinning your key, catalog name, store id, and base URL in a
+separate config. Following several catalogs at once is planned for 0.2.0.
