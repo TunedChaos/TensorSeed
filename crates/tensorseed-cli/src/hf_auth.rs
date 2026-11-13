@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 
 use crate::cli::HfCmd;
-use crate::config::{Config, remove_login_token, write_login_token};
+use crate::config::Config;
 
 /// Run a `tensorseed hf` subcommand.
 pub async fn run(cfg: &Config, cmd: &HfCmd) -> anyhow::Result<ExitCode> {
@@ -21,15 +21,14 @@ pub async fn run(cfg: &Config, cmd: &HfCmd) -> anyhow::Result<ExitCode> {
 }
 
 fn login() -> anyhow::Result<ExitCode> {
-    let token = read_token()?;
-    let path = write_login_token(&token)?;
+    let path = tensorseed_app::hf::login(&read_token()?)?;
     println!("Saved the Hugging Face token to {}", path.display());
     println!("The file is readable only by your user. The token is never printed.");
     Ok(ExitCode::SUCCESS)
 }
 
 fn logout() -> anyhow::Result<ExitCode> {
-    if remove_login_token()? {
+    if tensorseed_app::hf::logout()? {
         println!("Removed the token saved by tensorseed hf login.");
     } else {
         println!("No token file from tensorseed hf login was present.");
@@ -39,7 +38,7 @@ fn logout() -> anyhow::Result<ExitCode> {
 }
 
 async fn status(cfg: &Config) -> anyhow::Result<ExitCode> {
-    let Some((token, source)) = cfg.huggingface.resolve_token_source()? else {
+    let Some(st) = tensorseed_app::hf::status(cfg).await? else {
         println!("No Hugging Face token is configured.");
         println!(
             "Set {}, run `tensorseed hf login`, or use `hf auth login`.",
@@ -47,16 +46,8 @@ async fn status(cfg: &Config) -> anyhow::Result<ExitCode> {
         );
         return Ok(ExitCode::from(1));
     };
-    let name = cfg
-        .huggingface
-        .client()
-        .context("building the Hugging Face client")?
-        .whoami()
-        .await
-        .context("calling Hugging Face whoami-v2")?;
-    let _ = token; // never printed
-    println!("Hugging Face: logged in as {name}");
-    println!("Token source: {}", source.label());
+    println!("Hugging Face: logged in as {}", st.user);
+    println!("Token source: {}", st.source.label());
     Ok(ExitCode::SUCCESS)
 }
 
