@@ -142,7 +142,16 @@ impl NatPmp {
             sock.send(req).await?;
             let deadline = tokio::time::Instant::now() + wait;
             while let Ok(r) = tokio::time::timeout_at(deadline, sock.recv(&mut buf)).await {
-                let n = r?;
+                let n = match r {
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                        bail!(
+                            "{} does not run NAT-PMP (port 5351 refused)",
+                            self.gateway.ip()
+                        )
+                    }
+                    Err(e) => return Err(e.into()),
+                };
                 if n >= len && buf[0] == 0 && buf[1] == 128 + op {
                     let code = u16::from_be_bytes([buf[2], buf[3]]);
                     if code != 0 {
@@ -289,7 +298,10 @@ impl Upnp {
             errors.push(format!("{}: no WAN connection service", resp.location));
         }
         if errors.is_empty() {
-            bail!("no UPnP internet gateway answered");
+            bail!(
+                "no UPnP internet gateway answered (UPnP may be off on the router, or a \
+                 host firewall such as ufw may drop the SSDP replies)"
+            );
         }
         bail!("no usable UPnP gateway: {}", errors.join("; "))
     }
@@ -690,6 +702,22 @@ mod tests {
         c.tries = 2;
         let e = c.external_ip().await.unwrap_err();
         assert!(e.to_string().contains("no NAT-PMP answer"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn natpmp_refused_means_no_natpmp() {
+        // A closed UDP port answers with ICMP port unreachable on loopback,
+        // like a router without NAT-PMP.
+        let addr = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let mut c = NatPmp::new(addr);
+        c.first_timeout = Duration::from_millis(200);
+        c.tries = 2;
+        let e = c.external_ip().await.unwrap_err();
+        assert!(e.to_string().contains("does not run NAT-PMP"), "{e}");
     }
 
     #[tokio::test]

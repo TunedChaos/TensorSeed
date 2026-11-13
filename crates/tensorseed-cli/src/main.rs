@@ -33,7 +33,9 @@ fn init_tracing(format: LogFormat, verbose: u8) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr);
+        .with_writer(std::io::stderr)
+        // No color codes in log files, journald, or pipes.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()));
     match format {
         LogFormat::Pretty => builder.init(),
         LogFormat::Json => builder.json().init(),
