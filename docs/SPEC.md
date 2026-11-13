@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 9)
+# Tensorseed: Project Specification (Revision 10)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). Also registered: tensorseed.org, tensorseed.garden.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); mainnet is not live yet.
+> Status: pre-alpha, milestone M0 (spikes). Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed` and `pull --swarm`/`--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog can be checked against the Chia store, which is the source of truth once a store id is configured (6.14); mainnet is not live yet.
+
+Revision 10 changes: Chia is the source of truth for the file catalog (6.14). Each Chia generation carries a signed `ts/v1/file-head` anchor naming the file catalog revision and root; the publisher writes to Chia first and only uploads the file catalog, with a `chain-proof.json` proof of inclusion, after the generation confirmed. Clients verify the proof offline, look the store singleton coin up read only on full node RPC compatible endpoints (no wallet or full node needed), and only accept a file head the chain anchors. New `catalog.chain_check = "strict" | "warn" | "off"` (strict by default once `chia.catalog_store_id` is set, off otherwise), `chia.chain_source`, `chia.coin_api_urls`, and `chia.chain_grace_blocks`; new commands `catalog anchor` and `catalog chain-status`. Head re-signs and snapshots need no chain transaction (4, 6.3, 6.13, 6.14, 8.1, 9, 10).
 
 Revision 9 changes: `tensorseed serve`, the long running seeder (8.3): catalog driven loop with selection rules, disk budget, takedowns, auto fetch through the pull pipeline, upload and download caps, uTP, opt in NAT-PMP and UPnP IGD port mapping, HTTP webseed serving with ranges, `--serve-catalog` (also on `seed`), a localhost JSON health endpoint, state file resume, graceful SIGTERM, and a hardened systemd unit. New crate `tensorseed-serve`; the `[serve]` config block replaces `[seed]` (9, 10, 12.1).
 
@@ -115,8 +117,9 @@ Key property: the catalog says *what* the correct bytes are (hashes) and *where*
 | Malicious DataLayer mirror serves forged catalog `.dat` | Fake manifests | Chia DataLayer validates downloaded data against the on-chain root before accepting it. Clients pin the catalog store ID. Every entry is also verified against the pinned publisher key (6.9). |
 | Malicious file-catalog host or mirror forges, rolls back, or forks the catalog | Fake or outdated manifests | Head, deltas, and snapshots are minisign-signed with the pinned publisher key; every entry is verified again; the revision and `prev_root` hash chain plus the local trust anchor reject rollback, replay, gaps, and forks (6.8). |
 | File-catalog host freezes the catalog (serves an old, validly signed head forever) | Users miss new revisions and tombstones | `head.json` carries `expires_unix`; clients refuse expired heads. Publisher re-signs the head before `file.head_ttl_secs` lapses. |
-| Publisher shows different file-catalog chains to different users (split view) | Targeted users get different manifests | Not preventable by the file backend alone. Detectable by comparing heads across mirrors; prevented by the Chia backend's on-chain root (6.11). |
-| Publisher signing key compromise (any backend) | Attacker signs valid looking entries | Keep the key offline; rotation and revocation design is an open question (section 17). Rollback and fork checks still stop rewriting history already seen by clients. |
+| Publisher shows different file-catalog chains to different users (split view) | Targeted users get different manifests | Not preventable by the file backend alone. Prevented by the chain check (6.14): clients only accept a file head anchored in the Chia store, which has one public history. |
+| A cache (Pages, R2, mirror, seeder) serves a validly signed head the chain never anchored, or holds clients on an old one | Unanchored or outdated manifests | Strict clients refuse heads the Chia store does not anchor and refuse proofs whose store coin was spent longer ago than `chia.chain_grace_blocks` (6.14). The coin lookup trusts the configured endpoints for existence and spent status only; list several, or your own node. |
+| Publisher signing key compromise (any backend) | Attacker signs valid looking entries | With a Chia store configured, signed entries only reach strict clients through a generation written by the store owner wallet (6.14), so the attacker needs both keys. Keep the key offline; rotation and revocation design is an open question (section 17). Rollback and fork checks still stop rewriting history already seen by clients. |
 | Catalog owner key compromise | Attacker publishes manifests pointing to malicious weights (pickle `.bin`/`.pt` can execute code on load) | Keep the owner key in a cold or Vault-style setup; publish from a CHIP-0035 delegated writer key that the owner can revoke (optional, see 6.6). Manifests record `hf_commit` and HF-reported hashes so anyone can audit against HF while it exists. `pull` warns loudly on pickle-based formats and prefers `safetensors`/`gguf`. `pull` shows the publishing generation and timestamp and supports `--expect-sha256` / pinned revisions. |
 | Upstream HF repo itself is malicious or later altered | We mirror bad content, or a force-push rewrites history | We mirror by immutable commit SHA; new commits become new revisions and never overwrite old manifests. Record HF security-scan status if exposed by the API (unverified, M0). |
 | Publisher host compromise | Same as key compromise; also object storage credentials | Least-privilege S3 keys (write to one bucket each, read from env only), DataLayer RPC never exposed beyond localhost (RPC reference warns port 8562 must not be public). |
@@ -218,6 +221,7 @@ All keys are UTF-8 strings, hex-encoded on the wire (DataLayer requires hex keys
 | `ts/v1/repo/{type}/{org}/{name}/rev/{commit}/files/{page:06}` | `FilePage` JSON | Only when the file list is too large for one value (see 6.5). |
 | `ts/v1/repo/{type}/{org}/{name}/tombstone` | `Tombstone` JSON | Present only if taken down. |
 | `ts/v1/index/{type}/{org}/{name}` | `IndexEntry` JSON | Small summary for listing without reading manifests. |
+| `ts/v1/file-head` | `FileAnchor` JSON | Chia only, reserved: the file catalog revision and root this generation anchors (6.14). Never in the file catalog or exports. |
 
 The `ts/v1/` prefix (short for Tensorseed, schema v1) leaves room for a schema v2 to coexist.
 
@@ -370,7 +374,7 @@ Everything except `head.json` is append-only: a published delta or snapshot is n
 
 Clients keep a trust anchor `(revision, root)` and the verified entries in `file.state_dir/<catalog>/state.json` (re-verified on load) and never go below it. Sync tries `base_url`, then each mirror; rollback, stale, or tampered sources are skipped, while a fork aborts. The publisher writes to the configured storage (section 10.1) in the order delta, snapshot (at revision 1 and every `snapshot_every`), head, and advances its local state only after every upload succeeded; when no source serves a head yet (for example local only storage), it continues from its verified local state. A new client bootstraps from the newest snapshot, then applies later deltas. The publisher re-signs `head.json` (same revision, new `expires_unix`) before `file.head_ttl_secs` lapses.
 
-**What it does not give you:** the file backend proves *who* published each revision and that history was not rewritten for clients that already saw it. It cannot prove to a brand new client that the publisher never showed a different chain to someone else (a split view); only cross-checking with other mirrors or a public ledger can. That is what Chia adds (6.11).
+**What it does not give you:** the file backend proves *who* published each revision and that history was not rewritten for clients that already saw it. It cannot prove to a brand new client that the publisher never showed a different chain to someone else (a split view); only cross-checking with other mirrors or a public ledger can. That is what Chia adds (6.11), and with a store id configured clients check every file head against the chain (6.14).
 
 ### 6.9 Signed entries and the signature format
 
@@ -443,12 +447,61 @@ Behavior the backend now relies on, confirmed live:
 
 Client anchor (implemented): every read through the Chia backend checks the store against `<file.state_dir>/<catalog>/chia-<store>.json` (`store_id`, `generation`, `root`). A lower on-chain generation is a `Rollback`; a different root at the anchored generation, or a confirmed history that no longer contains the anchored root, is a `Fork`. The anchor advances after each successful check. Because the chain itself cannot be rolled back past a reorg, this mainly protects against a client being pointed at a different or stale node.
 
-Planned: Chia as the source of truth for every client. The design decision is that the on-chain DataLayer root is authoritative and the file catalog, Pages, R2, and other HTTP copies are caches. What that needs, not built yet:
+Chia as the source of truth for every client is implemented; see 6.14.
 
-1. A chain-derived commitment the file catalog can be checked against. The file catalog's `root` is Tensorseed's own hash chain, not the DataLayer Merkle root, so the two cannot be compared directly. Options: (a) store the file head (`revision`, `root`) under a reserved key such as `ts/v1/file-head` in each Chia generation, written in the same publish; or (b) compute the DataLayer Merkle root from the file entries locally (needs Chia's tree hashing, which `chia_rs` exposes). Option (a) is simpler and keeps both backends independent.
-2. A light way for clients to read the confirmed on-chain root without running a wallet and DataLayer: a public read-only endpoint (a coinset style full node API or our own) queried for the store singleton's latest confirmed root, verified by the singleton lineage. Running a local wallet stays the strongest option.
-3. Client policy, `catalog.chain_check = "strict" | "warn" | "off"`: with `strict`, a file or HTTP head is accepted only if its revision and root match the chain commitment, and reads fail when the chain is unreachable; with `warn`, mismatches still fail but an unreachable chain falls back to the signed file catalog with a warning and the last chain anchor; `off` keeps today's behavior. Default `warn` until the public endpoint exists, then `strict` for publishers and mirrors.
-4. Publish order: Chia generation first, then the file catalog and mirrors, so a cache is never ahead of the chain. The weekly head re-sign does not change the root and needs no chain write.
+### 6.14 Chia as the source of truth for the file catalog (implemented)
+
+Design decision: the on-chain DataLayer root is authoritative, and the file catalog on Cloudflare Pages, R2, other mirrors, and seeders is a cache. Scope is unchanged: the catalog mirrors Hugging Face. Code: `tensorseed_catalog::anchor` (proofs, puzzle hashes, coin lookups) and `crates/tensorseed-cli/src/chain.rs` (publish path and client policy).
+
+**Anchor key.** Every Chia generation the publisher writes carries the reserved key `ts/v1/file-head`. Its value is a `SignedEntry` (6.9) whose document is a `FileAnchor`:
+
+```json
+{ "catalog": "tensorseed", "revision": 12, "root": "<file catalog root, 64 hex>", "schema": "ts.fileanchor/1" }
+```
+
+The file catalog `root` (6.8) commits to `state_hash` (every entry) and `prev_root` (the whole history), so `(revision, root)` binds the complete file catalog. The key is never stored in the file catalog, is left out of exports, and is skipped on import.
+
+Why not the sha256 of `head.json`: the head also carries `expires_unix` and the snapshot pointer, which change with every weekly re-sign and every `catalog snapshot`. Binding them would cost a chain transaction each week for no gain, since the expiry exists to stop freeze attacks by HTTP hosts and the chain check covers freshness on its own (see the grace window below). So `catalog resign-head` and `catalog snapshot` never touch the chain.
+
+**Chain proof.** After the generation confirms, the publisher asks its DataLayer for `get_proof` of the anchor key and publishes `<catalog>/chain-proof.json` (`ts.chainproof/1`): `store_id`, `coin_id` (the store singleton coin for that root), `inner_puzzle_hash` (the owner's inner puzzle hash at that coin), `node_hash`, `layers` (the Merkle path exactly as `get_proof` returns it, `other_hash_side` 0 for left and 1 for right), and the signed anchor `entry`, whose canonical bytes are the stored DataLayer value. It is uploaded with the short cache policy after the delta and snapshot and before `head.json`. It needs no signature of its own: every field is checked as described below. Seeders running `serve --serve-catalog` copy it next to the head they mirror when it anchors that head.
+
+**Publish order: Chia first.** With `catalog.backend = "file"` and `chia.catalog_store_id` set, every file catalog write (`catalog create`, `catalog import`, `publish`, `harvest`) runs:
+
+1. Sync the file catalog and compute the next revision and root without uploading anything.
+2. Check that the Chia store anchors the current file revision; if not, stop and ask for `catalog anchor`.
+3. Stage the changed entries (byte identical signed entries) plus the new anchor in one changelist, submit one root, and wait for confirmation (one fee per revision).
+4. Read the proof back, verify it, and check it against the confirmed root.
+5. Only then upload the delta, snapshot, `chain-proof.json`, and head to every storage target.
+
+If the chain write fails, nothing is uploaded. If an upload fails after the chain confirmed, rerunning the same publish finds the store already anchoring that revision, writes nothing to the chain, and finishes the uploads. `catalog anchor` makes the store hold exactly the current file catalog plus its anchor (bootstrap of a new store, or recovery); when the store already matches, it only refreshes `chain-proof.json` and costs nothing. Without a store id the publisher writes the file catalog alone, as before.
+
+**Client check.** Before a file catalog sync, the client:
+
+1. Gets a proof. `chia.chain_source = "light"` (default) fetches `chain-proof.json` from `file.base_url` and every mirror; `"datalayer"` asks the client's own DataLayer node at `chia.rpc_url` (`get_value` and `get_proof`).
+2. Verifies it offline: the anchor's signature against the pinned publisher key and catalog name; the leaf hash `sha256(2 || sha256(1 || key) || sha256(1 || value))`; every Merkle layer up to the DataLayer root R; and the puzzle hash P the store singleton must have for `(store id, R, inner puzzle hash)`. P is the curried tree hash of `singleton_top_layer_v1_1` (with the store id as launcher id) around `nft_state_layer` with metadata `(R . ())` and metadata updater `11`, as built by the reference client's `create_host_fullpuz`. Unit tests check the computation against coins of the real testnet11 store and a real `get_proof` path from it.
+3. Looks the coin up, read only, on every `chia.coin_api_urls` endpoint (default `https://api.coinset.org`, a public full node RPC compatible API; your own full node works too) with `get_coin_record_by_name`. The coin id must hash from the returned parent, puzzle hash, and amount; the puzzle hash must equal P; the amount must be odd. Unspent means the proof shows the store's current root. Spent within `chia.chain_grace_blocks` (default 192 blocks, about an hour) is accepted with a warning: the chain moved on and the caches have not caught up. Spent longer ago means a newer chain state exists and the proof is stale.
+4. Syncs the file catalog accepting only a head whose `(revision, root)` equals the anchor. Sources serving any other head are skipped, so the local trust anchor never moves to a head the chain did not anchor.
+
+The reference wallet's own `verify_proof` does steps 2 and 3 the same way, with a peer connection instead of an HTTP API.
+
+**Policy, `catalog.chain_check`:**
+
+| Mode | Behavior |
+|---|---|
+| `strict` | Any failure stops the command and leaves the local catalog copy unchanged: no verifiable proof, a mismatch, a stale proof, unreachable chain endpoints, or no source serving the anchored head. |
+| `warn` | Same checks; failures are logged and the plain file catalog sync is used. |
+| `off` | No check. |
+
+Default: `strict` when `chia.catalog_store_id` is set, and `off` with an info notice when it is empty, so today's file only catalog keeps working until the mainnet store exists. Commands run with `--no-wait` use the local copy and do not check. `serve` checks on every catalog sync. `catalog chain-status` runs the check whatever the mode and prints every value; `catalog info` shows the mode and the last successful check (kept in `<file.state_dir>/<catalog>/chain-check.json`).
+
+**Trust model: what is and is not verified.**
+
+- Verified locally, trusting nobody: the anchor is signed by the pinned publisher key; it is included in a DataLayer tree with root R; and R, the store id, and the owner inner puzzle hash produce puzzle hash P. Because P commits to the store id, a proof from another store does not verify.
+- Trusted: the coin endpoints, for two facts only: that a coin with that id exists on chain, and whether it is spent. A lying endpoint cannot make a forged root pass (it would need a real coin whose id hashes from a matching puzzle hash), but it can hide a newer state by reporting a spent coin as unspent (holding clients on an old but genuine revision) or refuse to answer (denial of service). Mitigations: list several independent endpoints (any endpoint that reports a mismatch or a missing coin fails the check, and the most conservative spent status wins); list your own full node; or use `chain_source = "datalayer"` with your own wallet and DataLayer, which do their own light sync. The file catalog's local trust anchor still blocks any rollback below what the client already accepted.
+- Not verified: the singleton lineage back to the launcher. The client does not walk the coin's ancestry. It relies on Chia consensus that a coin with the store's singleton puzzle hash can only be created by that singleton (the singleton top layer enforces this), and on the endpoint for the coin's existence. With `chain_source = "datalayer"` and no coin endpoints configured, the local node's confirmed root is trusted instead.
+- Freshness: inside the grace window a client may accept the previous anchored revision; after it, strict clients refuse until a cache serves the new head.
+
+What this adds over the file backend alone: a host, mirror, or seeder can no longer get a validly signed head accepted unless the chain anchors it, which closes split views and blocks use of a stolen publisher signing key without the Chia store owner wallet. A cache cannot hold strict clients back for longer than the grace window. Publishing now needs both the publisher signing key and the store owner wallet.
 
 ## 7. Content layer
 
@@ -508,6 +561,8 @@ START
 Resumability: every transition is recorded in sqlite (`jobs`, `files`, `upload_parts`, `chain_ops`). On restart, a job resumes at its last completed state. CONFIRM is idempotent: if the expected root is already on chain, it advances.
 
 Failure after STAGE_CATALOG but before SUBMIT: use `clear_pending_roots` and restage, or submit if the staged root matches the expected one.
+
+File backend with a Chia store (6.14): STAGE_CATALOG computes the next file revision locally, SUBMIT and CONFIRM write the changed entries plus the `ts/v1/file-head` anchor to Chia, and only after confirmation are the delta, snapshot, `chain-proof.json`, and head uploaded. A rerun after a failed upload finds the revision already anchored and only finishes the uploads.
 
 ### 8.2 Pull
 
@@ -580,7 +635,9 @@ Single binary `tensorseed`.
 | `mirror publish [--file]` | Sign a mirror list and write `<catalog>/mirrors.toml` (+ `.minisig`) to every storage target. | done |
 | `catalog export --out FILE [--backend chia\|file]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10). | done |
 | `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). | done |
-| `catalog resign-head`, `catalog snapshot` | File backend: re-sign `head.json` with a fresh expiry; write a snapshot now. | done |
+| `catalog resign-head`, `catalog snapshot` | File backend: re-sign `head.json` with a fresh expiry; write a snapshot now. Neither needs a chain transaction. | done |
+| `catalog anchor` | Publisher: make the Chia store anchor the current file catalog revision (all entries plus `ts/v1/file-head` in one generation, only if anything changed) and upload `chain-proof.json` (6.14). | done (mocked RPC) |
+| `catalog chain-status [--no-wait]` | Check the file catalog against the Chia store and print proof, root, coin, and endpoints; exit 1 on a mismatch (6.14). | done |
 | `publish <repo_id> [--type] [--revision <commit>] [--allow-license ID]...` | Run the harvest pipeline for exactly one repo (policy, verified download, torrent, signed entry, uploads), on the watchlist or not. | done |
 | `sync` | Publish every target in config. | stub |
 | `harvest [--watch] [--dry-run] [--only ...] [--status] [--allow-license ID]...` | Watchlist driven mirroring from the Hub (section 13). | done |
@@ -617,6 +674,7 @@ backend = "chia"                 # "chia" | "file"; see sections 6.0 and 6.8
 name = "tensorseed"              # logical catalog name, bound into every entry signature
 publisher_pubkey = ""            # pinned minisign public key ("RW..."), same for every backend
 # publisher_seckey_file = "~/.config/tensorseed/publisher.key"   # only needed to publish
+# chain_check = "strict"         # "strict" | "warn" | "off"; unset: strict with a chia.catalog_store_id, else off (6.14)
 
 [chia]
 rpc_url = "https://localhost:8562"
@@ -628,6 +686,9 @@ confirm_poll_secs = 20
 confirm_timeout_secs = 1800
 catalog_mirror_urls = []         # public URLs of DataLayer HTTP server (port 8575)
 mirror_amount_mojos = 0
+chain_source = "light"           # chain check proof source: "light" (chain-proof.json) | "datalayer" (own node)
+coin_api_urls = ["https://api.coinset.org"]   # read only full node RPC compatible endpoints (6.14)
+chain_grace_blocks = 192         # accept the previous anchored revision this long after the store moved on
 
 [file]
 base_url = "https://catalog.tensorseed.dev/"   # head.json, deltas/, snapshots/ (+ .minisig)
@@ -962,7 +1023,7 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 8. ~~Final project name.~~ Resolved: Tensorseed, primary domain tensorseed.dev.
 9. ~~Second, chain-free catalog backend?~~ Resolved: yes, signed static files (6.8) next to Chia.
 10. Publisher key rotation and revocation: a signed `ts/v1/keys` entry with successor keys, a threshold of maintainer keys, or both? Where does the offline key live?
-11. Should both backends run in parallel from launch (Chia canonical, file as a live mirror), or should the file backend start as export-only?
+11. ~~Should both backends run in parallel from launch?~~ Resolved: Chia is canonical and the file catalog is a checked cache (6.14).
 12. Accept ssh-sig as a second signature type later (6.9), or stay minisign only?
 13. Head expiry (`file.head_ttl_secs`, default 7 days): shorter is safer against freeze attacks but needs a reliable re-signing job.
 14. Harvest watchlist for launch: which authors, tags, download floor, and disk budget?

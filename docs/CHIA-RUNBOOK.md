@@ -4,7 +4,7 @@ This covers running the Tensorseed catalog on Chia DataLayer: what was
 measured on testnet11, how to run it on mainnet, and how other people
 subscribe to and mirror the catalog. It contains no keys and no private
 infrastructure details. Spec background: [SPEC.md](SPEC.md) sections 6.1 to
-6.7 and 6.13.
+6.7, 6.13, and 6.14 (Chia as the source of truth for the file catalog).
 
 ## 1. What the testnet11 run showed (2026-11-12)
 
@@ -84,10 +84,13 @@ back the mnemonic up offline. Never print it into logs or chat.
    full but can wait. A small fee such as 1,000,000 mojos (0.000001 XCH)
    per update is a sensible default; the config default of 0.001 XCH used by
    the stock CLI when no fee is passed is far more than needed.
-4. **Config.** In `tensorseed.toml`:
+4. **Config.** In `tensorseed.toml`. The public catalog stays on the file
+   backend (what clients read over HTTPS); setting `chia.catalog_store_id`
+   makes every file catalog revision go to Chia first (spec 6.14). Use
+   `backend = "chia"` only for a Chia only catalog.
    ```toml
    [catalog]
-   backend = "chia"
+   backend = "file"
    name = "tensorseed"
    publisher_pubkey = "<the published publisher key>"
 
@@ -99,24 +102,39 @@ back the mnemonic up offline. Never print it into logs or chat.
    fee_mojos = 1000000
    catalog_mirror_urls = ["http://<public host>:8575"]
    ```
-5. **Create the store.** `tensorseed catalog create` prints the store id and
-   waits for it to confirm. Put it in `chia.catalog_store_id`.
-6. **Copy the signed file catalog in.** On a machine with the file catalog:
-   `tensorseed catalog export --backend file --out catalog.json`, then
-   `tensorseed catalog import catalog.json` against the Chia config. Entries
-   keep their signatures; the import is one generation. Re-running an import
-   with nothing new is a no-op and costs nothing.
+5. **Create the store.** With `backend = "chia"` for this one command
+   (`TENSORSEED_CATALOG__BACKEND=chia tensorseed catalog create`), it prints
+   the store id and waits for it to confirm. Put it in
+   `chia.catalog_store_id`.
+6. **Anchor the signed file catalog.** `tensorseed catalog anchor` writes
+   every file catalog entry (signatures unchanged) plus the signed
+   `ts/v1/file-head` anchor in one generation, waits for confirmation, and
+   uploads `chain-proof.json` next to `head.json` on every storage target.
+   Re-running it with nothing new is a no-op and costs nothing. (The older
+   path, `catalog export --backend file` then `catalog import --backend
+   chia`, copies the entries but writes no anchor; run `catalog anchor`
+   afterwards.)
 7. **Advertise a mirror.** Open TCP 8575 to the `data_layer_http` service (or
    put it behind an HTTPS reverse proxy), then
    `tensorseed catalog add-mirror --url https://<host>/ --amount 1`.
    The mirror coin locks `amount` mojos (refunded when the mirror is deleted)
    plus a fee. Do not expose the RPC port 8562.
 8. **Publish the store id** next to the publisher key (for example on the
-   website), so clients can pin both.
-9. **Later updates.** `publish`, `harvest`, and `import` stage every changed
-   key with `submit_on_chain=false` and then submit one root, so each run is
-   one generation and one fee. If a run is interrupted after submitting, the
-   next run waits for that root instead of failing.
+   website, and as `chia.catalog_store_id` in the shipped example config), so
+   clients pin both. From then on clients check the file catalog against the
+   chain by default (`catalog.chain_check` is strict once a store id is set).
+9. **Later updates.** `publish`, `harvest`, and `import` compute the next file
+   revision, stage the changed keys and the new anchor with
+   `submit_on_chain=false`, submit one root, wait for it to confirm, and only
+   then upload the file catalog and `chain-proof.json`. Each run is one
+   generation and one fee. If the chain write fails nothing is uploaded; if an
+   upload fails after the chain confirmed, re-running finishes the uploads
+   without a second transaction. If a run is interrupted after submitting, the
+   next run waits for that root instead of failing. `catalog resign-head`
+   (weekly) and `catalog snapshot` never touch the chain.
+10. **Check.** `tensorseed catalog chain-status` prints the file revision, the
+   anchored revision, the DataLayer root, the store coin, and which endpoints
+   confirmed it.
 
 ## 4. Subscribers and volunteer mirrors
 
@@ -137,6 +155,12 @@ read through the Chia backend also checks the store's on-chain history
 against a local anchor (`<file.state_dir>/<catalog>/chia-<store>.json`). A
 node that reports a lower generation (rollback) or a history without the
 anchored root (fork) is refused.
+
+Most clients need none of this: with `catalog.backend = "file"` and
+`chia.catalog_store_id` set they check the HTTPS file catalog against the
+chain without any Chia software (`chia.chain_source = "light"`, spec 6.14).
+Someone who already runs a wallet and DataLayer subscribed to the store can
+set `chia.chain_source = "datalayer"` to take the proof from their own node.
 
 ## 5. Start, stop, and status
 
@@ -186,7 +210,41 @@ Steps that were used:
 5. Fund the wallet from any XCH wallet. 0.01 XCH (10,000,000,000 mojos) covers
    the store (1 mojo), a mirror coin, and thousands of updates at a
    1,000,000 mojo fee.
-6. Only then run `tensorseed catalog create` against this root (section 3).
+6. Only then run `tensorseed catalog create` against this root, then
+   `tensorseed catalog anchor` (section 3, steps 5 and 6).
 
 `DataLayerWallet not available` in the log before the first DataLayer
 action is normal; the DataLayer wallet is created on first use.
+
+## 7. Chain check (spec 6.14)
+
+What a light client does, and what it trusts:
+
+1. Fetch `<catalog>/chain-proof.json` from `file.base_url` or a mirror.
+2. Verify offline: the `ts/v1/file-head` anchor signature, the DataLayer
+   Merkle path to a root, and the store singleton puzzle hash for that root.
+3. Ask each `chia.coin_api_urls` endpoint (read only, full node RPC
+   compatible, default `https://api.coinset.org`) for the store coin with
+   `get_coin_record_by_name`. It must exist, hash correctly, carry the
+   computed puzzle hash, and be unspent (or spent less than
+   `chia.chain_grace_blocks` ago).
+4. Accept only a file head with the anchored revision and root.
+
+The endpoints are trusted only for whether the coin exists and is spent. List
+more than one, or your own full node, to spread that trust. For testnet
+clients use a testnet endpoint (for example
+`https://testnet11.api.coinset.org`).
+
+Live check, 2026-11-12: against the testnet11 store
+`3bc1ab7705c525eea55ba6f76db8baff25de0bc282a4b626c6f7b070de5c5d89`, a
+`get_proof` path for `ts/v1/catalog`, produced by the reference client's
+DataLayer code from a local copy of the store, folded to the confirmed
+generation 1 root; the puzzle hash computed from that root and the owner
+inner puzzle hash matched the store coin
+`ba3d4ca3f6c5c53e564d50f96f785a7588d318e372aed5bfbeb565f676f290f0`, which a
+public testnet11 coin API reported unspent (the current root). That store has
+no `ts/v1/file-head` yet (it predates the anchor), and the testnet services
+were not started for this run because the mainnet services on the same host
+use the same ports; the full publish path was tested against a fake
+DataLayer and coin API instead. Re-run the live part with
+`cargo test -p tensorseed-catalog -- --ignored live_`.

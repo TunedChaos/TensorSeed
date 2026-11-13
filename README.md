@@ -9,9 +9,10 @@ Website: [tensorseed.dev](https://tensorseed.dev)
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
 > v1+v2 torrents, `seed` serves them, `serve` keeps seeding whatever the
 > catalog says, and `pull --swarm` / `--seed-after` use the swarm. The Chia
-> backend has run end to end on Chia testnet11 (not mainnet yet), and
-> `publish`, `takedown`, and `doctor` still print "not implemented yet". Expect
-> breaking changes.
+> backend has run end to end on Chia testnet11 (not mainnet yet), clients can
+> check the file catalog against the Chia store (the source of truth once a
+> store id is configured), and `takedown` and `doctor` still print "not
+> implemented yet". Expect breaking changes.
 
 ## What it is
 
@@ -105,6 +106,40 @@ A Hugging Face token is optional. It is never written in `tensorseed.toml`
 `[huggingface] token_env` (default `HF_TOKEN`), or point `token_file` at a file
 only you can read (`chmod 600`). Downloads resume after
 interruption; `tensorseed jobs` shows their state.
+
+### Chia is the source of truth
+
+The on-chain Chia DataLayer root is authoritative. The signed file catalog on
+tensorseed.dev, R2, mirrors, and seeders is a cache that clients check against
+the chain (spec section 6.14):
+
+- Every Chia update carries a signed `ts/v1/file-head` anchor naming the file
+  catalog revision and root. The publisher writes Chia first and uploads the
+  file catalog, plus a `chain-proof.json` proof of inclusion, only after the
+  update confirmed. Weekly head re-signs need no chain transaction.
+- Clients need no Chia software: they verify the proof locally and look the
+  store's on-chain coin up, read only, on a full node RPC compatible API (a
+  public one by default; add more, or your own node). A file head the chain
+  does not anchor is refused.
+
+```toml
+[catalog]
+# chain_check = "strict"        # "strict" | "warn" | "off"; default strict once a store id is set
+
+[chia]
+catalog_store_id = "<published store id>"   # empty: no chain check (today's default)
+chain_source = "light"          # or "datalayer" to use your own Chia DataLayer node
+coin_api_urls = ["https://api.coinset.org"]
+```
+
+```sh
+tensorseed catalog chain-status     # file catalog vs. chain, with every value printed
+tensorseed catalog anchor           # publisher: bootstrap or repair the chain anchor
+```
+
+The check trusts the coin endpoints only to say whether the store coin exists
+and is spent; the root itself is proven locally. Details and limits are in the
+spec. Running a Chia publisher: [docs/CHIA-RUNBOOK.md](docs/CHIA-RUNBOOK.md).
 
 ## Workspace layout
 
