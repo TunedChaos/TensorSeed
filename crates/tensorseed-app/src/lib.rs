@@ -12,3 +12,4 @@ pub mod config;
 pub mod follow;
 pub mod mirrors;
 pub mod serve_config;
+pub mod torrents;

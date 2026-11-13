@@ -12,6 +12,7 @@ homepage.workspace = true
 [dependencies]
 anyhow.workspace = true
 figment.workspace = true
+hex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -19,6 +20,7 @@ tensorseed-catalog.workspace = true
 tensorseed-core.workspace = true
 tensorseed-hf.workspace = true
 tensorseed-serve.workspace = true
+tensorseed-torrent.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
