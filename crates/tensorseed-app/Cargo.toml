@@ -18,6 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 tensorseed-catalog.workspace = true
 tensorseed-core.workspace = true
+tensorseed-fetch.workspace = true
 tensorseed-hf.workspace = true
 tensorseed-serve.workspace = true
 tensorseed-torrent.workspace = true

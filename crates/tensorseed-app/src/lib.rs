@@ -11,5 +11,6 @@ pub mod chain;
 pub mod config;
 pub mod follow;
 pub mod mirrors;
+pub mod pull;
 pub mod serve_config;
 pub mod torrents;

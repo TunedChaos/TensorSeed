@@ -3475,6 +3475,7 @@ dependencies = [
  "serde_json",
  "tensorseed-catalog",
  "tensorseed-core",
+ "tensorseed-fetch",
  "tensorseed-hf",
  "tensorseed-serve",
  "tensorseed-torrent",
