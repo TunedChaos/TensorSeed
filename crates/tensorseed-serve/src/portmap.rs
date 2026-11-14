@@ -146,7 +146,15 @@ impl NatPmp {
             while let Ok(r) = tokio::time::timeout_at(deadline, sock.recv(&mut buf)).await {
                 let n = match r {
                     Ok(n) => n,
-                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    // ICMP port unreachable: ECONNREFUSED on Unix,
+                    // WSAECONNRESET on Windows.
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionRefused
+                                | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
                         bail!(
                             "{} does not run NAT-PMP (port 5351 refused)",
                             self.gateway.ip()

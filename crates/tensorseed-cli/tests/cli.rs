@@ -208,11 +208,15 @@ async fn serve(server: &MockServer, p: &str, body: &[u8]) {
         .await;
 }
 
+/// A path for a TOML basic string, with forward slashes: a Windows path
+/// would have its backslashes read as escapes. The loader turns them back
+/// into native separators.
+fn slash(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 fn write_config(dir: &Path, server: &str, pubkey: &str, extra: &str) -> PathBuf {
-    // Forward slashes: a Windows path in a TOML basic string would read
-    // its backslashes as escapes. The loader turns them back into native
-    // separators.
-    let d = dir.to_string_lossy().replace('\\', "/");
+    let d = slash(dir);
     let text = format!(
         r#"[general]
 state_db = "{d}/state.db"
@@ -270,6 +274,12 @@ async fn run_stdin(
     }
     if !env.iter().any(|(k, _)| *k == "XDG_CONFIG_HOME") {
         cmd.env("XDG_CONFIG_HOME", home);
+    }
+    // The Windows config and data dirs.
+    for k in ["APPDATA", "LOCALAPPDATA"] {
+        if !env.iter().any(|(e, _)| *e == k) {
+            cmd.env(k, home);
+        }
     }
     for (k, v) in env {
         cmd.env(k, v);
@@ -770,7 +780,7 @@ async fn keygen_create_export_import_on_local_storage() {
 
     let seck = format!(
         "publisher_seckey_file = \"{}\"",
-        keys.join("pub.key").display()
+        slash(&keys.join("pub.key"))
     );
     let a = tmp.path().join("a");
     std::fs::create_dir_all(&a).unwrap();
@@ -779,7 +789,7 @@ async fn keygen_create_export_import_on_local_storage() {
         "{seck}\n[[storage.target]]\nname = \"nas1\"\nprovider = \"local\"\ndir = \"{0}/nas1\"\n\
          [[storage.target]]\nname = \"nas2\"\nprovider = \"local\"\ndir = \"{0}/nas2\"\n\
          [[storage.target]]\nname = \"off\"\nprovider = \"local\"\nenabled = false\ndir = \"{0}/off\"\n",
-        a.display()
+        slash(&a)
     );
     let cfg = write_config(&a, &server.uri(), &pk, &targets);
     let o = run(&cfg, &["catalog", "create"], &pw).await;
@@ -923,7 +933,7 @@ async fn harvest_discovers_mirrors_publishes_and_is_idempotent() {
     let pk = sk.public_key().to_base64();
     let extra = format!(
         "publisher_seckey_file = \"{}\"\n\n[harvest]\nrepos = [\"org/explicit\"]\nauthors = [\"org\"]\ntags = [\"safetensors\"]\nmin_downloads = 10\ntakedown = [\"org/banned\"]\nrequest_delay_ms = 0\nretry_base_ms = 1\n",
-        keyfile.display()
+        slash(&keyfile)
     );
     let cfg = write_config(tmp.path(), &hub.uri(), &pk, &extra);
     // Expose the publish dir as a webseed via the mirror server.
@@ -1254,7 +1264,7 @@ async fn other_license_needs_explicit_override() {
     let pk = sk.public_key().to_base64();
     let base = format!(
         "publisher_seckey_file = \"{}\"\n\n[harvest]\nrequest_delay_ms = 0\nretry_base_ms = 1\n",
-        keyfile.display()
+        slash(&keyfile)
     );
 
     // Plain watchlist entry: the strict default allowlist skips `other`.
@@ -1409,7 +1419,8 @@ async fn serve_inference_verifies_before_serving() {
     assert!(s.contains("verified 2 files of org/tiny@"), "{s}");
     assert!(s.contains("commercial serving allowed"), "{s}");
     let model = tensorseed_core::paths::join_slash(&dir, "tiny-q4.gguf");
-    assert!(s.contains(&format!("--model {}", model.display())), "{s}");
+    let quoted = tensorseed_app::inference::quote(&model.to_string_lossy());
+    assert!(s.contains(&format!("--model {quoted}")), "{s}");
     assert!(
         s.contains("--alias tiny --host 127.0.0.1 --port 8090 -ngl 0"),
         "{s}"

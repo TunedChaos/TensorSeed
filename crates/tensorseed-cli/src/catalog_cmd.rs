@@ -45,7 +45,10 @@ pub async fn run(
             println!("Add to your config:");
             println!("  [catalog]");
             println!("  publisher_pubkey = \"{}\"", pk.to_base64());
-            println!("  publisher_seckey_file = \"{}\"", sec.display());
+            println!(
+                "  publisher_seckey_file = {}",
+                toml_string(&sec.to_string_lossy())
+            );
             if !*no_password {
                 println!();
                 println!(
@@ -763,5 +766,24 @@ fn unquote(v: &str) -> String {
         s.replace("\\\"", "\"").replace("\\\\", "\\")
     } else {
         v.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toml_string;
+
+    #[test]
+    fn toml_string_round_trips_paths() {
+        for p in [
+            r"C:\Users\me\AppData\Roaming\tensorseed\keys\pub.key",
+            "/home/me/.config/tensorseed/keys/pub.key",
+            r"C:\Users\O'Neil\keys\pub.key",
+            "/tmp/odd \"quoted\" dir/pub.key",
+        ] {
+            let doc = format!("publisher_seckey_file = {}", toml_string(p));
+            let v: toml::Table = toml::from_str(&doc).unwrap_or_else(|e| panic!("{doc}: {e}"));
+            assert_eq!(v["publisher_seckey_file"].as_str(), Some(p), "{doc}");
+        }
     }
 }

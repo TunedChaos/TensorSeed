@@ -251,11 +251,15 @@ impl Respond for DirResponder {
     }
 }
 
+/// A path for a TOML basic string, with forward slashes: a Windows path
+/// would have its backslashes read as escapes. The loader turns them back
+/// into native separators.
+fn slash(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 fn write_config(dir: &Path, base: &str, pubkey: &str, extra_catalog: &str, chia: &str) -> PathBuf {
-    // Forward slashes: a Windows path in a TOML basic string would read
-    // its backslashes as escapes. The loader turns them back into native
-    // separators.
-    let d = dir.to_string_lossy().replace('\\', "/");
+    let d = slash(dir);
     let text = format!(
         r#"[general]
 state_db = "{d}/state.db"
@@ -375,7 +379,7 @@ async fn chia_first_publish_and_strict_client_check() {
         dl.uri(),
         node.uri()
     );
-    let seck = format!("publisher_seckey_file = \"{}\"", keyfile.display());
+    let seck = format!("publisher_seckey_file = \"{}\"", slash(&keyfile));
     let pcfg = write_config(&pubdir, &files.uri(), &pk, &seck, &chia_ok);
 
     // 1. Chia first: if the chain write fails, nothing reaches the file catalog.

@@ -3700,6 +3700,7 @@ dependencies = [
  "tensorseed-serve",
  "tensorseed-torrent",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "wiremock",

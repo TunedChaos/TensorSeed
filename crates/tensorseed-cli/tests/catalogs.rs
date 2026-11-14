@@ -181,11 +181,15 @@ async fn mount_dir(server: &MockServer, dir: &Path) {
     }
 }
 
+/// A path for a TOML basic string, with forward slashes: a Windows path
+/// would have its backslashes read as escapes. The loader turns them back
+/// into native separators.
+fn slash(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 fn write_config(dir: &Path, server: &str, entries: &str) -> PathBuf {
-    // Forward slashes: a Windows path in a TOML basic string would read
-    // its backslashes as escapes. The loader turns them back into native
-    // separators.
-    let d = dir.to_string_lossy().replace('\\', "/");
+    let d = slash(dir);
     let text = format!(
         r#"[general]
 state_db = "{d}/state.db"
@@ -236,7 +240,9 @@ async fn run(config: &Path, args: &[&str]) -> Output {
         .env("RUST_LOG", "warn")
         .env("HOME", config.parent().unwrap())
         .env("USERPROFILE", config.parent().unwrap())
-        .env("XDG_CONFIG_HOME", config.parent().unwrap());
+        .env("XDG_CONFIG_HOME", config.parent().unwrap())
+        .env("APPDATA", config.parent().unwrap())
+        .env("LOCALAPPDATA", config.parent().unwrap());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())

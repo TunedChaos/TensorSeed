@@ -205,11 +205,15 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// A path for a TOML basic string, with forward slashes: a Windows path
+/// would have its backslashes read as escapes. The loader turns them back
+/// into native separators.
+fn slash(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 fn write_config(dir: &Path, catalog: &str, extra: &str) -> PathBuf {
-    // Forward slashes: a Windows path in a TOML basic string would read
-    // its backslashes as escapes. The loader turns them back into native
-    // separators.
-    let d = dir.to_string_lossy().replace('\\', "/");
+    let d = slash(dir);
     let pk = key().public_key().to_base64();
     let text = format!(
         r#"[general]
@@ -394,7 +398,7 @@ async fn serve_fetches_seeds_serves_and_drops_takedowns() {
         &origin.uri(),
         &format!(
             "\n[serve]\ndata_dir = \"{}/serve\"\nselect = [\"org/*\"]\nfetch = true\nfetch_swarm = false\nsync_interval_secs = 1\nhttp_listen = \"127.0.0.1:0\"\nhealth_listen = \"127.0.0.1:0\"\n",
-            srv.display()
+            slash(&srv)
         ),
     );
     let mut text = std::fs::read_to_string(&scfg).unwrap();
@@ -579,7 +583,7 @@ async fn serve_seeds_published_tree_resumes_and_respects_selection() {
     let mut text = std::fs::read_to_string(&cfg).unwrap();
     text = text.replace(
         "[serve]\n",
-        &format!("[serve]\ndata_dir = \"{}/serve\"\n", host.display()),
+        &format!("[serve]\ndata_dir = \"{}/serve\"\n", slash(&host)),
     );
     text = text.replace("dht = false", "dht = false\nlisten_port = 0");
     std::fs::write(&cfg, &text).unwrap();
@@ -630,8 +634,8 @@ async fn serve_seeds_published_tree_resumes_and_respects_selection() {
     std::fs::write(
         &cfg,
         text.replace(
-            &format!("local_dir = \"{}/publish\"", host.display()),
-            &format!("local_dir = \"{}/empty\"", host.display()),
+            &format!("local_dir = \"{}/publish\"", slash(&host)),
+            &format!("local_dir = \"{}/empty\"", slash(&host)),
         ),
     )
     .unwrap();
