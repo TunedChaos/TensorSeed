@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright 2026 Tuned Chaos -->
+<!--
+  MSI: opt in Windows Firewall rule for seeding (bundle.windows.wix
+  fragmentPaths and componentRefs in tauri.conf.json).
+
+  A dialog after the install folder page has one checkbox, off by default
+  (FIREWALLRULE). When ticked, an elevated deferred action adds an inbound
+  allow rule for the installed Tensorseed Desktop executable, so peers can
+  connect while it seeds. The choice is kept in HKLM and read back on the
+  next install, so upgrades and passive in app updates keep it without
+  showing the dialog. Every install first deletes the rule (then adds it
+  again only if ticked), and a full uninstall deletes it; the uninstall
+  half of an upgrade leaves it alone. netsh failures are ignored: a
+  missing rule only means Windows asks the user on the first connection.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <Property Id="FIREWALLRULE" Secure="yes">
+      <RegistrySearch Id="TsFirewallRuleSearch" Root="HKLM" Key="Software\Tuned Chaos\Tensorseed Desktop" Name="FirewallRule" Type="raw" />
+    </Property>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="TsFirewallChoice" Guid="*" Transitive="yes">
+        <Condition>FIREWALLRULE = "1"</Condition>
+        <RegistryValue Root="HKLM" Key="Software\Tuned Chaos\Tensorseed Desktop" Name="FirewallRule" Type="string" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <CustomAction Id="TsFwDelete_Cmd" Property="TsFwDelete" Value="&quot;[System64Folder]netsh.exe&quot; advfirewall firewall delete rule name=&quot;Tensorseed Desktop incoming peers&quot; program=&quot;[INSTALLDIR]tensorseed-desktop.exe&quot;" />
+    <CustomAction Id="TsFwDelete" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="TsFwAdd_Cmd" Property="TsFwAdd" Value="&quot;[System64Folder]netsh.exe&quot; advfirewall firewall add rule name=&quot;Tensorseed Desktop incoming peers&quot; dir=in action=allow program=&quot;[INSTALLDIR]tensorseed-desktop.exe&quot; enable=yes profile=any" />
+    <CustomAction Id="TsFwAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="TsFwDelete_Cmd" Before="TsFwDelete">NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="TsFwDelete" After="InstallFiles">NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="TsFwAdd_Cmd" Before="TsFwAdd">FIREWALLRULE = "1" AND NOT REMOVE~="ALL"</Custom>
+      <Custom Action="TsFwAdd" After="TsFwDelete">FIREWALLRULE = "1" AND NOT REMOVE~="ALL"</Custom>
+    </InstallExecuteSequence>
+
+    <UI>
+      <Dialog Id="TsFirewallDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Windows Firewall" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Optional: let other peers connect to you when you seed." />
+        <Control Id="Body" Type="Text" X="20" Y="60" Width="330" Height="50" NoPrefix="yes" Text="Seeding shares models and datasets you have downloaded and verified. Windows blocks incoming connections to new apps until you allow them; without a rule, Windows asks the first time Tensorseed Desktop seeds. You can also leave this off and allow it then, or never." />
+        <Control Id="FirewallCheck" Type="CheckBox" X="20" Y="118" Width="330" Height="17" Property="FIREWALLRULE" CheckBoxValue="1" Text="Add a Windows Firewall rule that allows incoming peer connections" />
+        <Control Id="Note" Type="Text" X="20" Y="140" Width="330" Height="40" NoPrefix="yes" Text="The rule applies only to the installed Tensorseed Desktop program, on all network types. Uninstalling removes it; you can also turn it off in Windows Defender Firewall." />
+      </Dialog>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="TsFirewallDlg" Order="10">WIXUI_INSTALLDIR_VALID = "1"</Publish>
+      <Publish Dialog="TsFirewallDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg">1</Publish>
+      <Publish Dialog="TsFirewallDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="TsFirewallDlg" Order="10">NOT Installed</Publish>
+    </UI>
+  </Fragment>
+</Wix>
