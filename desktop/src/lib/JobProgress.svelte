@@ -20,9 +20,13 @@
       <span>{progress.filesDone} of {fileCount(progress.filesTotal)}</span>
       <span>{formatBytes(progress.bytesDone)} of {formatBytes(progress.bytesTotal)}</span>
     {/if}
+    {#if progress.phase === "swarm" && progress.bytesDone > 0}
+      <span>{formatBytes(progress.bytesDone)} of {formatBytes(progress.bytesTotal)}</span>
+    {/if}
+    {#if progress.phase === "swarm"}<span>{progress.peers === 1 ? "1 peer" : `${progress.peers} peers`}</span>{/if}
     {#if progress.rate > 0}<span>{formatBytes(progress.rate)}/s</span>{/if}
   </div>
-  {#if progress.phase !== "downloading"}
+  {#if progress.phase === "resolving" || (progress.phase === "swarm" && progress.bytesDone === 0)}
     <progress class="progress w-full" aria-label="Pull progress"></progress>
   {:else}
     <progress class="progress progress-primary w-full" value={pct} max="100" aria-label="Pull progress" aria-valuetext="{pct.toFixed(0)} percent"></progress>

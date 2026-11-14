@@ -192,6 +192,8 @@ export type PullProgress = {
   /** Network bytes per second. */
   rate: number;
   current: string[];
+  /** Connected peers in the swarm step. */
+  peers: number;
 };
 
 export type JobState = "running" | "ok" | "failed" | "paused" | "cancelled";

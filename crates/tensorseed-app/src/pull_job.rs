@@ -31,7 +31,7 @@ use tensorseed_fetch::{
 use tensorseed_hf::policy::Policy as HfPolicy;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{Config, FetchSource};
+use crate::config::{Config, FetchSource, expand};
 use crate::pull::{
     PULL_SCHEMA, PullFile, PullRecord, check_manifest_identity, default_out, fetch_bytes,
     hf_client, parse_manifest_bytes, parse_repo, state_db, tombstone_covers, write_meta,
@@ -39,6 +39,9 @@ use crate::pull::{
 
 /// File in `.tensorseed/` that holds the options of an unfinished pull.
 pub const PENDING_FILE: &str = "pull-pending.json";
+/// Files the swarm stage of an unfinished pull may have written in place
+/// (a JSON list of relative paths), so a cancel can remove them.
+pub const SWARM_FILE: &str = "pull-swarm.json";
 /// Schema of [`PENDING_FILE`].
 pub const PENDING_SCHEMA: &str = "ts.pullpending/1";
 /// Lock file in `.tensorseed/`, held while a pull writes to the folder.
@@ -191,6 +194,18 @@ pub enum PullEvent {
     SwarmStarted,
     /// One line about the swarm step (`swarm  ...`).
     Swarm(String),
+    /// Swarm step progress, about once a second.
+    SwarmProgress {
+        /// Bytes fetched from peers so far.
+        downloaded: u64,
+        /// Connected peers.
+        peers: u32,
+        /// Download speed in bytes per second.
+        rate: u64,
+    },
+    /// Files the swarm step wrote in place; the HTTP pass verifies them
+    /// next and reports them as already present.
+    SwarmWrote(Vec<String>),
     /// A dead mirror was skipped.
     DeadMirror(String),
     /// Live download progress.
@@ -259,15 +274,19 @@ impl PullEvent {
                 }
                 out(s)
             }
-            Self::SwarmStarted | Self::Fetch(_) => None,
+            Self::SwarmStarted
+            | Self::SwarmProgress { .. }
+            | Self::SwarmWrote(_)
+            | Self::Fetch(_) => None,
         }
     }
 }
 
 /// The line for one file as the fetcher finishes it, for front ends that
 /// list files as they go (the CLI prints [`PullEvent::File`] lines at the
-/// end instead). Files the swarm wrote show as already present here.
-pub fn live_file_line(r: &tensorseed_fetch::FileResult) -> String {
+/// end instead). `swarm` holds the files the swarm step wrote
+/// ([`PullEvent::SwarmWrote`]); they show as from the swarm.
+pub fn live_file_line(r: &tensorseed_fetch::FileResult, swarm: &HashSet<String>) -> String {
     let line = match &r.outcome {
         Outcome::Downloaded {
             kind, resumed_from, ..
@@ -275,6 +294,9 @@ pub fn live_file_line(r: &tensorseed_fetch::FileResult) -> String {
             path: r.path.clone(),
             kind: *kind,
             resumed_from: *resumed_from,
+        },
+        Outcome::AlreadyPresent if swarm.contains(&r.path) => FileLine::Swarm {
+            path: r.path.clone(),
         },
         Outcome::AlreadyPresent => FileLine::AlreadyPresent {
             path: r.path.clone(),
@@ -413,6 +435,73 @@ pub fn read_pending(dir: &Path) -> anyhow::Result<Option<PullOptions>> {
 /// cancelled).
 pub fn clear_pending(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(META_DIR).join(PENDING_FILE));
+    let _ = std::fs::remove_file(dir.join(META_DIR).join(SWARM_FILE));
+}
+
+/// Delete the files the swarm stage wrote in place that no HTTP pass has
+/// verified since (`done` holds the verified paths). The engine
+/// preallocates whole files, so they can be any mix of written and empty
+/// pieces.
+fn remove_unverified_swarm_files(out: &Path, done: &HashSet<String>) -> anyhow::Result<()> {
+    let p = out.join(META_DIR).join(SWARM_FILE);
+    let paths: Vec<String> = match std::fs::read(&p) {
+        Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parsing {}", p.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
+    };
+    for rel in paths.iter().filter(|r| !done.contains(*r)) {
+        let Ok(f) = tensorseed_core::verify::safe_join(out, rel) else {
+            continue;
+        };
+        match std::fs::remove_file(&f) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {}", f.display())),
+        }
+    }
+    remove_empty_dirs(out);
+    Ok(())
+}
+
+/// Remove `out` when nothing but the pull lock is left in it (a pull
+/// cancelled before any file finished), and its parent folder when that
+/// is then empty and inside `root` (the `org` folder of `org/name` in the
+/// download folder).
+fn remove_if_unused(out: &Path, root: &Path) {
+    let meta = out.join(META_DIR);
+    let only = |dir: &Path, name: &str| {
+        std::fs::read_dir(dir).is_ok_and(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name())
+                .all(|n| n == std::ffi::OsStr::new(name))
+        })
+    };
+    if !only(out, META_DIR) || !only(&meta, LOCK_FILE) {
+        return;
+    }
+    let _ = std::fs::remove_file(meta.join(LOCK_FILE));
+    let _ = std::fs::remove_dir(&meta);
+    if std::fs::remove_dir(out).is_ok()
+        && let Some(parent) = out.parent()
+        && parent.starts_with(root)
+        && parent != root
+    {
+        let _ = std::fs::remove_dir(parent);
+    }
+}
+
+/// Remove empty folders under `dir` (not `dir` itself or the metadata).
+fn remove_empty_dirs(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() && e.file_name() != META_DIR {
+            remove_empty_dirs(&p);
+            let _ = std::fs::remove_dir(&p);
+        }
+    }
 }
 
 /// Options that resume job `rec` of the job database: its pending file,
@@ -450,6 +539,14 @@ pub fn resume_options(rec: &tensorseed_fetch::state::JobRecord) -> Option<PullOp
 /// folder cannot be changed.
 pub fn discard(cfg: &Config, out: &Path, job: &str) -> anyhow::Result<()> {
     let _lock = lock_out(out)?;
+    let db = state_db(cfg)?;
+    let done: HashSet<String> = db
+        .job_files(job)?
+        .into_iter()
+        .filter(|f| f.status == tensorseed_fetch::state::status::DONE)
+        .map(|f| f.path)
+        .collect();
+    remove_unverified_swarm_files(out, &done)?;
     let partial = out.join(META_DIR).join("partial");
     match std::fs::remove_dir_all(&partial) {
         Ok(()) => {}
@@ -457,7 +554,9 @@ pub fn discard(cfg: &Config, out: &Path, job: &str) -> anyhow::Result<()> {
         Err(e) => return Err(e).with_context(|| format!("removing {}", partial.display())),
     }
     clear_pending(out);
-    state_db(cfg)?.clear_job(job)?;
+    db.clear_job(job)?;
+    drop(_lock);
+    remove_if_unused(out, &expand(&cfg.general.download_dir));
     Ok(())
 }
 
@@ -664,11 +763,24 @@ async fn swarm_download(
         },
         timeout,
     );
-    let r = tokio::select! {
-        r = download => r,
-        () = ctl.stop.cancelled() => {
-            engine.stop().await;
-            return Err(Stopped.into());
+    tokio::pin!(download);
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let r = loop {
+        tokio::select! {
+            r = &mut download => break r,
+            () = ctl.stop.cancelled() => {
+                engine.stop().await;
+                return Err(Stopped.into());
+            }
+            _ = tick.tick() => {
+                let s = engine.stats();
+                ctl.emit(PullEvent::SwarmProgress {
+                    downloaded: s.downloaded,
+                    peers: s.peers_live,
+                    rate: (s.download_mibps * 1024.0 * 1024.0) as u64,
+                });
+            }
         }
     };
     match r {
@@ -963,10 +1075,55 @@ pub async fn run(cfg: &Config, o: &PullOptions, ctl: &PullControl) -> anyhow::Re
             .filter(|e| join_slash(&out, &e.path).exists())
             .map(|e| e.path.clone())
             .collect();
+        // Record the job before the swarm runs, so a pull paused or
+        // interrupted in the swarm stage shows in `tensorseed jobs` and
+        // Desktop and can be resumed (the HTTP pass updates it after).
+        // Keep the list of an earlier, stopped run: its preallocated files
+        // already have full size, so they look complete here.
+        let mut in_place: std::collections::BTreeSet<String> =
+            std::fs::read(out.join(META_DIR).join(SWARM_FILE))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+        in_place.extend(
+            files
+                .iter()
+                .filter(|f| !before_swarm.as_ref().is_some_and(|b| b.contains(&f.path)))
+                .map(|f| f.path.clone()),
+        );
+        write_meta(&out, SWARM_FILE, &serde_json::to_vec(&in_place)?)?;
+        let db = state_db(cfg)?;
+        db.upsert_job(
+            &spec.id,
+            &spec.label,
+            &spec.out_dir.display().to_string(),
+            files.len() as u64,
+        )?;
         let r = swarm_download(cfg, o, ctl, t, &out, &files).await;
         remove_swarm_placeholders(&out, &expected, &files, &existed);
+        if let Some(pre) = &before_swarm {
+            let wrote: Vec<String> = files
+                .iter()
+                .filter(|f| !pre.contains(&f.path) && join_slash(&out, &f.path).exists())
+                .map(|f| f.path.clone())
+                .collect();
+            if !wrote.is_empty() {
+                ctl.emit(PullEvent::SwarmWrote(wrote));
+            }
+        }
         if let Err(e) = r {
-            if o.swarm_only || is_stopped(&e) {
+            if is_stopped(&e) {
+                db.set_job_status(&spec.id, tensorseed_fetch::state::status::PAUSED, None)?;
+                return Err(e);
+            }
+            if o.swarm_only {
+                db.set_job_status(
+                    &spec.id,
+                    tensorseed_fetch::state::status::FAILED,
+                    Some(&format!("{e:#}")),
+                )?;
                 return Err(e);
             }
             ctl.emit(PullEvent::Swarm(format!(
@@ -1167,6 +1324,47 @@ mod tests {
         drop(held);
         assert!(!pull_running_in(dir.path()));
         lock_out(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn discard_removes_unverified_swarm_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let mut cfg = Config::default();
+        cfg.general.state_db = dir.path().join("state.db").display().to_string();
+        cfg.general.download_dir = dir.path().display().to_string();
+        std::fs::create_dir_all(out.join("sub")).unwrap();
+        for f in ["kept.bin", "sub/half.bin", "verified.bin"] {
+            std::fs::write(join_slash(&out, f), b"x").unwrap();
+        }
+        // kept.bin was complete before the pull; the swarm wrote the others
+        // in place and the HTTP pass verified only verified.bin.
+        write_meta(
+            &out,
+            SWARM_FILE,
+            &serde_json::to_vec(&["sub/half.bin", "verified.bin", "../escape"]).unwrap(),
+        )
+        .unwrap();
+        let db = state_db(&cfg).unwrap();
+        db.upsert_job("j", "model o/n@c", &out.display().to_string(), 2)
+            .unwrap();
+        db.upsert_file("j", "verified.bin", 1, "sha256:00").unwrap();
+        db.file_done("j", "verified.bin", "https://x/", None).unwrap();
+        discard(&cfg, &out, "j").unwrap();
+        assert!(out.join("kept.bin").exists());
+        assert!(out.join("verified.bin").exists());
+        assert!(!out.join("sub").exists(), "unverified file and its empty folder go");
+        assert!(!out.join(META_DIR).join(SWARM_FILE).exists());
+        assert!(db.jobs().unwrap().is_empty());
+        assert!(out.exists(), "finished files keep the folder");
+
+        // Nothing finished: the folder and its empty parent go too.
+        let gone = dir.path().join("org").join("name");
+        std::fs::create_dir_all(&gone).unwrap();
+        write_meta(&gone, SWARM_FILE, b"[\"a.bin\"]").unwrap();
+        std::fs::write(gone.join("a.bin"), b"x").unwrap();
+        discard(&cfg, &gone, "k").unwrap();
+        assert!(!dir.path().join("org").exists());
     }
 
     #[test]

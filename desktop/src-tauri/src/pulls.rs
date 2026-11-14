@@ -11,7 +11,7 @@
 //! stops them and deletes the partial downloads; finished, verified files
 //! are always kept.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -19,7 +19,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::AppHandle;
 use tensorseed_app::config::Config;
-use tensorseed_app::pull_job::{self, FileLine, PullControl, PullDone, PullEvent, PullOptions};
+use tensorseed_app::pull_job::{self, PullControl, PullDone, PullEvent, PullOptions};
 use tensorseed_core::keys::RepoRef;
 use tensorseed_fetch::{FetchEvent, Outcome};
 use tokio_util::sync::CancellationToken;
@@ -49,6 +49,8 @@ pub struct Progress {
     pub rate: f64,
     /// Files in flight.
     pub current: Vec<String>,
+    /// Connected peers (swarm step).
+    pub peers: u32,
 }
 
 /// Folds pull events into [`Progress`].
@@ -61,6 +63,11 @@ struct Tracker {
     finished: u64,
     net: u64,
     last: Option<(Instant, u64)>,
+    /// Files the swarm step wrote (listed as from the swarm).
+    swarm: HashSet<String>,
+    /// Swarm step bytes and rate (bytes per second).
+    swarm_bytes: u64,
+    swarm_rate: f64,
 }
 
 impl Default for Tracker {
@@ -74,6 +81,9 @@ impl Default for Tracker {
             finished: 0,
             net: 0,
             last: None,
+            swarm: HashSet::new(),
+            swarm_bytes: 0,
+            swarm_rate: 0.0,
         }
     }
 }
@@ -87,6 +97,16 @@ impl Tracker {
                 self.p.phase = "downloading".into();
             }
             PullEvent::SwarmStarted => self.p.phase = "swarm".into(),
+            PullEvent::SwarmProgress {
+                downloaded,
+                peers,
+                rate,
+            } => {
+                self.swarm_bytes = *downloaded;
+                self.swarm_rate = *rate as f64;
+                self.p.peers = *peers;
+            }
+            PullEvent::SwarmWrote(paths) => self.swarm.extend(paths.iter().cloned()),
             PullEvent::Fetch(f) => {
                 self.p.phase = "downloading".into();
                 match f {
@@ -109,8 +129,12 @@ impl Tracker {
             }
             _ => {}
         }
-        self.p.bytes_done = (self.finished + self.inflight.values().flatten().sum::<u64>())
-            .min(self.p.bytes_total.max(self.finished));
+        self.p.bytes_done = if self.p.phase == "swarm" {
+            self.swarm_bytes.min(self.p.bytes_total)
+        } else {
+            (self.finished + self.inflight.values().flatten().sum::<u64>())
+                .min(self.p.bytes_total.max(self.finished))
+        };
         self.p.current = self.inflight.keys().take(SHOWN).cloned().collect();
     }
 
@@ -125,6 +149,12 @@ impl Tracker {
                 let dt = now.duration_since(t);
                 if dt.as_millis() < TICK_MS {
                     return false;
+                }
+                if self.p.phase == "swarm" {
+                    // The engine measures the swarm rate itself.
+                    self.p.rate = self.swarm_rate;
+                    self.last = Some((now, self.net));
+                    return true;
                 }
                 let inst = (self.net - n) as f64 / dt.as_secs_f64();
                 self.p.rate = if self.p.rate == 0.0 {
@@ -205,15 +235,16 @@ pub fn start(app: AppHandle, jobs: Jobs, cfg: Config, opts: PullOptions) -> anyh
     let ctl = {
         let (app, jobs, tracker) = (app.clone(), jobs.clone(), tracker.clone());
         PullControl::new(move |e: PullEvent| {
-            // Files are listed as they finish; of the end of run lines only
-            // the swarm ones add anything.
+            let Ok(mut t) = tracker.lock() else { return };
+            // Files are listed as they finish (the end of run lines repeat
+            // them).
             let line = match &e {
-                PullEvent::Fetch(FetchEvent::File(r)) => Some(pull_job::live_file_line(r)),
-                PullEvent::File(FileLine::Swarm { .. }) => e.line().map(|(l, _)| l),
+                PullEvent::Fetch(FetchEvent::File(r)) => {
+                    Some(pull_job::live_file_line(r, &t.swarm))
+                }
                 PullEvent::File(_) => None,
                 _ => e.line().map(|(l, _)| l),
             };
-            let Ok(mut t) = tracker.lock() else { return };
             let phase = t.p.phase.clone();
             t.apply(&e);
             // Phase changes always go out; the swarm sends no byte events.
@@ -489,6 +520,46 @@ pub fn discard(cfg: &Config, jobs: &Jobs, id: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use tensorseed_fetch::FileResult;
+
+    #[test]
+    fn swarm_progress_and_files() {
+        let mut t = Tracker::default();
+        t.apply(&PullEvent::Started {
+            job: "j".into(),
+            label: "model org/name@c".into(),
+            files: 2,
+            bytes: 1000,
+            out: PathBuf::from("/x"),
+            source: "catalog".into(),
+        });
+        t.apply(&PullEvent::SwarmStarted);
+        assert!(t.due(Instant::now()));
+        t.apply(&PullEvent::SwarmProgress {
+            downloaded: 400,
+            peers: 3,
+            rate: 2048,
+        });
+        assert_eq!(
+            (t.p.phase.as_str(), t.p.bytes_done, t.p.peers),
+            ("swarm", 400, 3)
+        );
+        assert!(t.due(Instant::now() + std::time::Duration::from_secs(1)));
+        assert!((t.p.rate - 2048.0).abs() < 1e-9);
+        t.apply(&PullEvent::SwarmWrote(vec!["a".into()]));
+        let line = |p: &str| {
+            pull_job::live_file_line(
+                &FileResult {
+                    path: p.into(),
+                    size: 500,
+                    outcome: Outcome::AlreadyPresent,
+                    errors: vec![],
+                },
+                &t.swarm,
+            )
+        };
+        assert!(line("a").ends_with("(swarm)"), "{}", line("a"));
+        assert!(line("b").ends_with("(already present)"));
+    }
 
     #[test]
     fn progress_follows_fetch_events() {
