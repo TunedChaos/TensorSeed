@@ -1341,7 +1341,7 @@ pub(crate) mod tests {
     const HARDHAT0_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
     const HARDHAT0_ADDR: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
 
-    fn personal_sign(msg: &[u8]) -> String {
+    pub(crate) fn personal_sign(msg: &[u8]) -> String {
         let sk = k256::ecdsa::SigningKey::from_slice(&hex::decode(HARDHAT0_KEY).unwrap()).unwrap();
         let mut p = format!("\x19Ethereum Signed Message:\n{}", msg.len()).into_bytes();
         p.extend_from_slice(msg);

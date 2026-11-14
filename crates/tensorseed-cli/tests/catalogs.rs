@@ -486,3 +486,114 @@ async fn catalog_list_add_and_remove() {
     assert!(!file.contains("name = \"beta\""), "{file}");
     assert!(file.contains("name = \"alpha\""), "{file}");
 }
+
+/// A sealed, unsigned `ts.served-weights/1` claim for `m` in catalog
+/// `name` signed by `pk_id`.
+fn claim_for(m: &Manifest, name: &str, pk_id: &str) -> Vec<u8> {
+    let repo = RepoRef::new(RepoType::Model, m.repo.id.clone()).unwrap();
+    let files: Vec<serde_json::Value> = m
+        .files
+        .iter()
+        .map(|f| serde_json::json!({"path": f.path, "size": f.size, "sha256": f.sha256}))
+        .collect();
+    let v = serde_json::json!({
+        "schema": "ts.served-weights/1",
+        "signed": false,
+        "catalog": {
+            "name": name,
+            "publisher_key_id": pk_id,
+            "manifest_key": repo.manifest_key(&m.hf_commit).unwrap(),
+            "manifest_sha256": sha256(&m.to_canonical_json().unwrap()),
+        },
+        "type": "model",
+        "repo": m.repo.id,
+        "revision": m.hf_commit,
+        "license": {"id": "apache-2.0", "class": "open", "commercial_serving": "allowed", "rights_asserted": false},
+        "runtime": "vllm",
+        "engine_version": "vllm 0.0.0-test",
+        "entrypoint": {"kind": "directory"},
+        "served_model_id": "tiny",
+        "base_url": "http://127.0.0.1:8090/v1",
+        "public_base_url": "https://llm.example.com/v1",
+        "files": files,
+        // RFC 8032 test vector 1 public key.
+        "response_key": {"alg": "ed25519", "pubkey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"},
+        "logprobs": "required",
+        "started_at": "2026-11-14T00:00:00Z",
+        "created_at": "2026-11-14T00:00:00Z",
+        "claim_sha256": "",
+    });
+    let mut c: tensorseed_app::signing::ServedClaim = serde_json::from_value(v).unwrap();
+    c.seal().unwrap();
+    serde_json::to_vec_pretty(&c).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_claim_uses_catalogs_added_with_catalog_add() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let a = key(11);
+    let b = key(22);
+    let web = format!("{}/t/", server.uri());
+    let m = manifest("org/tiny", C, &[("config.json", br#"{}"#)], &web);
+    let pubdir = tmp.path().join("srv");
+    publish("alpha", &a, &pubdir, &tmp.path().join("st-a"), &m, false).await;
+    publish("beta", &b, &pubdir, &tmp.path().join("st-b"), &m, false).await;
+    mount_dir(&server, &pubdir).await;
+    let cfg = write_config(
+        tmp.path(),
+        &server.uri(),
+        &entry("alpha", "Alpha", &a.public_key().to_base64(), 0),
+    );
+    let b_id = b.public_key().key_id_hex();
+    let claim = tmp.path().join("claim.json");
+    std::fs::write(&claim, claim_for(&m, "beta", &b_id)).unwrap();
+    let c = claim.to_str().unwrap();
+    let args = [
+        "check-claim",
+        c,
+        "--expect-url",
+        "https://llm.example.com/v1",
+        "--json",
+    ];
+
+    // beta is not trusted yet.
+    let o = run(&cfg, &args).await;
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["checks"].to_string().contains("not one you trust"), "{v}");
+
+    // After `catalog add`, the claim matches beta's signed manifest.
+    let add = run(
+        &cfg,
+        &[
+            "catalog",
+            "add",
+            "--name",
+            "beta",
+            "--publisher-pubkey",
+            &b.public_key().to_base64(),
+            "--base-url",
+            &format!("{}/", server.uri()),
+        ],
+    )
+    .await;
+    assert_eq!(code(&add), 0, "{}", stderr(&add));
+    let o = run(&cfg, &args).await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["verdict"], "pass");
+    assert_eq!(v["catalog"], "beta");
+    assert_eq!(v["freshness"]["synced"], true);
+    assert_eq!(v["license"]["commercial_serving"], "allowed");
+
+    // The beta claim with alpha's key id: the publisher does not match.
+    std::fs::write(&claim, claim_for(&m, "beta", &a.public_key().key_id_hex())).unwrap();
+    let o = run(&cfg, &args).await;
+    assert_eq!(code(&o), 1);
+    assert!(stdout(&o).contains("is pinned to"), "{}", stdout(&o));
+    // An alpha claim checks against alpha.
+    std::fs::write(&claim, claim_for(&m, "alpha", &a.public_key().key_id_hex())).unwrap();
+    let o = run(&cfg, &args).await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+}

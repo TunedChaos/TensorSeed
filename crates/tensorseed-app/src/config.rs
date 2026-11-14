@@ -568,7 +568,9 @@ fn parse_chain_check(raw: Option<&str>, has_store: bool) -> ChainCheck {
     }
 }
 
-fn chain_check_name(m: ChainCheck) -> &'static str {
+/// `off`, `warn`, or `strict`.
+#[must_use]
+pub fn chain_check_name(m: ChainCheck) -> &'static str {
     match m {
         ChainCheck::Strict => "strict",
         ChainCheck::Warn => "warn",

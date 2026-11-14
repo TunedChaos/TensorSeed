@@ -6,6 +6,7 @@
 mod catalog_cmd;
 mod chain;
 mod challenge;
+mod claim_check;
 mod cli;
 mod consumer;
 mod doctor;
@@ -156,6 +157,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::ReferenceLogprobs(args) => challenge::reference(&load()?, args).await,
         Command::CheckEndpoint(args) => Ok(challenge::check(args).await),
         Command::CalibrateReference(args) => challenge::calibrate(args).await,
+        Command::CheckClaim(args) => Ok(claim_check::run(&load()?, args).await),
         Command::ResponseKey(cmd) => signing::key_cmd(&path, cmd),
         Command::ClaimServing(args) => signing::claim_serving(&load()?, &path, args).await,
         Command::SignResponses(args) => signing::sign_responses(&path, args).await,

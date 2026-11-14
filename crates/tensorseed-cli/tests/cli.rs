@@ -2681,3 +2681,361 @@ fn gui_starts_desktop_or_says_where_to_get_it() {
         format!("tensorseed://entry/model/org/tiny {}", cfg.display())
     );
 }
+
+/// Edit a claim and seal it again (as a seller could), dropping any
+/// wallet signature unless `keep_sig`.
+fn reseal(
+    c: &serde_json::Value,
+    edit: impl FnOnce(&mut serde_json::Value),
+    keep_sig: bool,
+) -> Vec<u8> {
+    let mut v = c.clone();
+    edit(&mut v);
+    if !keep_sig {
+        v.as_object_mut().unwrap().remove("sig");
+        v["signed"] = serde_json::json!(false);
+    }
+    let mut claim: tensorseed_app::signing::ServedClaim = serde_json::from_value(v).unwrap();
+    claim.seal().unwrap();
+    serde_json::to_vec_pretty(&claim).unwrap()
+}
+
+async fn serve_claim(body: &[u8]) -> MockServer {
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/tensorseed/served-weights.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body.to_vec()))
+        .mount(&s)
+        .await;
+    s
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_claim_against_the_catalog() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let (cfg, dir, _) = pulled_gguf(tmp.path(), &server, "apache-2.0").await;
+    let dir_s = dir.to_str().unwrap();
+    let o = run(&cfg, &["response-key", "create"], &[]).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+
+    // The seller's public endpoint serves its claim at the well-known path.
+    // Its URL is known before the claim is written, so the claim names it.
+    let public = MockServer::start().await;
+    let public_url = format!("{}/v1", public.uri());
+    let o = run(
+        &cfg,
+        &[
+            "claim-serving",
+            dir_s,
+            "--no-wait",
+            "--engine-version",
+            "llama.cpp b1-test",
+            "--base-url",
+            "http://127.0.0.1:8090/v1",
+            "--public-url",
+            &public_url,
+            "--wallet",
+            DEV_WALLET,
+        ],
+        &[("PATH", "")],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let claimp = dir.join(".tensorseed/served-weights.json");
+    let unsigned: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&claimp).unwrap()).unwrap();
+    let hash = unsigned["claim_sha256"].as_str().unwrap().to_string();
+    let o = run(
+        &cfg,
+        &[
+            "claim-serving",
+            claimp.to_str().unwrap(),
+            "--sig",
+            &dev_wallet_sign(&format!("tensorseed served-weights/1:\n{hash}")),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let signed_raw = std::fs::read(&claimp).unwrap();
+    let signed: serde_json::Value = serde_json::from_slice(&signed_raw).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/tensorseed/served-weights.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(signed_raw.clone()))
+        .mount(&public)
+        .await;
+
+    let check = |src: String, extra: &[&str]| {
+        let cfg = cfg.clone();
+        let extra: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
+        async move {
+            let mut a = vec!["check-claim".to_string(), src];
+            a.extend(extra);
+            let a: Vec<&str> = a.iter().map(String::as_str).collect();
+            run(&cfg, &a, &[]).await
+        }
+    };
+    let json = |o: &Output| -> serde_json::Value {
+        serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", stdout(o)))
+    };
+    let status = |v: &serde_json::Value, name: &str| -> String {
+        v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .map(|c| c["status"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("no {name} check in {v}"))
+    };
+
+    // A good claim, fetched from the endpoint, with the catalog synced.
+    let o = check(public_url.clone(), &["--json"]).await;
+    assert_eq!(code(&o), 0, "{}\n{}", stdout(&o), stderr(&o));
+    let v = json(&o);
+    assert_eq!(v["schema"], "ts.claim-check/1");
+    assert_eq!(v["verdict"], "pass");
+    assert_eq!(v["claim_sha256"], hash.as_str());
+    assert_eq!(v["catalog"], "main");
+    assert_eq!(v["seller_wallet"], DEV_WALLET);
+    assert_eq!(v["wallet_verified"], true);
+    assert_eq!(v["license"]["commercial_serving"], "allowed");
+    assert_eq!(v["license"]["claimed"], "allowed");
+    assert_eq!(v["freshness"]["synced"], true);
+    assert_eq!(
+        v["origin"]["location"],
+        format!(
+            "{}/.well-known/tensorseed/served-weights.json",
+            public.uri()
+        )
+    );
+    for name in [
+        "claim_sha256",
+        "claim_fields",
+        "wallet_signature",
+        "public_url",
+        "catalog",
+        "publisher_key",
+        "manifest",
+        "files",
+        "takedown",
+        "freshness",
+        "license",
+    ] {
+        assert_eq!(status(&v, name), "pass", "{name}: {v}");
+    }
+    assert_eq!(status(&v, "https"), "warn", "a loopback test URL is http");
+    // Text output.
+    let o = check(public_url.clone(), &["--no-wait"]).await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    let t = stdout(&o);
+    assert!(t.contains("verdict: pass"), "{t}");
+    assert!(t.contains(&format!("{DEV_WALLET} (verified)")), "{t}");
+    assert!(t.contains("warn freshness"), "{t}");
+    assert!(t.contains("apache-2.0 -> allowed"), "{t}");
+    // Not synced is a failure only when asked.
+    let o = check(
+        public_url.clone(),
+        &["--no-wait", "--require-fresh", "--json"],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "freshness"), "fail");
+
+    // From a file: the URL check is skipped unless an expected URL is given.
+    let file = claimp.to_str().unwrap().to_string();
+    let o = check(file.clone(), &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert_eq!(status(&json(&o), "public_url"), "skip");
+    let o = check(
+        file.clone(),
+        &["--no-wait", "--json", "--expect-url", &public_url],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert_eq!(status(&json(&o), "public_url"), "pass");
+    let o = check(
+        file.clone(),
+        &[
+            "--no-wait",
+            "--json",
+            "--expect-url",
+            "https://other.example/v1",
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "public_url"), "fail");
+
+    // The same valid claim served by another endpoint: copied.
+    let copier = serve_claim(&signed_raw).await;
+    let o = check(format!("{}/v1", copier.uri()), &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    let v = json(&o);
+    assert_eq!(status(&v, "public_url"), "fail");
+    assert_eq!(status(&v, "wallet_signature"), "pass");
+
+    // Edited without resealing: the hash no longer matches.
+    let mut t = signed.clone();
+    t["served_model_id"] = serde_json::json!("bigger-model");
+    let p = tmp.path().join("edited.json");
+    std::fs::write(&p, serde_json::to_vec(&t).unwrap()).unwrap();
+    let o = check(p.to_str().unwrap().into(), &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    let v = json(&o);
+    assert_eq!(status(&v, "claim_sha256"), "fail");
+    assert_eq!(status(&v, "claim_fields"), "skip");
+    assert_eq!(status(&v, "wallet_signature"), "skip");
+    assert_eq!(v["wallet_verified"], false);
+
+    let write = |name: &str, body: Vec<u8>| {
+        let p = tmp.path().join(name);
+        std::fs::write(&p, body).unwrap();
+        p.to_str().unwrap().to_string()
+    };
+    // A better license mark, resealed by the seller: recomputed and refused.
+    let p = write(
+        "license.json",
+        reseal(
+            &signed,
+            |v| v["license"]["commercial_serving"] = serde_json::json!("restricted"),
+            false,
+        ),
+    );
+    let o = check(p.clone(), &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    let v = json(&o);
+    assert_eq!(status(&v, "claim_sha256"), "pass");
+    assert_eq!(status(&v, "license"), "fail");
+    assert_eq!(v["license"]["commercial_serving"], "allowed");
+    assert_eq!(v["license"]["claimed"], "restricted");
+    // Unsigned: a warning, or a failure with --require-wallet-sig.
+    assert_eq!(status(&v, "wallet_signature"), "warn");
+    assert_eq!(v["wallet_verified"], false);
+    let o = check(p, &["--no-wait", "--json", "--require-wallet-sig"]).await;
+    assert_eq!(status(&json(&o), "wallet_signature"), "fail");
+
+    // Resealed with the old wallet signature kept: it no longer recovers.
+    let p = write(
+        "moved.json",
+        reseal(
+            &signed,
+            |v| v["served_model_id"] = serde_json::json!("other-id"),
+            true,
+        ),
+    );
+    let o = check(p, &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    let v = json(&o);
+    assert_eq!(status(&v, "claim_sha256"), "pass");
+    assert_eq!(status(&v, "wallet_signature"), "fail");
+    // The wallet a buyer expects.
+    let o = check(
+        file.clone(),
+        &[
+            "--no-wait",
+            "--json",
+            "--expect-wallet",
+            "0x0000000000000000000000000000000000000001",
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "wallet_signature"), "fail");
+    let o = check(
+        file.clone(),
+        &[
+            "--no-wait",
+            "--json",
+            "--expect-wallet",
+            &DEV_WALLET.to_uppercase().replace("0X", "0x"),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+
+    // A catalog the buyer does not trust.
+    let p = write(
+        "catalog.json",
+        reseal(
+            &signed,
+            |v| v["catalog"]["name"] = serde_json::json!("elsewhere"),
+            false,
+        ),
+    );
+    let o = check(p.clone(), &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    let v = json(&o);
+    assert_eq!(status(&v, "catalog"), "fail");
+    assert!(v["checks"].to_string().contains("not one you trust"), "{v}");
+    // Forcing the trusted catalog still flags the name.
+    let o = check(p, &["--no-wait", "--json", "--catalog", "main"]).await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "catalog"), "fail");
+
+    // A manifest hash, publisher key, or file the catalog does not have.
+    let p = write(
+        "manifest.json",
+        reseal(
+            &signed,
+            |v| v["catalog"]["manifest_sha256"] = serde_json::json!("ab".repeat(32)),
+            false,
+        ),
+    );
+    let o = check(p, &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "manifest"), "fail");
+    let p = write(
+        "key.json",
+        reseal(
+            &signed,
+            |v| v["catalog"]["publisher_key_id"] = serde_json::json!("0123456789ABCDEF"),
+            false,
+        ),
+    );
+    let o = check(p, &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "publisher_key"), "fail");
+    let p = write(
+        "files.json",
+        reseal(
+            &signed,
+            |v| v["files"][0]["sha256"] = serde_json::json!("cd".repeat(32)),
+            false,
+        ),
+    );
+    let o = check(p, &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "files"), "fail");
+    // A revision that is not in the catalog.
+    let p = write(
+        "rev.json",
+        reseal(
+            &signed,
+            |v| v["revision"] = serde_json::json!("ef".repeat(20)),
+            false,
+        ),
+    );
+    let o = check(p, &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    let v = json(&o);
+    assert_eq!(status(&v, "manifest"), "fail");
+    assert!(v["checks"].to_string().contains("not in catalog"), "{v}");
+
+    // Nothing to check: exit 2.
+    let empty = MockServer::start().await;
+    let o = check(format!("{}/v1", empty.uri()), &["--no-wait"]).await;
+    assert_eq!(code(&o), 2);
+    assert!(stderr(&o).contains("HTTP 404"), "{}", stderr(&o));
+    let o = check(
+        tmp.path().join("missing.json").to_str().unwrap().into(),
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    // Not a claim at all: a failed check, not an error.
+    let p = write("v0.json", br#"{"schema":"ts.other/1"}"#.to_vec());
+    let o = check(p, &["--no-wait", "--json"]).await;
+    assert_eq!(code(&o), 1);
+    assert_eq!(status(&json(&o), "claim"), "fail");
+}

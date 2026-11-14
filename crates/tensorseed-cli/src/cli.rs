@@ -242,6 +242,24 @@ pub enum Command {
     /// `set_hash`; publish that one). `check-endpoint` then uses the
     /// calibrated tolerances unless flags override them.
     CalibrateReference(CalibrateReferenceArgs),
+    /// Check a seller's `ts.served-weights/1` claim against a catalog you
+    /// trust.
+    ///
+    /// SOURCE is the endpoint base URL (the claim is read from
+    /// `/.well-known/tensorseed/served-weights.json` under it), a claim
+    /// URL ending in `.json`, or a local file. Checks: `claim_sha256`
+    /// under the canonical rule, the fields, the wallet signature when
+    /// present, that `public_base_url` is where the claim was fetched,
+    /// that the catalog the claim names is one you trust (the default
+    /// catalog or one added with `catalog add`) and its signed manifest
+    /// for the revision matches the claim's manifest hash, key, and files,
+    /// no takedown, catalog freshness (synced now unless `--no-wait`), and
+    /// the commercial serving mark recomputed from the catalog's license
+    /// (the seller's own mark is not trusted).
+    ///
+    /// Exit status: 0 pass, 1 fail, 2 inconclusive (for example the claim
+    /// or catalog could not be read).
+    CheckClaim(CheckClaimArgs),
     /// Create or show the Ed25519 response signing key.
     ///
     /// The key lives in an owner-only file next to the config file
@@ -1071,6 +1089,37 @@ pub struct ReferenceLogprobsArgs {
     pub extra: Vec<String>,
 }
 
+/// `check-claim` arguments.
+#[derive(Debug, Args)]
+pub struct CheckClaimArgs {
+    /// Endpoint base URL, claim URL, or claim file.
+    #[arg(value_name = "SOURCE")]
+    pub source: String,
+    /// Match against this configured catalog instead of the one the claim
+    /// names (the names must still agree).
+    #[arg(long, value_name = "NAME")]
+    pub catalog: Option<String>,
+    /// Use the local catalog copy without syncing (freshness becomes a
+    /// warning, or a failure with `--require-fresh`).
+    #[arg(long)]
+    pub no_wait: bool,
+    /// Fail unless the catalog was synced during the check.
+    #[arg(long)]
+    pub require_fresh: bool,
+    /// Fail a claim without a wallet signature.
+    #[arg(long)]
+    pub require_wallet_sig: bool,
+    /// Fail unless the claim names this seller wallet.
+    #[arg(long, value_name = "0x...")]
+    pub expect_wallet: Option<String>,
+    /// For a claim file: the public base URL it must name.
+    #[arg(long, value_name = "URL")]
+    pub expect_url: Option<String>,
+    /// Print a `ts.claim-check/1` report.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// `check-endpoint` arguments.
 #[derive(Debug, Args)]
 pub struct CheckEndpointArgs {
@@ -1285,6 +1334,7 @@ impl Command {
             Self::ReferenceLogprobs(_) => "reference-logprobs",
             Self::CheckEndpoint(_) => "check-endpoint",
             Self::CalibrateReference(_) => "calibrate-reference",
+            Self::CheckClaim(_) => "check-claim",
             Self::ResponseKey(ResponseKeyCmd::Create { .. }) => "response-key create",
             Self::ResponseKey(ResponseKeyCmd::Show { .. }) => "response-key show",
             Self::ClaimServing(_) => "claim-serving",
