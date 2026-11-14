@@ -57,3 +57,19 @@ jobs:
         run: cargo install wasm-bindgen-cli --locked --version 0.2.130
       - name: Build explorer
         run: pnpm --dir explorer install --frozen-lockfile && pnpm --dir explorer build
+
+  site:
+    name: site (svelte-check + prerendered build + links)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check and build the site
+        run: pnpm --dir site install --frozen-lockfile && pnpm --dir site check && pnpm --dir site build
+      - name: Check internal links and anchors
+        run: pnpm --dir site test:links
