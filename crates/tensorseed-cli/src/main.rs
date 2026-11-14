@@ -50,8 +50,30 @@ fn init_tracing(format: LogFormat, verbose: u8) {
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// Stack for the thread that drives the command. The async command tree
+/// is deep, more so in unoptimized builds, and Windows gives the main
+/// thread only 1 MiB where Linux gives 8 MiB. Use the Linux size everywhere.
+const MAIN_STACK: usize = 8 * 1024 * 1024;
+
+fn main() -> ExitCode {
+    let main = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(MAIN_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("start the async runtime")
+                .block_on(async_main())
+        })
+        .expect("start the main thread");
+    match main.join() {
+        Ok(code) => code,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+async fn async_main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.log_format, cli.verbose);
     match run(cli).await {

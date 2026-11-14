@@ -181,7 +181,12 @@ async fn mount_dir(server: &MockServer, dir: &Path) {
             if p.is_dir() {
                 walk(root, &p, out);
             } else {
-                let rel = p.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+                // URL paths use `/` on every platform.
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 out.push((rel, std::fs::read(&p).unwrap()));
             }
         }

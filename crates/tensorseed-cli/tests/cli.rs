@@ -1354,7 +1354,12 @@ async fn pulled_gguf(
     let cfg = write_config(tmp, &server.uri(), &key().public_key().to_base64(), "");
     let o = run(&cfg, &["pull", "org/tiny", "--no-swarm"], &[]).await;
     assert_eq!(code(&o), 0);
-    (cfg, tmp.join("dl/org/tiny"), gguf)
+    // Native separators, as the CLI prints it.
+    (
+        cfg,
+        tensorseed_core::paths::join_slash(tmp, "dl/org/tiny"),
+        gguf,
+    )
 }
 
 fn stderr(o: &Output) -> String {
@@ -1468,7 +1473,11 @@ async fn serve_inference_verifies_before_serving() {
     .await;
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(
-        stdout(&o).contains("/opt/llama/llama-server --model"),
+        // Config paths get native separators.
+        stdout(&o).contains(&format!(
+            "{} --model",
+            tensorseed_core::paths::native_string("/opt/llama/llama-server")
+        )),
         "{}",
         stdout(&o)
     );
