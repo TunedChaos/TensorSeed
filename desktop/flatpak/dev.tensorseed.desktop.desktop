@@ -7,7 +7,10 @@
 Type=Application
 Name=Tensorseed Desktop
 GenericName=Model and Dataset Seeder
-Comment=Download, seed, and serve AI models you can verify
+# Comment leaves serving out until the Desktop serve control ships; then
+# switch it to the main tagline, "Download, seed, and serve AI models you can verify",
+# together with the AppStream summary and shortDescription in tauri.conf.json.
+Comment=Download, seed, and verify AI models
 Exec=tensorseed-desktop %u
 Icon=dev.tensorseed.desktop
 Terminal=false

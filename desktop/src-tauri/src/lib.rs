@@ -180,4 +180,26 @@ mod tests {
         let bad = DeepLink::from_url("tensorseed://entry/../x");
         assert!(bad.route.is_none() && bad.error.is_some());
     }
+    /// Desktop's one line description: the AppStream summary, the Flatpak
+    /// desktop file Comment, and `bundle.shortDescription` (the Comment in
+    /// the .deb, .rpm, and AppImage desktop files) must match. Desktop does
+    /// not serve inference yet, so it reads "Download, seed, and verify AI models". Switch all three to the
+    /// main tagline, "Download, seed, and serve AI models you can verify", once the Desktop serve control ships.
+    #[test]
+    fn desktop_summary_matches_everywhere() {
+        const SUMMARY: &str = "Download, seed, and verify AI models";
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["bundle"]["shortDescription"], SUMMARY);
+        let metainfo = include_str!("../../flatpak/dev.tensorseed.desktop.metainfo.xml");
+        assert!(
+            metainfo.contains(&format!("<summary>{SUMMARY}</summary>")),
+            "metainfo summary"
+        );
+        let entry = include_str!("../../flatpak/dev.tensorseed.desktop.desktop");
+        assert!(
+            entry.lines().any(|l| l == format!("Comment={SUMMARY}")),
+            "desktop file Comment"
+        );
+    }
 }

@@ -33,7 +33,7 @@
     "createUpdaterArtifacts": true,
     "targets": ["deb", "appimage"],
     "category": "Utility",
-    "shortDescription": "Download, seed, and serve AI models you can verify",
+    "shortDescription": "Download, seed, and verify AI models",
     "longDescription": "Tensorseed Desktop browses signed, Chia anchored Tensorseed catalogs of open Hugging Face models and datasets, and verifies, pulls, and seeds them natively.",
     "copyright": "Copyright 2026 Tuned Chaos",
     "license": "AGPL-3.0-or-later",
