@@ -27,12 +27,21 @@ Formats and commands may still change before 1.0.
 ### Download targets
 
 The CLI archives and packages as in 0.2.0, plus Tensorseed Desktop as a
-Linux .deb, .rpm, and AppImage and a Windows MSI and NSIS installer. All
-are listed in `SHA256SUMS`, signed with the release key (minisign, key id
-F5D2D3C4C27D459D). The Windows installers are not Authenticode signed
-yet, so Microsoft Defender SmartScreen shows "Windows protected your PC"
-on first run: choose **More info**, then **Run anyway**, after checking
-the download against `SHA256SUMS`. There is no macOS build.
+Linux .deb, .rpm, AppImage, and Flatpak bundle
+(`Tensorseed.Desktop_0.3.0_x86_64.flatpak`; not on Flathub yet) and a
+Windows MSI and NSIS installer. All are listed in `SHA256SUMS`, signed
+with the release key (minisign, key id F5D2D3C4C27D459D). The Windows
+installers are not Authenticode signed yet, so Microsoft Defender
+SmartScreen shows "Windows protected your PC" on first run: choose
+**More info**, then **Run anyway**, after checking the download against
+`SHA256SUMS`. There is no macOS build. The Flatpak bundle needs the
+GNOME 51 runtime from Flathub. Add the remote if you do not already
+have it, then install the bundle:
+
+```sh
+flatpak remote-add --if-not-exists --user flathub https://flathub.org/remote-repo.flatpakrepo
+flatpak install --user ./Tensorseed.Desktop_0.3.0_x86_64.flatpak
+```
 
 ### Added and changed
 
@@ -84,7 +93,8 @@ the download against `SHA256SUMS`. There is no macOS build.
   the host's config directory (so Desktop and a host CLI share one
   config), pulls default to `tensorseed` under the download directory,
   Desktop skips its runtime scheme registration, and the tray icon is
-  written where the host can read it. Not published anywhere.
+  written where the host can read it. The 0.3.0 GitHub release includes
+  the x86_64 bundle; it is not on Flathub yet.
 - New tagline, "Download, seed, and serve AI models you can verify.", with
   "Get the exact model. Prove you're serving it." as the second line: in
   the README, on the website (title, description, hero), and in the CLI
