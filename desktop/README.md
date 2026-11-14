@@ -194,16 +194,21 @@ SmartScreen warns on first run.
   of the app version (`0.3.0.0` for `0.3.0-dev`); keep it in step when the
   version changes. The WiX upgrade code is pinned there too and must
   never change.
-- Both installers share the
-  `HKCU\Software\Tuned Chaos\Tensorseed Desktop` key, which the NSIS
-  uninstaller leaves behind. An MSI installed after an NSIS install and
-  uninstall therefore defaults to the old NSIS folder. Installing one
-  kind at a time avoids surprises; M3.6 picks which to ship.
+- Both installers write to the
+  `HKCU\Software\Tuned Chaos\Tensorseed Desktop` key. The NSIS
+  uninstaller (`src-tauri/windows/nsis-hooks.nsh`) removes its own values
+  and then the key once it is empty, so an MSI installed afterwards uses
+  its default folder and an installed MSI keeps its values. Updates and
+  reinstalls keep the key. Installing one kind at a time still avoids
+  surprises; M3.6 picks which to ship.
 - Config and data use the CLI's Windows paths: the config is
   `%APPDATA%\tensorseed\tensorseed.toml`, and state, the catalog cache,
   and job records are under `%LOCALAPPDATA%\tensorseed`. The WebView2
-  profile is `%LOCALAPPDATA%\dev.tensorseed.desktop`; uninstalling
-  silently keeps it.
+  profile is `%LOCALAPPDATA%\dev.tensorseed.desktop`. The NSIS
+  uninstaller deletes it when "Delete the application data" is ticked
+  and keeps it otherwise, including silent uninstalls and updates.
+  Neither uninstaller touches the config, the data, pulled copies, or
+  mirrors.
 - Settings edits keep the file's CRLF line endings.
 - Pull runs `tensorseed.exe` with no console window. Desktop finds it
   through `TENSORSEED_CLI`, next to `tensorseed-desktop.exe`, `PATH`, or

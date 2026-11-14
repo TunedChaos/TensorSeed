@@ -14,6 +14,12 @@
   config), pulls default to `tensorseed` under the download directory,
   Desktop skips its runtime scheme registration, and the tray icon is
   written where the host can read it. Not published anywhere.
+- Tensorseed Desktop NSIS uninstaller: removes the
+  `HKCU\Software\Tuned Chaos\Tensorseed Desktop` key it leaves behind
+  (only its own values, so an installed MSI keeps its), which stops a
+  later MSI install from reusing the old NSIS folder, and deletes the
+  WebView2 profile when "Delete the application data" is ticked. Updates
+  keep both. Config, data, pulled copies, and mirrors are never touched.
 - Workspace: `tensorseed-core` and `tensorseed-verify` declare
   `default-features = false` in `[workspace.dependencies]` and members
   that want the defaults ask for them, which Cargo 1.98 requires.
