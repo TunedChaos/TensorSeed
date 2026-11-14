@@ -117,6 +117,8 @@ tensorseed list --commercial        # only licenses that permit commercial servi
 tensorseed serve-inference org/name # verify, then serve it with llama.cpp or vLLM
 tensorseed reference-logprobs org/name --out ref.json  # expected logprobs from a verified copy
 tensorseed check-endpoint https://llm.example.com/v1 --reference ref.json  # logprob challenges
+tensorseed calibrate-reference http://127.0.0.1:8090/v1 -r ref.json -o ref.cal.json  # measured tolerances
+tensorseed check-claim https://llm.example.com/v1  # check a seller's claim against your catalogs
 tensorseed response-key create      # Ed25519 response signing key, owner-only file
 tensorseed serve-inference org/name --sign  # runtime behind the signing proxy, writes ts.served-weights/1
 tensorseed claim-serving org/name --wallet 0x...  # claim for your own engine; prints the EIP-191 message

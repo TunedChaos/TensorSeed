@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased (0.3.1)
+
+### Fixed
+
+- `check-endpoint` no longer fails honest sellers. On one CPU host,
+  0.3.0 passed an honest llama.cpp seller 1 run in 11 against its own
+  reference set. llama.cpp logprobs change from run to run and with
+  server state, a single-sample reference could leave one challenge over
+  tolerance for every honest run, low-bit quantizations amplify the
+  drift, and one failing challenge failed the run. With the changes
+  below, 55 of 55 honest runs passed, and other quantizations, a smaller
+  model under the claimed name, and tampered responses failed every run
+  (docs/plans/verified-serving.md section 5.7.1).
+
+### Added
+
+- `reference-logprobs --samples N` (default 5): expected values are
+  per-token medians over N passes (`generator.samples`).
+- Set decision for `check-endpoint` (`ts.set-decision/1`): the run
+  fails on any bad signature under a claim, on more than
+  `--max-fail-fraction` failing challenges (default 0.25), or on a
+  median deviation above `--max-median` (default 0.35 nats). Fewer than
+  half scored is inconclusive. `--max-fail-fraction 0` keeps the 0.3.0
+  rule. Reports gain `decision` and `tolerance_source`.
+- `tensorseed calibrate-reference`: run a set repeatedly against your
+  own server and write the observed spread and derived tolerances into
+  the reference file (sealed by `set_hash`; the commitment gains
+  `tolerance`). `check-endpoint` uses flags, then the calibration, then
+  the defaults.
+- `tensorseed check-claim <url-or-file>`: fetch a seller's
+  `ts.served-weights/1` claim (from the well-known path, a URL, or a
+  file) and check `claim_sha256`, the fields, the wallet signature, that
+  `public_base_url` is where it was fetched, that its catalog is one you
+  trust (default or added with `catalog add`) with the same publisher
+  key, manifest, and files, no takedown, catalog freshness, and the
+  commercial serving mark recomputed from the catalog's license. Text or
+  `--json` (`ts.claim-check/1`); exit 0 pass, 1 fail, 2 inconclusive.
+
+### Compatibility
+
+- 0.3.0 reference files, commitments, and reports load unchanged; new
+  fields are optional. Reference files written with `--samples` above 1
+  or calibrated are rejected by 0.3.0 binaries.
+
+### Docs
+
+- docs/INTEGRATE-A-MARKETPLACE.md: `check-claim` (section 4),
+  calibration and the set decision (section 6), checklist, exit codes,
+  and gaps.
+
 ## 0.3.0
 
 0.3.0 adds Tensorseed Desktop, an app for Linux and Windows that browses

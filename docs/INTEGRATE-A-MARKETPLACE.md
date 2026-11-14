@@ -6,8 +6,10 @@
 This guide is for the other side of
 [SELL-INFERENCE.md](SELL-INFERENCE.md): an inference marketplace, a
 router, or an API gateway that lists sellers and wants to check what they
-claim to serve. It covers only what ships in Tensorseed 0.3.0. Every
-command, field, header, and path below was checked against the 0.3.0
+claim to serve. It covers what ships in Tensorseed 0.3.0, plus the
+0.3.1 additions marked **0.3.1** (`check-claim`, and the calibrated
+`check-endpoint` set decision; not released yet, build from `main`).
+Every command, field, header, and path below was checked against the
 code, and the example outputs come from real runs against the official
 catalog and a llama.cpp seller behind `serve-inference --sign`. Formats
 are versioned `/1` and may still change before 1.0. Ideas that are not
@@ -69,6 +71,7 @@ do not make it impossible.
 | `ts.reference-logprobs/1` | Secret challenge prompts and expected logprobs for one file | You, from your own verified copy | You ([section 6](#6-run-logprob-spot-challenges)) |
 | `ts.reference-logprobs-commitment/1` | The public part of a reference set: `set_hash` and bindings, no prompts | You | Anyone, after you reveal the set |
 | `ts.check-endpoint/1` | JSON report of a challenge run, without prompts or keys | `tensorseed check-endpoint --json` | You |
+| `ts.claim-check/1` | **0.3.1.** JSON report of every check on a claim | `tensorseed check-claim --json` | You |
 
 The `tensorseed` CLI does all of this. Rust code can call the same
 functions in the `tensorseed-app` crate. The `tensorseed-wasm` crate
@@ -634,7 +637,93 @@ know, is your policy.
 The claim's own checks prove only that it is internally consistent and
 who signed it. The step that ties it to real weights is yours: look the
 manifest up in your own verified catalog copy. `verify-response` does
-not do this, and 0.3.0 has no single command for it. With a
+not do this.
+
+**0.3.1: `tensorseed check-claim`** does every check in this section and
+the URL and license checks of [4.6](#46-listing-checks) and
+[4.7](#47-license-marks-a-marketplace-should-act-on) in one command.
+`tensorseed check-claim https://llm.example.com/v1` checks the claim
+that endpoint publishes. The test seller has no public host, so this
+run checked its claim file against the URL the claim names:
+
+```text
+$ tensorseed check-claim served-weights.json --expect-url https://llm.example.com/v1
+claim      served-weights.json
+  sha256   0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185
+  weights  Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9
+  file     qwen2.5-1.5b-instruct-q2_k.gguf
+  model id qwen2.5-1.5b-instruct
+  endpoint https://llm.example.com/v1
+  wallet   0x6c72521c15d87eedebe623c63e5ae10dc05da50d (verified)
+  catalog  tensorseed
+  license  apache-2.0 -> allowed (from the catalog; the claim says allowed)
+
+  ok   claim_sha256     0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185 is the SHA-256 of the canonical JSON without claim_sha256, sig, and signed
+  ok   claim_fields     schema, response key, model id, and wallet format are valid
+  ok   wallet_signature EIP-191 signature over claim_sha256 recovers to 0x6c72521c15d87eedebe623c63e5ae10dc05da50d
+  ok   public_url       https://llm.example.com/v1 is the expected URL
+  ok   catalog          catalog tensorseed is one you trust
+  ok   publisher_key    publisher key CE1E0E3D543DFFB8 is the key pinned for tensorseed
+  ok   manifest         Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 is in tensorseed with manifest sha256 7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2
+  ok   files            3 file(s) match the manifest by path, size, and sha256
+  ok   takedown         no takedown covers this revision
+  ok   freshness        catalog synced during this check at revision 4 (an expired head is refused); chain check (strict) anchored revision 4, coin current, 0s ago
+  ok   license          apache-2.0: allowed (recomputed from the catalog)
+
+verdict: pass (11 pass, 0 fail, 0 warn, 0 skip)
+note: a valid claim says what the seller serves; logprob challenges (check-endpoint) test that the endpoint really serves it
+```
+
+- SOURCE is the endpoint base URL (the claim is read from
+  `/.well-known/tensorseed/served-weights.json` under it, without a
+  trailing `/v1`), a claim URL ending in `.json`, or a local file. At
+  most 3 redirects are followed and the final URL is the one compared.
+- `claim_sha256` is recomputed under the canonical rule of
+  [4.3](#43-the-canonical-hash-claim_sha256). The wallet signature
+  ([4.4](#44-the-wallet-signature)) is checked when present; a claim
+  without one is a `warn`, or a `fail` with `--require-wallet-sig`.
+  `--expect-wallet 0x...` fails a claim that names another wallet.
+- `public_url`: the claim must have been fetched from
+  `public_base_url`'s well-known path. The same valid claim served by
+  another host fails. For a file, pass `--expect-url`, or the check is
+  skipped.
+- `catalog`: the catalog the claim names must be one in your config
+  (the default catalog or one added with `tensorseed catalog add`), and
+  its pinned publisher key id must equal the claim's. `--catalog NAME`
+  picks the configured catalog to compare with; the names must still
+  agree.
+- `manifest`, `files`, `takedown`: the signed manifest for the claimed
+  revision is read from that catalog (signature checked against the
+  pinned key), and `manifest_key`, `manifest_sha256`, repo, revision,
+  every claimed file (path, size, hash), and the entrypoint must match.
+  A tombstone covering the revision fails.
+- `freshness`: the catalog is synced during the check (an expired head
+  is refused; the chain check runs as configured). `--no-wait` uses the
+  local copy and reports a `warn`, or a `fail` with `--require-fresh`.
+- `license`: the commercial serving mark is recomputed from the
+  catalog's license; a claim whose mark, class, or license id differs
+  fails, even if it was resealed.
+- Exit status 0 pass, 1 fail (any failed check), 2 inconclusive (the
+  claim or the catalog could not be read). `--json` prints
+  `ts.claim-check/1` with the claim fields, `wallet_verified`,
+  `catalog`, `freshness`, the recomputed `license`, every check with its
+  `status` (`pass`, `fail`, `warn`, `skip`) and `detail`, `verdict`, and
+  `counts`.
+
+A claim edited after sealing fails on its hash, and the wallet
+signature is then not counted, because it covers the stated hash:
+
+```text
+$ tensorseed check-claim edited-claim.json --no-wait
+...
+  FAIL claim_sha256     the claim says 0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185 but its contents hash to f75829515af7a16d1d476a553f7db61558e8de0a674cc8f34116560d2123f5da; it was changed after it was written
+  skip claim_fields     not checked: claim_sha256 does not match
+  skip wallet_signature not checked: a signature over claim_sha256 says nothing about contents that hash differently
+...
+verdict: fail (6 pass, 1 fail, 1 warn, 3 skip)
+```
+
+Without Tensorseed (or on 0.3.0), do the catalog match yourself. With a
 `catalog export` ([3.2](#32-verify-a-catalog-head-with-the-cli)):
 
 ```python
@@ -693,7 +782,8 @@ does the same against a `CatalogVerifier`. Notes:
 
 ### 4.6 Listing checks
 
-No Tensorseed command compares these for you, but you should:
+`check-claim` (0.3.1) covers the first point when you give it the
+listed base URL. The rest are yours:
 
 - `public_base_url` equals the base URL the seller listed with you, and
   uses `https`. Fetch the claim from that URL's well-known path, not
@@ -714,7 +804,8 @@ No Tensorseed command compares these for you, but you should:
 The mark in a claim is computed on the seller's machine, and the seller
 could edit it before sealing the claim. Recompute it from the signed
 manifest's license (`license.spdx` and `license.class`) with your own
-copy: `tensorseed list --json` gives `commercial_serving` and
+copy: `check-claim` (0.3.1) does this and fails a claim whose mark
+differs, `tensorseed list --json` gives `commercial_serving` and
 `commercial_note` per entry, and `tensorseed-wasm` has
 `commercial_serving(license, class)`. The table lives in
 `crates/tensorseed-core/src/commercial.rs`.
@@ -1067,7 +1158,14 @@ The default is 32 prompts from the `ts.challenge-gen/1` generator with a
 random seed; `--prompts` takes your own. Other options: `--top-logprobs`
 (default 5), `--max-tokens` (default 1), `--sampling-seed`, `--runtime`,
 and `--endpoint` to use a server you already run for that copy. Make one
-set per GGUF file (quantization) you list. Use the same engine family
+set per GGUF file (quantization) you list.
+
+**0.3.1:** `--samples N` (default 5) makes N whole passes over the set
+and records the per-token median, so one unlucky response cannot become
+the expected value (the main cause of 0.3.0's false fails, see
+[6.4](#64-tolerances-and-what-a-fail-means)). The run takes N times as
+many requests; progress shows `requests (challenges x samples)`. The
+file records `generator.samples`. `--samples 1` gives the 0.3.0 shape. Use the same engine family
 the seller claims; a llama.cpp set says little about a vLLM endpoint.
 
 Each run draws a fresh seed and salt, so it gets a new `set_hash`. The
@@ -1131,31 +1229,74 @@ random salt, so the hash reveals nothing about the prompts.
 0.3.0 has no reveal command and no format for publishing commitments;
 host the commitment file wherever your sellers can read it.
 
-### 6.3 Check an endpoint
+**0.3.1: calibrate the set before you publish it.** Run
+`calibrate-reference` against a server you run yourself for the same
+verified copy (for example `reference-logprobs --endpoint` or
+`serve-inference` on loopback). It sends the whole set `--runs` times
+(default 10), measures how far honest answers drift, and writes a
+calibrated copy whose `calibration` block holds the observed spread and
+the tolerances `check-endpoint` will use:
 
 ```text
-$ tensorseed check-endpoint https://llm.example.com/v1 -r ref-q2_k.json \
-    --model-id qwen2.5-1.5b-instruct --api-key-env SELLER_KEY --sample 0
+$ tensorseed calibrate-reference http://127.0.0.1:8090/v1 -r ref-q2_k.json \
+    -o ref-q2_k.cal.json --commitment ref-q2_k.cal.commit.json
+calibrating against http://127.0.0.1:8090/v1 (model Qwen/Qwen2.5-1.5B-Instruct-GGUF): 10 runs of 32 challenges
+  run  1: median 0.179  max 0.308 nats
+  run  2: median 0.189  max 0.417 nats
+  run  3: median 0.170  max 0.367 nats
+  run  4: median 0.174  max 0.338 nats
+  run  5: median 0.152  max 0.334 nats
+  run  6: median 0.140  max 0.356 nats
+  run  7: median 0.159  max 0.310 nats
+  run  8: median 0.160  max 0.367 nats
+  run  9: median 0.163  max 0.337 nats
+  run 10: median 0.198  max 0.479 nats
+
+observed: per challenge mean p50 0.167, p90 0.278, p99 0.384, max 0.479; token max 0.892; run median max 0.198; first token match 84%
+calibrated tolerance: mean <= 0.5, token <= 1.15, median <= 0.35, at most 25% failing
+wrote ref-q2_k.cal.json
+  set_hash   db4a338534d1b4acf25c1897bc5e28683b15d3ffbe6b8eeecdbfae52321dc71a (was ed77ccd7cad5056e0579f5316dc345cb04bea4cdd366bed5f64845285dad69b6)
+  commitment ref-q2_k.cal.commit.json (public)
+note: the calibration is part of the sealed set, so set_hash changed; publish the new set_hash (or commitment), not the old one
+```
+
+The calibration is inside the sealed set, so the set gets a new
+`set_hash`; publish that one (the commitment gains a `tolerance`
+field). How the tolerances are derived is in
+[verified-serving.md](plans/verified-serving.md) section 5.7.1.
+`--margin` (default 1.5) scales the p90 and run median terms. Calibrate
+on the same engine family and, ideally, hardware class as your sellers;
+GPU drift can be larger than this CPU run.
+
+### 6.3 Check an endpoint
+
+0.3.1, against the calibrated set above (the endpoint URL is shown as
+the claim's public URL):
+
+```text
+$ tensorseed check-endpoint https://llm.example.com/v1 -r ref-q2_k.cal.json \
+    --model-id qwen2.5-1.5b-instruct --api-key-env SELLER_KEY --sample 8
 checking https://llm.example.com/v1 (model qwen2.5-1.5b-instruct) against Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 qwen2.5-1.5b-instruct-q2_k.gguf
-  set_hash 6782e9273b0df285d26c15ab25722694ef415418eecd601b5d918c9f3f5c0851, 16 of 16 challenges, sample seed 2b8c74ba0f165d978aa92b8ad1ac8352c0e00295767eb043baa01c13e6ca862f
-  tolerance mean <= 0.5 nats, token <= 2 nats, 3 attempt(s)
+  set_hash db4a338534d1b4acf25c1897bc5e28683b15d3ffbe6b8eeecdbfae52321dc71a, 8 of 32 challenges, sample seed 47109d829dcbb5a2d778194488e1ba685328ef10f47aa4a9a664c9eb2d718b42
+  tolerance mean <= 0.5 nats, token <= 1.15 nats, 3 attempt(s) (calibration)
+  set rule: at most 25% of challenges outside tolerance, median deviation <= 0.35 nats
   signatures required: claim 0a00a5079b7176d6 from https://llm.example.com/.well-known/tensorseed/served-weights.json
-  lp-0001  pass           1x  mean  0.472  max  1.279  top same  sig ok
-  lp-0002  pass           1x  mean  0.169  max  0.317  top differs  sig ok
-  lp-0003  pass           1x  mean  0.347  max  0.865  top differs  sig ok
-  ...
-  lp-0010  pass           1x  mean  0.154  max  0.463  top same  sig ok
-  lp-0011  fail           3x  mean  0.503  max  0.785  top differs  sig ok  (outside tolerance on all 3 attempt(s) (last mean 0.503, max 0.785 nats))
-  lp-0012  pass           1x  mean  0.220  max  0.465  top same  sig ok
-  ...
-  lp-0016  pass           1x  mean  0.180  max  0.291  top same  sig ok
-verdict: fail (15 pass, 1 fail, 0 inconclusive, 0 unsupported)
-signatures: 16 verified, 0 invalid, 0 absent, 0 unverifiable (claim signed by wallet 0x6c72521c15d87eedebe623c63e5ae10dc05da50d)
+  lp-0006  pass           1x  mean  0.145  max  0.274  top same  sig ok
+  lp-0011  pass           1x  mean  0.265  max  0.647  top differs  sig ok
+  lp-0015  pass           1x  mean  0.222  max  0.567  top same  sig ok
+  lp-0022  pass           1x  mean  0.100  max  0.228  top same  sig ok
+  lp-0023  pass           1x  mean  0.085  max  0.131  top same  sig ok
+  lp-0027  pass           1x  mean  0.193  max  0.313  top differs  sig ok
+  lp-0030  pass           1x  mean  0.288  max  0.474  top differs  sig ok
+  lp-0032  pass           1x  mean  0.222  max  0.405  top same  sig ok
+verdict: pass (8 pass, 0 fail, 0 inconclusive, 0 unsupported)
+  0 of 8 scored challenges outside tolerance (max 25%), median deviation 0.207 nats (max 0.35)
+signatures: 8 verified, 0 invalid, 0 absent, 0 unverifiable (claim signed by wallet 0x6c72521c15d87eedebe623c63e5ae10dc05da50d)
 ```
 
 That endpoint was honest: the same file and the same llama.cpp build.
-See [6.4](#64-tolerances-and-what-a-fail-means) before acting on a
-fail.
+The same seller checked with 0.3.0 against its own single-sample set
+passed 1 run in 11; see [6.4](#64-tolerances-and-what-a-fail-means).
 
 What `check-endpoint` does:
 
@@ -1174,16 +1315,31 @@ What `check-endpoint` does:
   (default 3). It is `fail` only if every attempt fails. A pass after a
   failed attempt, or a transport or HTTP error, is `inconclusive`. A
   response without logprobs is `unsupported`.
-- Overall: any `fail` is `fail`; all `pass` is `pass`; all `unsupported`
-  is `unsupported`; anything else is `inconclusive`. Exit status 0, 1,
-  2.
+- Decides over the set (0.3.1, `ts.set-decision/1`): any unsigned or
+  badly signed response under a claim fails the run; fewer than half the
+  sampled challenges scored (answered with logprobs) is `inconclusive`;
+  all `unsupported` is `unsupported`; the run fails when more than
+  `--max-fail-fraction` of the scored challenges are outside tolerance
+  (default 0.25) or when their median mean deviation is above
+  `--max-median` (default 0.35 nats); otherwise it passes. One honest
+  outlier no longer fails a run; a different file fails most challenges
+  and shifts the median. `--max-fail-fraction 0` restores the 0.3.0
+  rule (any `fail` is `fail`). Exit status 0, 1, 2.
+- Tolerances come from the flags, else the set's calibration, else the
+  defaults; the `tolerance` line names the source.
 
 The API key is read from the variable named by `--api-key-env` and
 never printed. Do not pass `--no-prompt-cache` to a seller: it sends a
 llama.cpp specific field that marks the request as a challenge. It is
 for checking your own server.
 
-`--json` prints `ts.check-endpoint/1`. Its top level (real run):
+`--json` prints `ts.check-endpoint/1`. 0.3.1 adds `decision` (`rule`,
+`scored`, `failed`, `fail_fraction`, `median_mean_abs_dev`,
+`signature_failures`, `reason`), `tolerance_source` (`default`,
+`calibration`, `flags`, or `calibration+flags`), and
+`max_fail_fraction` and `max_median_mean_abs` inside `tolerance`;
+existing fields are unchanged, and the 0.3.0 `verdict` field holds the
+set decision. Its top level from a 0.3.0 run:
 
 ```json
 {
@@ -1282,8 +1438,10 @@ the seller without leaking the set.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--max-mean-abs` | 0.5 | Largest mean absolute logprob deviation per challenge, in nats |
-| `--max-token-abs` | 2 | Largest deviation of any single token, in nats |
+| `--max-mean-abs` | 0.5, or calibrated | Largest mean absolute logprob deviation per challenge, in nats |
+| `--max-token-abs` | 2, or calibrated | Largest deviation of any single token, in nats |
+| `--max-fail-fraction` | 0.25, or calibrated | 0.3.1. Largest share of scored challenges outside tolerance before the run fails |
+| `--max-median` | 0.35, or calibrated | 0.3.1. Largest median of per-challenge mean deviations, in nats |
 | `--repeats` | 3 | Attempts before a challenge fails |
 | `--sample` | 8 | Challenges per run (0 for all) |
 | `--concurrency` | 2 | Challenges in flight |
@@ -1296,30 +1454,51 @@ difference. An unlisted one adds the lower bound `max(0, expected -
 floor)`, where the floor is the lowest logprob the endpoint listed.
 Comparison stops at the first position where the chosen token differs.
 
-**The defaults are uncalibrated starting points, and they produce false
-fails.** On one CPU host, checking an honest endpoint (same q2_k file,
-same llama.cpp build, reference made by Tensorseed from a verified
-copy) with the full 16 prompt set, 11 runs in a row gave 1 `pass`, 1
-`inconclusive`, and 9 `fail`. Every failing run had exactly one challenge
-out of tolerance, with mean deviations from 0.50 to 0.78 nats. Changing
-`--concurrency` to 1 or sending `--no-prompt-cache` did not remove it.
-Low bit quantizations and llama.cpp's prompt cache and batching move
-logprobs by tenths of a nat between identical requests
-([verified-serving.md](plans/verified-serving.md) section 5.7 has the
-first measurements). So:
+**Why 0.3.0 failed honest sellers.** On one CPU host, an honest endpoint
+(same q2_k file, same llama.cpp build, reference made from a verified
+copy) checked with the full 16 prompt set passed 1 run in 11. Measured
+causes: llama.cpp logprobs on a multi-thread CPU server change from run
+to run and with server state (prompt cache, KV slots, batch neighbours),
+so the same request does not give the same numbers; the reference held a
+single sample, so an unlucky draw made one challenge sit over tolerance
+for every honest run; q2_k's flat distributions amplify this; repeats
+did not help because the drift is correlated; and one failing challenge
+failed the run. Decoding parameters and token alignment were not the
+cause.
 
-- Calibrate per model, file, and engine: run `check-endpoint` many times
-  against your own server for the same verified copy, look at the
-  distribution of `mean_abs_dev`, and set tolerances above it.
-- Treat one failing challenge, or one failing run, as a reason to check
-  again, not as proof. A substitute model or a different quantization
-  typically fails many challenges, with the top token often different.
-  Look at the share of challenges that fail across runs.
+**0.3.1 results on the same host** (real runs; details and per
+quantization numbers in [verified-serving.md](plans/verified-serving.md)
+section 5.7.1):
+
+| Setup | Runs | Result |
+|---|---|---|
+| Honest seller, calibrated q2_k set, `--sample 8` | 25 | 25 pass |
+| Honest seller, calibrated set, all 32 challenges | 10 | 10 pass |
+| Honest seller, uncalibrated 5 sample set, defaults | 10 | 10 pass |
+| Honest seller, the 0.3.0 single-sample set, defaults | 10 | 10 pass |
+| q3_k_m, q4_k_m, or Qwen2.5-0.5B served under the claimed name with a valid claim and signatures, `--sample 8` | 30 | 30 fail |
+| Logprobs altered after signing | 5 | 5 fail (signatures) |
+| Logprobs altered, signatures and claim removed | 5 | 5 fail (deviation) |
+
+So:
+
+- Calibrate every set ([6.2](#62-commit-rotate-reveal)). Tighter,
+  calibrated limits catch more: a calibrated q4_k_m set had honest runs
+  at medians 0.08 to 0.16 and a limit of 0.3.
+- The closest dishonest case is the neighbouring quantization (q3_k_m
+  against a q4_k_m set failed 38 to 50% of challenges at `--sample 8`).
+  Use `--sample 16` or more when a seller could swap in an adjacent
+  quantization, and look at `decision.fail_fraction` and
+  `decision.median_mean_abs_dev` across runs, not one verdict.
+- Treat a single failing run as a reason to check again; a substitute
+  file fails run after run.
 - `unsupported` means the endpoint returned no logprobs, so it cannot
   be checked this way. A claim with `"logprobs": "required"` promises
   them.
-- A signature failure inside a challenge is a hard fact, separate from
-  the tolerance question.
+- A signature failure inside a challenge is a hard fact and fails the
+  run by itself.
+- 0.3.0 binaries reject reference files written with `--samples` above
+  1 or calibrated (unknown fields); 0.3.0 files keep working in 0.3.1.
 
 ### 6.5 How often, and keeping challenges ordinary
 
@@ -1343,7 +1522,11 @@ claimed.
 `tensorseed_app::challenge` exposes the pieces `check-endpoint` uses:
 `ReferenceFile::load` (checks `set_hash`), `request_body` (builds the
 exact request for a prompt), `parse_logprobs`, `compare`,
-`Comparison::within`, and `check_signature`. Same crate and dependency
+`Comparison::within`, and `check_signature`; 0.3.1 adds `median_steps`,
+`decide` (the set decision), `calibration_stats`, and
+`calibrated_tolerance`. `tensorseed_app::claim_check` has the
+`check-claim` checks (`check_document`, `check_origin`,
+`resolve_catalog`, `check_catalog`, `check_claim_bytes`). Same crate and dependency
 note as [5.5](#55-in-rust).
 
 ## 7. Suggested trust tiers
@@ -1355,7 +1538,7 @@ tier includes the ones above it.
 | Suggested tier | What you checked | What a buyer can rely on |
 |---|---|---|
 | Listed | Base URL, model id, `/v1/models` healthy | Nothing beyond your usual terms |
-| Claimed | A `ts.served-weights/1` claim at the well-known path that loads in Tensorseed, matches a catalog you trust ([4.5](#45-match-the-claim-to-a-catalog-you-trust)), and passes the listing checks ([4.6](#46-listing-checks)) | The seller states which exact files it serves, and the files exist in a signed catalog |
+| Claimed | A `ts.served-weights/1` claim at the well-known path that passes `check-claim` (0.3.1) or loads in Tensorseed and matches a catalog you trust ([4.5](#45-match-the-claim-to-a-catalog-you-trust)), and passes the listing checks ([4.6](#46-listing-checks)) | The seller states which exact files it serves, and the files exist in a signed catalog |
 | Signed | Claimed, plus responses verify against the claim's response key, ideally on every proxied call | Answers came from the holder of that key and were not changed on the way |
 | Wallet bound | Signed, plus a valid `sig` from a `seller_wallet` you link to the seller account | The statement is tied to a wallet the seller controls |
 | Spot checked | Signed, plus regular `check-endpoint` runs with secret sets and calibrated tolerances that keep passing | The endpoint behaves like the claimed file on your prompts, within your tolerances |
@@ -1439,18 +1622,21 @@ weights. That needs hardware attestation, which 0.3.0 does not have
    and store id, with several coin endpoints.
 2. Sync and verify with `catalog info` and `chain-status`; refresh
    on a schedule.
-3. On listing, fetch the claim from the listed base URL's well-known
-   path, load it (schema, hash, response key, wallet signature), and
-   match it to your catalog copy.
-4. Check `public_base_url`, `served_model_id`, `logprobs`, and the
-   recomputed license mark. Decide on wallet policy.
+3. On listing, run `tensorseed check-claim <listed base URL>` (0.3.1):
+   it fetches the claim from the well-known path and checks the hash,
+   fields, wallet signature, URL, catalog match, takedowns, freshness,
+   and the recomputed license mark. On 0.3.0, load the claim and match
+   it to your catalog copy yourself ([4.5](#45-match-the-claim-to-a-catalog-you-trust)).
+4. Check `served_model_id` and `logprobs` against the listing. Decide
+   on wallet policy (`--require-wallet-sig`, `--expect-wallet`).
 5. Health check `/v1/models` and the claim; re-check on any new
    `claim_sha256`.
 6. Send `X-Tensorseed-Request-Id` on every call; verify signatures on
    the seller's exact bytes before changing anything.
-7. Make secret reference sets from your own verified copies, publish
-   their `set_hash`, calibrate tolerances, and run sampled
-   `check-endpoint` runs at random times.
+7. Make secret reference sets from your own verified copies, calibrate
+   them with `calibrate-reference` (0.3.1), publish the calibrated
+   `set_hash`, and run sampled `check-endpoint` runs at random times.
+   Act on the set decision across runs, not on one challenge.
 8. Label listings with the evidence you hold and its date.
 
 ## 12. Reference: exit codes and limits
@@ -1459,10 +1645,12 @@ weights. That needs hardware attestation, which 0.3.0 does not have
 |---|---|---|---|
 | `verify-response` | valid | invalid or unsigned | error (for example the claim does not verify) |
 | `check-endpoint` | pass | fail | inconclusive, unsupported, or an error that prevents a verdict |
+| `check-claim` (0.3.1) | every check passed (warnings allowed) | any check failed | the claim or the catalog could not be read |
+| `calibrate-reference` (0.3.1) | calibrated copy written | error | |
 
 | Limit | Value |
 |---|---|
-| Claim size when fetched | 1 MiB |
+| Claim size when fetched | 4 MiB |
 | Claim fetch | 10 s timeout, at most 3 redirects, no credentials in the URL |
 | Request id | 1 to 128 of `A-Z a-z 0-9 . _ ~ : -` |
 | Served model id | 1 to 256 printable ASCII, no spaces |
@@ -1481,6 +1669,13 @@ release date.
 - **Evidence bundles and dispute tooling** (`ts.challenge-evidence/1`
   and a full generation dispute mode for `check-endpoint`).
 - **Claim expiry and revocation.**
+- **Tolerance data from GPUs and vLLM.** The 0.3.1 calibration numbers
+  come from one CPU host running llama.cpp. `calibrate-reference` works
+  against any engine, but no published per-quantization defaults exist
+  for GPUs yet.
+- **`check-claim` against the listing.** It does not compare
+  `served_model_id` with `/v1/models` or your listing, and it does not
+  store results; schedule it with your health checks.
 - **Hardware attestation** (confidential computing) to show which
   weights produced each answer.
 - **A follow list for trusted catalog signers.** Nothing exists today;
