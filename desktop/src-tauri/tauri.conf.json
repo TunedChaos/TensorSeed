@@ -32,8 +32,8 @@
     "active": true,
     "targets": ["deb", "appimage"],
     "category": "Utility",
-    "shortDescription": "Browse and verify Tensorseed catalogs",
-    "longDescription": "Tensorseed Desktop browses signed, Chia anchored Tensorseed catalogs of open Hugging Face models and datasets and verifies them natively.",
+    "shortDescription": "Browse, pull, verify, and seed Tensorseed catalogs",
+    "longDescription": "Tensorseed Desktop browses signed, Chia anchored Tensorseed catalogs of open Hugging Face models and datasets, and verifies, pulls, and seeds them natively.",
     "copyright": "Copyright 2026 Tuned Chaos",
     "license": "AGPL-3.0-or-later",
     "publisher": "Tuned Chaos",
@@ -54,7 +54,15 @@
         "desktopTemplate": "linux/tensorseed-desktop.desktop"
       }
     },
-    "windows": {},
+    "windows": {
+      "wix": {
+        "version": "0.3.0.0",
+        "upgradeCode": "fabd4d81-f9ff-570f-aba4-7d20e7ede3cb"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "macOS": {}
   },
   "plugins": {

@@ -19,6 +19,19 @@
   next to a running `serve`). Linux packages get a desktop file with
   `%u` and `MimeType=x-scheme-handler/tensorseed`. The updater stays
   off. See `desktop/README.md`.
+- Tensorseed Desktop on Windows: `pnpm --dir desktop tauri build
+  --bundles msi,nsis` makes unsigned MSI (per machine) and NSIS (per
+  user) installers, tested on Windows 11 (install, deep links, single
+  instance, close to tray, pull without a console window, verify, seed,
+  settings, `tensorseed gui`, uninstall). The MSI gets a numeric version
+  (`bundle.windows.wix.version`) and a pinned upgrade code. An installed
+  Desktop no longer writes its own per user `tensorseed://` registration
+  over the installer's, which an MSI uninstall left behind pointing at the
+  removed program. Settings edits keep CRLF line endings. Desktop looks
+  for the CLI in `~/.cargo/bin` on Windows too, and only in `/usr/bin` and
+  similar on Unix.
+- `tensorseed-app`: fix a Windows only clippy lint in the executable
+  check.
 - `tensorseed gui [TARGET] [--type] [--print-command]` opens Tensorseed
   Desktop, optionally at an entry or a `tensorseed://` link. It looks in
   `TENSORSEED_DESKTOP`, next to the CLI, on `PATH`, and in the standard

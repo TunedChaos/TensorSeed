@@ -53,6 +53,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
+# Reads which program the installer registered for tensorseed:// (already a
+# dependency of the deep link plugin).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-registry = "0.6"
+
 [lints.rust]
 unsafe_code = "forbid"
 

@@ -126,7 +126,8 @@ fn exe_in(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Find the `tensorseed` CLI: `TENSORSEED_CLI`, next to this binary, PATH,
-/// then the usual install directories.
+/// then the usual install directories (`/usr/bin`, `/usr/local/bin`, and
+/// `~/.local/bin` on Unix; `~/.cargo/bin` everywhere).
 pub fn cli_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("TENSORSEED_CLI").filter(|v| !v.is_empty()) {
         let p = PathBuf::from(p);
@@ -148,10 +149,16 @@ pub fn cli_path() -> Option<PathBuf> {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
-    let mut dirs = vec![PathBuf::from("/usr/bin"), PathBuf::from("/usr/local/bin")];
+    let mut dirs = Vec::new();
+    if cfg!(unix) {
+        dirs.push(PathBuf::from("/usr/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+    }
     if let Some(h) = home {
-        dirs.push(h.join(".local/bin"));
-        dirs.push(h.join(".cargo/bin"));
+        if cfg!(unix) {
+            dirs.push(h.join(".local/bin"));
+        }
+        dirs.push(h.join(".cargo").join("bin"));
     }
     dirs.iter().find_map(|d| exe_in(d))
 }

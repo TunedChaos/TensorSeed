@@ -86,8 +86,11 @@ On Linux the app also writes
 and makes it the `x-scheme-handler/tensorseed` default, so a binary run
 outside a package still gets links. Packages ship
 `src-tauri/linux/tensorseed-desktop.desktop` (`Exec=... %u`,
-`MimeType=x-scheme-handler/tensorseed;`). On Windows the installer
-registers the scheme.
+`MimeType=x-scheme-handler/tensorseed;`). On Windows the NSIS and MSI
+installers register the scheme and their uninstallers remove it. A binary
+run outside an installer registers it for the current user at start;
+an installed one leaves the installer's registration alone, so nothing
+is left behind after uninstalling.
 
 ## `tensorseed gui`
 
@@ -165,6 +168,54 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+## Build (Windows)
+
+Needs the Visual Studio 2022 Build Tools (the "Desktop development with
+C++" workload and a Windows 11 SDK), Rust (MSVC toolchain), Node 20 or
+newer, and pnpm. WebView2 ships with Windows 11. Tauri downloads WiX and
+NSIS on the first bundle build.
+
+```powershell
+pnpm --dir desktop install --frozen-lockfile
+pnpm --dir desktop tauri build --bundles msi,nsis
+```
+
+This makes `Tensorseed Desktop_<version>_x64_en-US.msi` and
+`Tensorseed Desktop_<version>_x64-setup.exe` under
+`desktop/src-tauri/target/release/bundle/`. Both are unsigned, so
+SmartScreen warns on first run.
+
+- **NSIS** (`-setup.exe`) installs for the current user into
+  `%LOCALAPPDATA%\Tensorseed Desktop` without elevation. `/S` installs
+  silently.
+- **MSI** installs for the machine into `%ProgramFiles%\Tensorseed
+  Desktop` and needs elevation. MSI versions must be numeric, so
+  `bundle.windows.wix.version` in `tauri.conf.json` holds the numeric form
+  of the app version (`0.3.0.0` for `0.3.0-dev`); keep it in step when the
+  version changes. The WiX upgrade code is pinned there too and must
+  never change.
+- Both installers share the
+  `HKCU\Software\Tuned Chaos\Tensorseed Desktop` key, which the NSIS
+  uninstaller leaves behind. An MSI installed after an NSIS install and
+  uninstall therefore defaults to the old NSIS folder. Installing one
+  kind at a time avoids surprises; M3.6 picks which to ship.
+- Config and data use the CLI's Windows paths: the config is
+  `%APPDATA%\tensorseed\tensorseed.toml`, and state, the catalog cache,
+  and job records are under `%LOCALAPPDATA%\tensorseed`. The WebView2
+  profile is `%LOCALAPPDATA%\dev.tensorseed.desktop`; uninstalling
+  silently keeps it.
+- Settings edits keep the file's CRLF line endings.
+- Pull runs `tensorseed.exe` with no console window. Desktop finds it
+  through `TENSORSEED_CLI`, next to `tensorseed-desktop.exe`, `PATH`, or
+  `%USERPROFILE%\.cargo\bin`.
+- The first time Desktop seeds, Windows asks whether to allow
+  `tensorseed-desktop.exe` through the firewall, and blocks incoming
+  connections until it is allowed, so Desktop only seeds to peers it
+  dials. An installer firewall rule is an
+  M3.6 decision.
+- Bind interface is not supported on Windows, and the settings view
+  disables it.
+
 ## Not done yet
 
 - Updater: deliberately absent. `tauri-plugin-updater` is added in M3.6
@@ -179,8 +230,10 @@ cargo test
 - Packaging: only the local `.deb` and AppImage `tauri build` makes by
   default. Flatpak, the MSI build method, signing, and bundling the CLI
   binary are M3.6 decisions.
-- Windows: the code builds for Windows, but the installer, scheme
-  registration, single instance forwarding, tray, and hidden CLI console
-  have not been run on Windows yet. macOS is not built.
+- Windows: the NSIS and MSI builds, deep links, single instance
+  forwarding, close to tray, the tray icon and its status, pull, verify,
+  seed, settings, `tensorseed gui`, and uninstalling have been run on
+  Windows 11. The tray menu itself has only been checked on Linux so
+  far. macOS is not built.
 
 Copyright Tuned Chaos. AGPL-3.0-or-later.

@@ -99,6 +99,8 @@ fn tempfile_in(dir: &Path) -> anyhow::Result<std::path::PathBuf> {
 }
 
 /// Apply `t` to the TOML text `current` and return the edited text.
+/// A file written with CRLF line endings (as Windows editors do) keeps
+/// them.
 ///
 /// # Errors
 ///
@@ -112,9 +114,18 @@ pub fn edit_torrent(current: &str, t: &Torrent) -> anyhow::Result<String> {
     let (Some(new), Some(def)) = (new.as_table(), def.as_table()) else {
         bail!("[torrent] did not serialize to a table");
     };
+    let crlf = current.contains("\r\n");
+    let finish = |doc: DocumentMut| {
+        let out = doc.to_string();
+        if crlf {
+            out.replace("\r\n", "\n").replace('\n', "\r\n")
+        } else {
+            out
+        }
+    };
     let needed = new.iter().any(|(k, v)| def.get(k) != Some(v));
     if !doc.contains_key("torrent") && !needed {
-        return Ok(doc.to_string());
+        return Ok(finish(doc));
     }
     if !doc.contains_key("torrent") {
         doc.insert("torrent", Item::Table(Table::new()));
@@ -123,7 +134,7 @@ pub fn edit_torrent(current: &str, t: &Torrent) -> anyhow::Result<String> {
         .as_table_mut()
         .context("[torrent] in the config file is not a table")?;
     apply(table, new, def)?;
-    Ok(doc.to_string())
+    Ok(finish(doc))
 }
 
 /// Set every key that is present in `table` or differs from `def`.
@@ -407,5 +418,29 @@ health_listen = "127.0.0.1:6880" # local only
         std::fs::write(&path, "[torrent\nbroken").unwrap();
         assert!(write_torrent(&path, &Torrent::default()).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[torrent\nbroken");
+    }
+
+    #[test]
+    fn crlf_files_keep_crlf() {
+        let file = "# Windows config\r\n[general]\r\ndownload_dir = \"C:/models\" # here\r\n\r\n[torrent]\r\nlisten_port = 46881 # test\r\n";
+        let t = Torrent {
+            upload_limit_kbps: 900,
+            listen_port: 46881,
+            ..Default::default()
+        };
+        let out = edit_torrent(file, &t).unwrap();
+        assert!(out.contains("upload_limit_kbps = 900\r\n"), "{out:?}");
+        assert!(
+            out.starts_with("# Windows config\r\n[general]\r\n"),
+            "{out:?}"
+        );
+        assert_eq!(
+            out.matches('\n').count(),
+            out.matches("\r\n").count(),
+            "{out:?}"
+        );
+        assert_eq!(edit_torrent(&out, &t).unwrap(), out);
+        let lf = edit_torrent(&file.replace("\r\n", "\n"), &t).unwrap();
+        assert!(!lf.contains('\r'), "{lf:?}");
     }
 }
