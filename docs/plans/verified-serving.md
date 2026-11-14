@@ -317,10 +317,14 @@ when the response key is lost. Pass the same `--at` to both steps. The
 signing proxy serves the file at
 `/.well-known/tensorseed/revocations.json`, re-reading it on every
 request (404 when the seller has none, 503 when it does not parse).
-`check-claim` and `verify-response` fetch that path next to a claim read
-from a URL, and take more lists with `--revocations <file|URL>`.
-`check-endpoint` honours expiry but does not fetch revocations; run
-`check-claim` before listing.
+`check-claim`, `verify-response`, and `check-endpoint` fetch that path
+next to a claim read from a URL (`check-endpoint` otherwise fetches it
+from the endpoint it checks), take more lists with
+`--revocations <file|URL>`, and skip the seller's list with
+`--no-revocations`. In `check-endpoint` a revocation in effect fails the
+run, a future one is a warning, a 404 changes nothing, and a list that
+cannot be read or does not parse makes a passing run inconclusive; the
+`ts.check-endpoint/1` report gains an optional `revocation` object.
 
 This is the off-chain counterpart of section 4.3, and needs no chain. A
 seller who also attested the claim should revoke both.

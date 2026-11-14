@@ -229,6 +229,12 @@ pub enum Command {
     /// Tolerances come from the flags, else from the reference file's
     /// calibration (`calibrate-reference`), else the defaults.
     ///
+    /// Under a claim, its `expires_at` and revocations are honoured as
+    /// `check-claim` honours them: the seller's revocation list is fetched,
+    /// a revocation in effect fails the run, one dated in the future is a
+    /// warning, and a list that cannot be read makes a passing run
+    /// inconclusive (`--no-revocations` skips it).
+    ///
     /// Exit status: 0 pass, 1 fail, 2 inconclusive or unsupported (also
     /// for errors that prevent a verdict).
     CheckEndpoint(CheckEndpointArgs),
@@ -1080,9 +1086,14 @@ pub struct VerifyResponseArgs {
     #[arg(long, default_value_t = 300)]
     pub max_skew: u64,
     /// Also check this revocation list (file or URL; repeatable). With a
-    /// claim URL, the seller's own list next to it is always checked.
+    /// claim URL, the seller's own list next to it is checked too, unless
+    /// `--no-revocations` is given.
     #[arg(long, value_name = "PATH|URL")]
     pub revocations: Vec<String>,
+    /// Do not fetch the seller's revocation list (lists given with
+    /// `--revocations` are still read).
+    #[arg(long)]
+    pub no_revocations: bool,
     /// Print a JSON result.
     #[arg(long)]
     pub json: bool,
@@ -1205,9 +1216,13 @@ pub struct CheckClaimArgs {
     pub require_expiry: bool,
     /// Also check this revocation list (file or URL; repeatable), for
     /// example one your marketplace keeps. The seller's own list next to a
-    /// fetched claim is always checked.
+    /// fetched claim is checked too, unless `--no-revocations` is given.
     #[arg(long, value_name = "PATH|URL")]
     pub revocations: Vec<String>,
+    /// Do not fetch the seller's revocation list (lists given with
+    /// `--revocations` are still read).
+    #[arg(long)]
+    pub no_revocations: bool,
     /// Print a `ts.claim-check/1` report.
     #[arg(long)]
     pub json: bool,
@@ -1283,6 +1298,19 @@ pub struct CheckEndpointArgs {
     /// Allowed signature timestamp skew in seconds.
     #[arg(long, default_value_t = 300)]
     pub max_skew: u64,
+    /// Also check this revocation list (file or URL; repeatable), for
+    /// example one your marketplace keeps. With a claim, the seller's list
+    /// at `/.well-known/tensorseed/revocations.json` is fetched too (next
+    /// to a claim read from its well-known path, else from the endpoint).
+    /// A revocation in effect fails the run; a list that cannot be read
+    /// makes it inconclusive.
+    #[arg(long, value_name = "PATH|URL")]
+    pub revocations: Vec<String>,
+    /// Do not fetch the seller's revocation list (lists given with
+    /// `--revocations` are still read). Use it when the list cannot be
+    /// read and you accept not knowing whether the claim was revoked.
+    #[arg(long)]
+    pub no_revocations: bool,
     /// Print one JSON document (`ts.check-endpoint/1`) on stdout.
     #[arg(long)]
     pub json: bool,

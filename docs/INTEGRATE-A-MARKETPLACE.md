@@ -910,14 +910,22 @@ revocation. `reason` is `[a-z0-9_]{1,32}`; Tensorseed writes
 `superseded`, `stopped`, `key_compromised`, and `other`. What it means
 for you:
 
-| Situation | `check-claim` | Responses (`verify-response`) |
-|---|---|---|
-| `revoked_at` in the past | `revocation` fails | Signed at or after `revoked_at`: `claim_revoked`. Signed before: still valid |
-| `revoked_at` in the future | `revocation` warns | Same rule, so they verify until then |
-| `reason` `key_compromised` | `revocation` fails | Every response under the claim fails with `claim_revoked`, whenever it was signed |
-| An entry whose signature does not verify | Ignored, reported as a `warn` | Ignored |
-| No list (404) | `revocation` passes | Nothing to apply |
-| The list cannot be read | `revocation` warns | `verify-response` stops with an error |
+| Situation | `check-claim` | `check-endpoint` | Responses (`verify-response`) |
+|---|---|---|---|
+| `revoked_at` in the past | `revocation` fails | The run fails (`revoked`); fresh responses are signed after it | Signed at or after `revoked_at`: `claim_revoked`. Signed before: still valid |
+| `revoked_at` in the future | `revocation` warns | A warning (`pending`); the responses verify | Same rule, so they verify until then |
+| `reason` `key_compromised` | `revocation` fails | The run fails (`revoked`) | Every response under the claim fails with `claim_revoked`, whenever it was signed |
+| An entry whose signature does not verify | Ignored, reported as a `warn` | Ignored, counted in `ignored` | Ignored |
+| An entry for another claim | Not counted | Not counted | Not counted |
+| No list (404) | `revocation` passes | Reported (`no_list`); no effect | Nothing to apply |
+| The list cannot be read or does not parse | `revocation` warns | A passing run is `inconclusive` (`unreadable`) | `verify-response` stops with an error |
+
+All three commands take `--revocations <file|URL>` (repeatable) for
+lists you keep, and `--no-revocations` to skip the seller's list (the
+lists you pass are still read). `check-claim` and `verify-response`
+fetch the seller's list next to a claim read from its well-known path;
+`check-endpoint` does the same, and otherwise fetches it from the
+endpoint it checks.
 
 Policy suggestions: re-fetch the list on your health check schedule
 with the claim; stop routing to a claim as soon as a revocation is in
@@ -1527,6 +1535,17 @@ What `check-endpoint` does:
   differs from the claim's `served_model_id`, and it then requires a
   valid signature on every challenge response. `--require-signatures`
   fails when the endpoint serves no claim.
+- **0.3.1:** with a claim, fetches the seller's revocation list
+  (`/.well-known/tensorseed/revocations.json` next to a claim read from
+  its well-known path, else at the endpoint) and any `--revocations`
+  lists, verifies each entry against the claim as `check-claim` does
+  ([4.8](#48-expiry-and-revocation)), and applies the result: a
+  revocation in effect fails the run, `key_compromised` voids every
+  response, one dated in the future is a warning and responses signed
+  before it verify, a 404 is reported and changes nothing, and a list
+  that cannot be read or does not parse turns a passing run into
+  `inconclusive` (`--no-revocations` skips the seller's list). A
+  response signed after the claim's `expires_at` fails its challenge.
 - Sends `--sample` challenges (default 8; 0 for all), chosen by a
   printed `--sample-seed` so a run can be repeated.
 - Re-sends a challenge outside tolerance up to `--repeats` times
@@ -1555,7 +1574,10 @@ for checking your own server.
 `scored`, `failed`, `fail_fraction`, `median_mean_abs_dev`,
 `signature_failures`, `reason`), `tolerance_source` (`default`,
 `calibration`, `flags`, or `calibration+flags`), and
-`max_fail_fraction` and `max_median_mean_abs` inside `tolerance`;
+`max_fail_fraction` and `max_median_mean_abs` inside `tolerance`, and,
+under a claim, `revocation` (`status`: `not_revoked`, `no_list`,
+`pending`, `revoked`, `unreadable`, or `not_checked`; `detail`; and when
+found `lists`, `revoked_at`, `reason`, `revoked_by`, and `ignored`);
 existing fields are unchanged, and the 0.3.0 `verdict` field holds the
 set decision. Its top level from a 0.3.0 run:
 
@@ -1897,9 +1919,6 @@ release date.
   so a claim can be tied to a bonded identity.
 - **Evidence bundles and dispute tooling** (`ts.challenge-evidence/1`
   and a full generation dispute mode for `check-endpoint`).
-- **Revocations in `check-endpoint`.** In 0.3.1 it honours the claim's
-  `expires_at` but does not fetch revocation lists; run `check-claim`
-  first.
 - **Tolerance data from GPUs and vLLM.** The 0.3.1 calibration numbers
   come from one CPU host running llama.cpp. `calibrate-reference` works
   against any engine, but no published per-quantization defaults exist

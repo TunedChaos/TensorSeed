@@ -2543,6 +2543,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     assert_eq!(v["signatures"]["claim_sha256"], hash.as_str());
     assert_eq!(v["signatures"]["seller_wallet"], DEV_WALLET);
     assert_eq!(v["challenges"][0]["signature"]["status"], "verified");
+    assert_eq!(v["revocation"]["status"], "no_list", "{v}");
     let o = run(
         &cfg,
         &[
@@ -2673,6 +2674,20 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
         &cfg,
         &[
             "check-claim",
+            &format!("{proxy}/v1"),
+            "--no-wait",
+            "--json",
+            "--no-revocations",
+        ],
+        &[],
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(st(&v, "revocation"), "skip", "{v}");
+    let o = run(
+        &cfg,
+        &[
+            "check-claim",
             claimp.to_str().unwrap(),
             "--no-wait",
             "--json",
@@ -2696,6 +2711,67 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     )
     .await;
     assert_eq!(code(&o), 1);
+    // check-endpoint fetches the same list from the endpoint and fails the
+    // run; every fresh response is signed after the revocation time.
+    let endpoint = |extra: &'static [&'static str]| {
+        let mut a = vec![
+            "check-endpoint".to_string(),
+            format!("{proxy}/v1"),
+            "-r".into(),
+            refp.to_str().unwrap().into(),
+            "--sample".into(),
+            "0".into(),
+            "--json".into(),
+        ];
+        a.extend(extra.iter().map(|s| (*s).to_string()));
+        a
+    };
+    let run_endpoint = |a: Vec<String>| {
+        let cfg = cfg.clone();
+        async move {
+            let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+            run(&cfg, &refs, &[]).await
+        }
+    };
+    let o = run_endpoint(endpoint(&[])).await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["verdict"], "fail");
+    assert_eq!(v["revocation"]["status"], "revoked", "{v}");
+    assert_eq!(v["revocation"]["reason"], "superseded");
+    assert_eq!(v["revocation"]["revoked_by"], "both");
+    assert!(
+        v["decision"]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("the claim is revoked"),
+        "{v}"
+    );
+    assert!(
+        v["challenges"][0]["signature"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("revoked")
+    );
+    // --no-revocations skips the seller's list; --revocations adds one back.
+    let o = run_endpoint(endpoint(&["--no-revocations"])).await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["revocation"]["status"], "not_checked");
+    let mut a = endpoint(&["--no-revocations", "--revocations"]);
+    a.push(listp.to_str().unwrap().into());
+    let o = run_endpoint(a).await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    // A list the proxy cannot serve (it does not parse) makes the run
+    // inconclusive.
+    let saved = std::fs::read(&listp).unwrap();
+    std::fs::write(&listp, b"{not json").unwrap();
+    let o = run_endpoint(endpoint(&[])).await;
+    assert_eq!(code(&o), 2, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["verdict"], "inconclusive");
+    assert_eq!(v["revocation"]["status"], "unreadable", "{v}");
+    std::fs::write(&listp, &saved).unwrap();
     // A response signed after the revocation time no longer verifies.
     let o = verify(proxy.clone(), bp.clone(), vec!["--json".into()]).await;
     assert_eq!(code(&o), 1, "{}", stdout(&o));

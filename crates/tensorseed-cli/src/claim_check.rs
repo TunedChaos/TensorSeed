@@ -84,16 +84,47 @@ async fn read_claim(src: &str) -> anyhow::Result<(Vec<u8>, Origin)> {
 /// Revocations for a claim read from `origin`: the seller's list next to
 /// a claim fetched from its well-known path (a read failure there is a
 /// warning), plus the lists passed with `--revocations` (a read failure
-/// there is an error).
-async fn revocations(origin: &Origin, extra: &[String]) -> anyhow::Result<RevocationInput> {
+/// there is an error). `no_seller` skips the seller's list.
+async fn revocations(
+    origin: &Origin,
+    extra: &[String],
+    no_seller: bool,
+) -> anyhow::Result<RevocationInput> {
     let seller = match origin {
-        Origin::Url(u) => revocations_url_next_to(u),
-        Origin::File(_) => None,
+        Origin::Url(u) if !no_seller => revocations_url_next_to(u),
+        _ => None,
     };
+    let why = if no_seller {
+        "--no-revocations was given".to_string()
+    } else {
+        match origin {
+            Origin::File(_) => {
+                "read from a file; pass --revocations, or check the URL, to check revocations"
+                    .into()
+            }
+            Origin::Url(_) => {
+                "the claim was not read from its well-known path; pass --revocations".into()
+            }
+        }
+    };
+    Ok(gather_revocations(seller.as_deref(), extra, why).await?.0)
+}
+
+/// Read the seller's list at `seller` (404: none) and the `extra` lists
+/// (a read failure there is an error). A seller list that cannot be read,
+/// does not parse, or is too large is [`RevocationInput::Unavailable`]
+/// when no other list was read; the failure is also returned on its own,
+/// so a caller can tell that the merged list may be incomplete.
+/// `not_checked` is the reason given when no list was looked at.
+pub(crate) async fn gather_revocations(
+    seller: Option<&str>,
+    extra: &[String],
+    not_checked: String,
+) -> anyhow::Result<(RevocationInput, Option<String>)> {
     let (mut list, mut from, mut absent) = crate::signing::read_revocation_lists(extra).await?;
     let mut seller_err = None;
-    if let Some(u) = &seller {
-        match crate::signing::read_revocation_lists(std::slice::from_ref(u)).await {
+    if let Some(u) = seller {
+        match crate::signing::read_revocation_lists(&[u.to_string()]).await {
             Ok((l, f, a)) => {
                 list.merge(l);
                 from.extend(f);
@@ -102,26 +133,19 @@ async fn revocations(origin: &Origin, extra: &[String]) -> anyhow::Result<Revoca
             Err(e) => seller_err = Some(format!("{e:#}")),
         }
     }
-    Ok(if !from.is_empty() {
+    let input = if let Some(e) = seller_err.clone().filter(|_| from.is_empty()) {
+        RevocationInput::Unavailable(e)
+    } else if !from.is_empty() {
         RevocationInput::List {
             list,
             from: from.join(", "),
         }
-    } else if let Some(e) = seller_err {
-        RevocationInput::Unavailable(e)
     } else if !absent.is_empty() {
         RevocationInput::Absent(absent.join(", "))
     } else {
-        RevocationInput::NotChecked(match origin {
-            Origin::File(_) => {
-                "read from a file; pass --revocations, or check the URL, to check revocations"
-                    .into()
-            }
-            Origin::Url(_) => {
-                "the claim was not read from its well-known path; pass --revocations".into()
-            }
-        })
-    })
+        RevocationInput::NotChecked(not_checked)
+    };
+    Ok((input, seller_err))
 }
 
 /// `tensorseed check-claim`.
@@ -136,7 +160,7 @@ pub async fn run(cfg: &Config, args: &CheckClaimArgs) -> ExitCode {
     };
     let rep = match read_claim(&args.source).await {
         Ok((raw, origin)) => {
-            let revs = match revocations(&origin, &args.revocations).await {
+            let revs = match revocations(&origin, &args.revocations, args.no_revocations).await {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("error: {e:#}");

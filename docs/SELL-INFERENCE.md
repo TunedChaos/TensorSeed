@@ -586,7 +586,11 @@ out, 1 when anything fails, and 2 on an error. For a stream, save it with
 claim at the well-known path (or takes `--claim`), sends a fresh request
 id with every challenge, and fails any challenge whose answer is
 unsigned or badly signed, which fails the whole run; the report lists
-the signature status of each challenge and a summary.
+the signature status of each challenge and a summary. It also reads
+your `revocations.json` from the well-known path: a claim you revoked
+fails the run, so check with your current claim. If the reverse proxy
+does not forward that path, a 404 is fine, but an error page makes the
+run inconclusive.
 
 ## 7. License duties when you sell access
 
@@ -630,6 +634,11 @@ Again: these notes are not legal advice.
   `calibrate-reference` on that server, and use the calibrated file. A
   fail across many challenges, or a high median, usually means a
   different file or model is answering.
+- `check-endpoint` says `inconclusive` and the `revocation` status is
+  `unreadable`: `/.well-known/tensorseed/revocations.json` returned an
+  error or something that is not a revocation list. Forward the path to
+  the signing proxy unchanged, or let it return 404 when you have
+  revoked nothing.
 - `check-claim` fails `public_url`: `--public-url` in the claim must be
   the address buyers call, and the claim must be served from that
   address's `/.well-known/tensorseed/served-weights.json`.

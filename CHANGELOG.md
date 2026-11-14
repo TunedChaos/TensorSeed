@@ -55,6 +55,12 @@
   and responses signed at or after it (`claim_revoked`), a future one
   warns, and `key_compromised` fails every response under the claim.
   Entries verify on their own, so lists can be merged and mirrored.
+- `check-endpoint` honours revocations too: under a claim it fetches the
+  seller's list (next to a claim read from its well-known path, else at
+  the endpoint) plus `--revocations`, fails the run on a revocation in
+  effect, warns on a future one, and makes a passing run inconclusive
+  when the list cannot be read or does not parse. `--no-revocations`
+  (also on `check-claim` and `verify-response`) skips the seller's list.
 - `tensorseed-verify` is now the verify-only crate for verified serving
   as well as catalogs: claims, revocations, signed responses, manifest
   entries and file pages, and the pure `check-claim` logic, with no
@@ -86,7 +92,8 @@
 - `ts.claim-check/1` reports gain the `expiry` and `revocation` checks
   and the `expires_at` and `revoked` fields; `verify-response --json`
   gains `claim_expires_at` and `revocation_lists`, and the error labels
-  `claim_expired` and `claim_revoked`.
+  `claim_expired` and `claim_revoked`. `ts.check-endpoint/1` reports
+  gain an optional `revocation` object; 0.3.0 reports still load.
 
 ### Docs
 

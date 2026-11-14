@@ -821,6 +821,10 @@ pub struct SigContext {
     /// The claim's `expires_at` (Unix seconds); responses signed after it
     /// fail.
     pub claim_expires_unix: Option<i64>,
+    /// When a verified revocation of the claim takes effect (Unix seconds,
+    /// `i64::MIN` for `key_compromised`); responses signed at or after it
+    /// fail. See [`assess_revocations`].
+    pub claim_revoked_unix: Option<i64>,
 }
 
 /// Signature status of one response.
@@ -901,7 +905,7 @@ pub fn check_signature(
         now_unix,
         max_skew_secs: ctx.max_skew_secs,
         claim_expires_unix: ctx.claim_expires_unix,
-        claim_revoked_unix: None,
+        claim_revoked_unix: ctx.claim_revoked_unix,
     };
     Some(match verify_fields(&f, body, &e) {
         Ok(()) => SigResult {
@@ -1884,6 +1888,10 @@ pub struct CheckReport {
     /// Signature summary, when a claim was used or signatures were seen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signatures: Option<SignatureSummary>,
+    /// Revocation state of the claim, when a claim was used (added in
+    /// 0.3.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation: Option<RevocationSummary>,
     /// Per challenge, in set order.
     pub challenges: Vec<ChallengeResult>,
     /// When the check finished (RFC 3339 UTC).
@@ -1929,6 +1937,168 @@ impl SignatureSummary {
             }
         }
         c
+    }
+}
+
+/// Revocation state of the claim a check ran under (added in 0.3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevocationStatus {
+    /// A list was read and no verified entry revokes the claim.
+    NotRevoked,
+    /// The seller publishes no list (HTTP 404) and no other list was given.
+    NoList,
+    /// A verified revocation takes effect later; responses signed before
+    /// then still verify.
+    Pending,
+    /// A verified revocation is in effect: the run fails.
+    Revoked,
+    /// A list could not be read or did not parse, so the claim may be
+    /// revoked: a run that would pass is inconclusive.
+    Unreadable,
+    /// No list was looked at.
+    NotChecked,
+}
+
+impl RevocationStatus {
+    /// The snake case name used in reports.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRevoked => "not_revoked",
+            Self::NoList => "no_list",
+            Self::Pending => "pending",
+            Self::Revoked => "revoked",
+            Self::Unreadable => "unreadable",
+            Self::NotChecked => "not_checked",
+        }
+    }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// What a check found about revocations of its claim (added in 0.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevocationSummary {
+    /// Outcome.
+    pub status: RevocationStatus,
+    /// One line explanation, worded as `check-claim` words it.
+    pub detail: String,
+    /// The lists that were read (URLs or paths).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lists: Option<String>,
+    /// The verified revocation's `revoked_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<String>,
+    /// Its `reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Who signed it: `response_key`, `wallet`, or `both`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_by: Option<String>,
+    /// Entries naming the claim whose signatures did not verify (ignored).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ignored: usize,
+}
+
+/// Assess the revocations of `claim` at `now_unix`, as `check-claim` does
+/// (the entries are verified by [`tensorseed_verify::revocation`]).
+/// `seller_error` is a failure to read the seller's list when other lists
+/// were read: without a verified revocation the result is then
+/// [`RevocationStatus::Unreadable`], because the missing list may hold one.
+///
+/// Returns the summary and the time from which responses under the claim
+/// no longer verify, for [`SigContext::claim_revoked_unix`].
+#[must_use]
+pub fn assess_revocations(
+    claim: &crate::signing::ServedClaim,
+    input: &crate::claim_check::RevocationInput,
+    seller_error: Option<&str>,
+    now_unix: i64,
+) -> (RevocationSummary, Option<i64>) {
+    use crate::claim_check::{ClaimCheckOptions, RevocationInput, check_revocation};
+    use crate::signing::REASON_KEY_COMPROMISED;
+    let opts = ClaimCheckOptions {
+        now_unix,
+        ..ClaimCheckOptions::default()
+    };
+    let detail = check_revocation(claim, input, &opts).detail;
+    let mut out = RevocationSummary {
+        status: RevocationStatus::NotChecked,
+        detail,
+        lists: None,
+        revoked_at: None,
+        reason: None,
+        revoked_by: None,
+        ignored: 0,
+    };
+    let mut from_unix = None;
+    match input {
+        RevocationInput::NotChecked(_) => {}
+        RevocationInput::Absent(_) => out.status = RevocationStatus::NoList,
+        RevocationInput::Unavailable(_) => out.status = RevocationStatus::Unreadable,
+        RevocationInput::List { list, from } => {
+            out.lists = Some(from.clone());
+            let f = list.find(claim);
+            out.ignored = f.ignored.len();
+            match f.revoked {
+                Some((r, by)) => {
+                    let at = r.revoked_unix().unwrap_or(i64::MIN);
+                    out.status = if r.reason == REASON_KEY_COMPROMISED || at <= now_unix {
+                        RevocationStatus::Revoked
+                    } else {
+                        RevocationStatus::Pending
+                    };
+                    from_unix = Some(r.effective_unix().unwrap_or(i64::MIN));
+                    out.revoked_at = Some(r.revoked_at.clone());
+                    out.reason = Some(r.reason.clone());
+                    out.revoked_by = Some(
+                        match by {
+                            crate::signing::RevokedBy::ResponseKey => "response_key",
+                            crate::signing::RevokedBy::Wallet => "wallet",
+                            crate::signing::RevokedBy::Both => "both",
+                        }
+                        .to_string(),
+                    );
+                }
+                None => {
+                    if let Some(e) = seller_error {
+                        out.status = RevocationStatus::Unreadable;
+                        out.detail = format!("could not read revocations: {e}; {}", out.detail);
+                    } else {
+                        out.status = RevocationStatus::NotRevoked;
+                    }
+                }
+            }
+        }
+    }
+    (out, from_unix)
+}
+
+/// Fold the revocation state into the run's verdict: a revocation in
+/// effect fails the run, and a list that could not be read turns a pass
+/// into `inconclusive` (the claim may be revoked). Anything else leaves
+/// the verdict alone.
+pub fn apply_revocations(
+    verdict: Verdict,
+    decision: &mut SetDecision,
+    r: &RevocationSummary,
+) -> Verdict {
+    match r.status {
+        RevocationStatus::Revoked => {
+            decision.reason = format!("the claim is revoked ({}); {}", r.detail, decision.reason);
+            Verdict::Fail
+        }
+        RevocationStatus::Unreadable if verdict == Verdict::Pass => {
+            decision.reason = format!(
+                "the claim's revocations could not be checked ({}); {}",
+                r.detail, decision.reason
+            );
+            Verdict::Inconclusive
+        }
+        _ => verdict,
     }
 }
 
@@ -2668,6 +2838,7 @@ mod tests {
             served_model_id: "org/tiny".into(),
             max_skew_secs: 300,
             claim_expires_unix: None,
+            claim_revoked_unix: None,
         };
         let now = i64::try_from(tensorseed_core::time::unix_now()).unwrap();
         let st = |c: Option<&SigContext>, h: &[(String, String)], b: &[u8], m: &str| {
@@ -2700,5 +2871,189 @@ mod tests {
             st(Some(&wrong), &signed, body, "org/tiny"),
             Some(SigStatus::Invalid)
         );
+    }
+
+    #[test]
+    fn revocations_decide_the_run() {
+        use crate::claim_check::RevocationInput;
+        use crate::signing::Revocations;
+        use crate::signing::tests::{claim, key};
+
+        let c = claim();
+        let k = key();
+        let now = i64::try_from(tensorseed_core::time::unix_now()).unwrap();
+        let iso = |t: i64| {
+            chrono::DateTime::from_timestamp(t, 0)
+                .unwrap()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        };
+        let list = |reason: &str, at: i64| {
+            let mut l = Revocations::default();
+            l.upsert(
+                k.sign_revocation(&c.claim_sha256, &iso(at), reason)
+                    .unwrap(),
+            );
+            RevocationInput::List {
+                list: l,
+                from: "test".into(),
+            }
+        };
+        let pass = || {
+            let d = SetDecision {
+                rule: DECISION_RULE.into(),
+                scored: 4,
+                failed: 0,
+                fail_fraction: 0.0,
+                median_mean_abs_dev: 0.0,
+                signature_failures: 0,
+                reason: "ok".into(),
+            };
+            (Verdict::Pass, d)
+        };
+        // A response signed at `t`, checked at `t`.
+        let signed_at = |t: i64, revoked: Option<i64>| {
+            let body = br#"{"ok":true}"#;
+            let f = k.sign_response(&c.claim_sha256, "r1", "org/tiny", &iso(t), body);
+            let h: Vec<(String, String)> = f
+                .headers()
+                .iter()
+                .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
+                .collect();
+            let ctx = SigContext {
+                pubkey: k.pubkey(),
+                claim_sha256: c.claim_sha256.clone(),
+                served_model_id: "org/tiny".into(),
+                max_skew_secs: 300,
+                claim_expires_unix: None,
+                claim_revoked_unix: revoked,
+            };
+            check_signature(Some(&ctx), &h, body, Some("r1"), "org/tiny", t).unwrap()
+        };
+
+        // Revoked in the past: the run fails, and so does a fresh response.
+        let (r, from) = assess_revocations(&c, &list("superseded", now - 3600), None, now);
+        assert_eq!(r.status, RevocationStatus::Revoked);
+        assert_eq!(r.reason.as_deref(), Some("superseded"));
+        assert_eq!(r.revoked_by.as_deref(), Some("response_key"));
+        assert_eq!(from, Some(now - 3600));
+        let (v, mut d) = pass();
+        assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Fail);
+        assert!(d.reason.starts_with("the claim is revoked"), "{}", d.reason);
+        let s = signed_at(now, from);
+        assert_eq!(s.status, SigStatus::Invalid);
+        assert!(s.detail.unwrap().contains("revoked"));
+        // A response signed before that time still verifies.
+        assert_eq!(signed_at(now - 7200, from).status, SigStatus::Verified);
+
+        // key_compromised voids every response, even one signed before it
+        // and even when it is dated in the future.
+        let (r, from) = assess_revocations(&c, &list("key_compromised", now + 3600), None, now);
+        assert_eq!(r.status, RevocationStatus::Revoked);
+        assert_eq!(from, Some(i64::MIN));
+        assert_eq!(signed_at(now - 7200, from).status, SigStatus::Invalid);
+        let (v, mut d) = pass();
+        assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Fail);
+
+        // Dated in the future: a warning; responses signed now verify.
+        let (r, from) = assess_revocations(&c, &list("superseded", now + 3600), None, now);
+        assert_eq!(r.status, RevocationStatus::Pending);
+        assert!(r.detail.contains("takes effect in"), "{}", r.detail);
+        assert_eq!(signed_at(now, from).status, SigStatus::Verified);
+        let (v, mut d) = pass();
+        assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Pass);
+        assert_eq!(d.reason, "ok");
+
+        // No list (404): fine, and reported.
+        let (r, from) = assess_revocations(
+            &c,
+            &RevocationInput::Absent("https://llm.example.com/x".into()),
+            None,
+            now,
+        );
+        assert_eq!(r.status, RevocationStatus::NoList);
+        assert_eq!(from, None);
+        assert!(r.detail.contains("publishes no revocations"));
+        let (v, mut d) = pass();
+        assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Pass);
+
+        // Unreadable or malformed: a pass becomes inconclusive; a fail stays.
+        let (r, _) = assess_revocations(
+            &c,
+            &RevocationInput::Unavailable("malformed ts.claim-revocations/1".into()),
+            None,
+            now,
+        );
+        assert_eq!(r.status, RevocationStatus::Unreadable);
+        let (v, mut d) = pass();
+        assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Inconclusive);
+        let (_, mut d) = pass();
+        assert_eq!(apply_revocations(Verdict::Fail, &mut d, &r), Verdict::Fail);
+        // The seller's list failed while another list was read: unreadable
+        // unless that list revokes the claim.
+        let (r, _) = assess_revocations(
+            &c,
+            &RevocationInput::List {
+                list: Revocations::default(),
+                from: "mine.json".into(),
+            },
+            Some("HTTP 500"),
+            now,
+        );
+        assert_eq!(r.status, RevocationStatus::Unreadable);
+        let (r, _) = assess_revocations(&c, &list("stopped", now - 60), Some("HTTP 500"), now);
+        assert_eq!(r.status, RevocationStatus::Revoked);
+
+        // An entry for another claim is ignored; a forged one for this claim
+        // is counted and ignored.
+        let mut other = claim();
+        other.served_model_id = "org/other".into();
+        other.seal().unwrap();
+        let mut l = Revocations::default();
+        l.upsert(
+            k.sign_revocation(&other.claim_sha256, &iso(now - 60), "stopped")
+                .unwrap(),
+        );
+        let mut forged = k
+            .sign_revocation(&c.claim_sha256, &iso(now - 60), "stopped")
+            .unwrap();
+        forged.reason = "other".into();
+        l.revocations.push(forged);
+        let input = RevocationInput::List {
+            list: l,
+            from: "test".into(),
+        };
+        let (r, from) = assess_revocations(&c, &input, None, now);
+        assert_eq!(r.status, RevocationStatus::NotRevoked);
+        assert_eq!(r.ignored, 1);
+        assert_eq!(from, None);
+        let (v, mut d) = pass();
+        assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Pass);
+        let (r, _) = assess_revocations(&c, &list("superseded", now - 60), None, now);
+        assert_eq!(
+            assess_revocations(&other, &list("superseded", now - 60), None, now)
+                .0
+                .status,
+            RevocationStatus::NotRevoked,
+            "a revocation names one claim"
+        );
+        assert_eq!(r.status, RevocationStatus::Revoked);
+
+        // Not looked at.
+        let (r, _) = assess_revocations(
+            &c,
+            &RevocationInput::NotChecked("--no-revocations was given".into()),
+            None,
+            now,
+        );
+        assert_eq!(r.status, RevocationStatus::NotChecked);
+
+        // The report field is optional: a 0.3.0 style summary loads, and the
+        // new one round trips.
+        let j = serde_json::to_value(&r).unwrap();
+        assert_eq!(j["status"], "not_checked");
+        assert!(j.get("ignored").is_none());
+        let back: RevocationSummary = serde_json::from_value(j).unwrap();
+        assert_eq!(back, r);
     }
 }

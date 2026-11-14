@@ -14,12 +14,13 @@ use anyhow::{Context, bail};
 use tensorseed_app::challenge::{
     CALIBRATION_METHOD, CHECK_SCHEMA, Calibration, CheckOptions, CheckReference, CheckReport,
     CheckSample, Comparison, Counts, Endpoint, GEN_FILE, GEN_METHOD, GENERATOR_NOTE,
-    GENERATOR_TOOL, Generation, Generator, Outcome, REFERENCE_SCHEMA, ReferenceFile, Sampling,
-    SigContext, SigStatus, SignatureSummary, Tolerance, Verdict, calibrated_tolerance,
-    calibration_stats, decide, engine_version_line, expected_from, generate_prompts, median_steps,
-    no_prompt_cache, parse_prompt_file, parse_seed, random_32, reference_request_extra, run_checks,
-    sample_indexes,
+    GENERATOR_TOOL, Generation, Generator, Outcome, REFERENCE_SCHEMA, ReferenceFile,
+    RevocationStatus, Sampling, SigContext, SigStatus, SignatureSummary, Tolerance, Verdict,
+    apply_revocations, assess_revocations, calibrated_tolerance, calibration_stats, decide,
+    engine_version_line, expected_from, generate_prompts, median_steps, no_prompt_cache,
+    parse_prompt_file, parse_seed, random_32, reference_request_extra, run_checks, sample_indexes,
 };
+use tensorseed_app::claim_check::{revocations_url_next_to, well_known_revocations_for};
 use tensorseed_app::inference::{
     Entrypoint, LaunchPlan, PlanInput, Runtime, VerifyCopyOptions, check_extra_files,
     choose_runtime, default_model_id, find_binary, missing_engine_message, verify_copy, wait_ready,
@@ -499,6 +500,34 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             );
         }
     }
+    // Revocations of the claim: the seller's list (next to a claim read from
+    // its well-known path, else at the endpoint) plus any --revocations.
+    let revocation = match &claim {
+        Some((c, _, src)) => {
+            let seller = (!args.no_revocations).then(|| {
+                revocations_url_next_to(src)
+                    .unwrap_or_else(|| well_known_revocations_for(&args.base_url))
+            });
+            let (input, seller_err) = crate::claim_check::gather_revocations(
+                seller.as_deref(),
+                &args.revocations,
+                "--no-revocations was given".into(),
+            )
+            .await?;
+            Some(assess_revocations(
+                c,
+                &input,
+                seller_err.as_deref(),
+                crate::signing::now_unix(),
+            ))
+        }
+        None => {
+            if !args.revocations.is_empty() {
+                eprintln!("note: --revocations is ignored without a claim");
+            }
+            None
+        }
+    };
     let model_id = args.model_id.clone().unwrap_or_else(|| {
         claim.as_ref().map_or_else(
             || reference.repo.clone(),
@@ -523,6 +552,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             served_model_id: c.served_model_id.clone(),
             max_skew_secs: args.max_skew,
             claim_expires_unix: c.expires_unix()?,
+            claim_revoked_unix: revocation.as_ref().and_then(|(_, t)| *t),
         });
     }
     let opts = CheckOptions {
@@ -561,12 +591,19 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
                 &c.claim_sha256[..16]
             );
         }
+        if let Some((r, _)) = &revocation {
+            println!("  revocations: {} ({})", r.status.as_str(), r.detail);
+        }
     }
     let results = tokio::select! {
         r = run_checks(&ep, &chosen, &reference.sampling, &opts) => r,
         _ = tokio::signal::ctrl_c() => bail!("interrupted"),
     };
-    let (verdict, decision) = decide(&results, &tolerance);
+    let (verdict, mut decision) = decide(&results, &tolerance);
+    let revocation = revocation.map(|(r, _)| r);
+    let verdict = revocation
+        .as_ref()
+        .map_or(verdict, |r| apply_revocations(verdict, &mut decision, r));
     let counts = Counts::of(&results);
     let (verified, invalid, absent, unverifiable) = SignatureSummary::count(&results);
     let signatures = (claim.is_some() || unverifiable > 0).then(|| SignatureSummary {
@@ -606,6 +643,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             tolerance_source: Some(tolerance_source.to_string()),
             counts,
             signatures,
+            revocation,
             challenges: results,
             checked_at: tensorseed_core::time::now_rfc3339(),
         };
@@ -653,6 +691,20 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             counts.unsupported
         );
         println!("  {}", decision.reason);
+        if let Some(r) = &revocation {
+            match r.status {
+                RevocationStatus::Pending => {
+                    eprintln!("warning: {}", r.detail);
+                }
+                RevocationStatus::Unreadable => eprintln!(
+                    "note: pass --no-revocations to check without the seller's revocation list"
+                ),
+                RevocationStatus::NotRevoked if r.ignored > 0 => {
+                    eprintln!("warning: {}", r.detail);
+                }
+                _ => {}
+            }
+        }
         if let Some(s) = &signatures {
             println!(
                 "signatures: {} verified, {} invalid, {} absent, {} unverifiable{}",

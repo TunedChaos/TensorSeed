@@ -573,7 +573,7 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
         std::fs::read(&args.body).with_context(|| format!("reading {}", args.body.display()))?;
     let now = now_unix();
     let mut sources = args.revocations.clone();
-    if let Some(u) = revocations_url_next_to(&source) {
+    if let Some(u) = revocations_url_next_to(&source).filter(|_| !args.no_revocations) {
         sources.insert(0, u);
     }
     let (revs, rev_from, _) = read_revocation_lists(&sources).await?;
