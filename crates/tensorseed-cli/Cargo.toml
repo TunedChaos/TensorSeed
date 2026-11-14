@@ -1,6 +1,6 @@
 [package]
 name = "tensorseed-cli"
-description = "Tensorseed command line tool: publish, pull, and seed verifiable model mirrors."
+description = "Tensorseed command line tool. Download, seed, and serve AI models you can verify."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

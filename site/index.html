@@ -3,26 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tensorseed: a decentralized, verifiable package manager for open AI models and datasets</title>
-  <meta name="description" content="Tensorseed mirrors Hugging Face models and datasets, verifies every byte, and serves them from a signed catalog over BitTorrent v2 and HTTP or S3 mirrors.">
+  <title>Tensorseed: download, seed, and serve AI models you can verify</title>
+  <meta name="description" content="Download, seed, and serve AI models you can verify. Tensorseed distributes Hugging Face models and datasets from a signed, Chia anchored catalog over BitTorrent v2 and HTTP or S3 mirrors, checks every byte, and can launch and vouch for an OpenAI compatible engine you install separately.">
   <link rel="stylesheet" href="/styles.css">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body>
   <header class="wrap">
     <p class="brand">Tensorseed</p>
-    <p class="lede">A decentralized, verifiable package manager for open AI models and datasets.</p>
+    <p class="lede">Download, seed, and serve AI models you can verify.</p>
+    <p class="sublede">Get the exact model. Prove you&rsquo;re serving it.</p>
   </header>
 
   <main class="wrap">
     <section>
       <h1>What it is</h1>
       <p>
-        Tensorseed is a tool that mirrors Hugging Face models and datasets and
-        verifies them. Bytes move over BitTorrent v2 and hybrid torrents, plus
-        HTTP and S3-compatible mirrors. A signed catalog sits on top, so you
-        can find a revision, check its signature, and fetch the same files from
-        more than one place.
+        Tensorseed distributes verified weights. It mirrors Hugging Face
+        models and datasets, and moves the bytes over BitTorrent v2 and
+        hybrid torrents, plus HTTP and S3-compatible mirrors. A signed
+        catalog sits on top, so you can find a revision, check its
+        signature, and fetch the same files from more than one place.
+      </p>
+      <p>
+        Optionally, Tensorseed also launches and vouches for an OpenAI
+        compatible inference engine that you install separately (llama.cpp
+        or vLLM): it serves only a copy that verified against the signed
+        catalog, and can sign every response so clients can check which
+        exact weights answered. See
+        <a href="#inference">Serve inference</a>.
       </p>
       <p>
         Chia DataLayer is the source of truth for the catalog: every catalog

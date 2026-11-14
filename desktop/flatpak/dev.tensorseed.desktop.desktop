@@ -7,7 +7,7 @@
 Type=Application
 Name=Tensorseed Desktop
 GenericName=Model and Dataset Seeder
-Comment=Browse, pull, verify, and seed Tensorseed models and datasets
+Comment=Download, seed, and serve AI models you can verify
 Exec=tensorseed-desktop %u
 Icon=dev.tensorseed.desktop
 Terminal=false

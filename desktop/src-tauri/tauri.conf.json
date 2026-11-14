@@ -32,7 +32,7 @@
     "active": true,
     "targets": ["deb", "appimage"],
     "category": "Utility",
-    "shortDescription": "Browse, pull, verify, and seed Tensorseed catalogs",
+    "shortDescription": "Download, seed, and serve AI models you can verify",
     "longDescription": "Tensorseed Desktop browses signed, Chia anchored Tensorseed catalogs of open Hugging Face models and datasets, and verifies, pulls, and seeds them natively.",
     "copyright": "Copyright 2026 Tuned Chaos",
     "license": "AGPL-3.0-or-later",

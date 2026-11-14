@@ -1,8 +1,13 @@
 # Tensorseed
 
-**A decentralized, verifiable package manager for open AI models and datasets.**
+**Download, seed, and serve AI models you can verify.**
 
-Verifiable, chain anchored mirrors of open Hugging Face models and datasets, shared over BitTorrent v2.
+Tensorseed distributes verified weights: chain anchored mirrors of open
+Hugging Face models and datasets, shared over BitTorrent v2 and HTTP
+mirrors and checked byte for byte against a signed catalog. Optionally it
+launches and vouches for an OpenAI compatible engine you install
+separately (llama.cpp or vLLM), serving only a verified copy and signing
+its responses.
 
 Website: [tensorseed.dev](https://tensorseed.dev).
 Catalog explorer: [explore.tensorseed.dev](https://explore.tensorseed.dev).
@@ -190,6 +195,8 @@ the rights to without loosening it for anything else.
 Downloads resume after interruption; `tensorseed jobs` shows their state.
 
 ### Serve inference from a verified copy
+
+*Get the exact model. Prove you're serving it.*
 
 `tensorseed serve-inference <dir|org/name>` re-hashes a pulled copy against
 the signed manifest, refuses to serve it if anything differs, checks the

@@ -6,7 +6,7 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-or-later</project_license>
   <name>Tensorseed Desktop</name>
-  <summary>Browse, pull, verify, and seed open models and datasets</summary>
+  <summary>Download, seed, and serve AI models you can verify</summary>
   <developer id="dev.tensorseed">
     <name>Tuned Chaos</name>
   </developer>
@@ -22,6 +22,7 @@
       <li>Pull, verify, and seed models and datasets natively</li>
       <li>Keep seeding from the system tray</li>
       <li>Shares its config and state with the tensorseed command line tool</li>
+      <li>Serve a verified copy through an OpenAI compatible engine you install separately, with the tensorseed command line tool installed on the host</li>
     </ul>
   </description>
   <launchable type="desktop-id">dev.tensorseed.desktop.desktop</launchable>

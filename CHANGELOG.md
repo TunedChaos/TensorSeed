@@ -14,6 +14,13 @@
   config), pulls default to `tensorseed` under the download directory,
   Desktop skips its runtime scheme registration, and the tray icon is
   written where the host can read it. Not published anywhere.
+- New tagline, "Download, seed, and serve AI models you can verify.", with
+  "Get the exact model. Prove you're serving it." as the second line: in
+  the README, on the website (title, description, hero), in the CLI
+  package description, and in Desktop's AppStream summary and desktop
+  file comment. The README and website intros now say that Tensorseed
+  distributes verified weights and can optionally launch and vouch for
+  an OpenAI compatible engine installed separately.
 - Inference engines are documented as a separate install: the README
   (new Install section), the website, `docs/SELL-INFERENCE.md` (section 3,
   "Install an inference engine"), `docs/RUN-A-MIRROR.md`, the Desktop
