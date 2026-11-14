@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate site/xch-donate.svg from site/xch-donate-address.txt.
+"""Generate site/static/xch-donate.svg from site/xch-donate-address.txt.
 
 Run from the repo root. Needs the segno package (pure Python, no network
 at encode time). deploy.sh installs it into a local venv if needed.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 SITE = Path(__file__).resolve().parent.parent / "site"
 ADDRESS_FILE = SITE / "xch-donate-address.txt"
-OUTPUT = SITE / "xch-donate.svg"
+OUTPUT = SITE / "static" / "xch-donate.svg"
 
 
 def main() -> int:

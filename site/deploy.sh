@@ -9,8 +9,10 @@
 # This script never prints the token. It only checks that the variable is set.
 #
 # Pages projects:
-#   tensorseed          site/                 -> tensorseed.dev
+#   tensorseed          site/build            -> tensorseed.dev
 #                                               tensorseed.pages.dev
+#                       (the SvelteKit site in site/, prerendered, plus
+#                       copies of site/catalog and site/mirror)
 #   tensorseed-catalog  site/catalog          -> catalog.tensorseed.dev
 #                                               tensorseed-catalog.pages.dev
 #   tensorseed-explorer explorer/dist         -> explore.tensorseed.dev
@@ -48,14 +50,15 @@ if ! python3 -c "import segno" >/dev/null 2>&1; then
 else
   python3 "${ROOT}/scripts/generate-xch-qr.py"
 fi
-ADDR="$(tr -d "[:space:]" < "${ROOT}/site/xch-donate-address.txt")"
-if ! grep -F -q "${ADDR}" "${ROOT}/site/index.html"; then
-  echo "site/index.html is missing the XCH address from site/xch-donate-address.txt" >&2
-  exit 1
-fi
 
-echo "Deploying tensorseed from site/"
-pnpm dlx wrangler pages deploy site --project-name tensorseed --branch main
+echo "Building the tensorseed site into site/build"
+(cd site && pnpm install --frozen-lockfile && pnpm check && pnpm build)
+# site/scripts/assemble.mjs (run by pnpm build) checks that every route,
+# 404.html, the catalog copy, and the XCH address from
+# site/xch-donate-address.txt are in site/build.
+
+echo "Deploying tensorseed from site/build"
+pnpm dlx wrangler pages deploy site/build --project-name tensorseed --branch main
 
 echo "Deploying tensorseed-catalog from site/catalog"
 pnpm dlx wrangler pages deploy site/catalog --project-name tensorseed-catalog --branch main

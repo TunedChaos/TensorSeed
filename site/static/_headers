@@ -12,6 +12,11 @@
 /*.html
   Cache-Control: public, max-age=120, must-revalidate
 
+# Site scripts and styles have content hashes in their names and never change.
+/_app/immutable/*
+  ! Cache-Control
+  Cache-Control: public, max-age=31536000, immutable
+
 # Catalog documents may also be mirrored under /catalog/ on this project.
 # Short TTL for the mutable head and the published mirror list.
 /catalog/:name/head.json

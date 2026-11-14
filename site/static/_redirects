@@ -1,0 +1,14 @@
+# Tensorseed site redirects (Cloudflare Pages).
+# https://developers.cloudflare.com/pages/configuration/redirects/
+# Hash links into the old one page site (/#download) never reach the
+# server; the home page forwards those in the browser.
+
+/inference             /serve                  301
+/verify-release        /verify#release         301
+/sponsor               /support                301
+/license               /support#license        301
+/docs                  /guides                 301
+/docs/RUN-A-MIRROR.md              /guides/run-a-mirror              301
+/docs/PUBLISH-A-CATALOG.md         /guides/publish-a-catalog         301
+/docs/SELL-INFERENCE.md            /guides/sell-inference            301
+/docs/INTEGRATE-A-MARKETPLACE.md   /guides/integrate-a-marketplace   301
