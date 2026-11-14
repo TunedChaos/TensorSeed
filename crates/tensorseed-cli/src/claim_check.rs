@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use tensorseed_app::claim_check::{
-    ClaimCheckOptions, ClaimReport, ClaimVerdict, Origin, Status, check_claim_bytes,
+    ClaimCheckOptions, ClaimReport, ClaimVerdict, Origin, RevocationInput, Status,
+    check_claim_bytes, revocations_url_next_to,
 };
 use tensorseed_app::config::Config;
 use tensorseed_app::signing::WELL_KNOWN_CLAIM;
@@ -80,6 +81,49 @@ async fn read_claim(src: &str) -> anyhow::Result<(Vec<u8>, Origin)> {
     Ok((buf, Origin::Url(final_url)))
 }
 
+/// Revocations for a claim read from `origin`: the seller's list next to
+/// a claim fetched from its well-known path (a read failure there is a
+/// warning), plus the lists passed with `--revocations` (a read failure
+/// there is an error).
+async fn revocations(origin: &Origin, extra: &[String]) -> anyhow::Result<RevocationInput> {
+    let seller = match origin {
+        Origin::Url(u) => revocations_url_next_to(u),
+        Origin::File(_) => None,
+    };
+    let (mut list, mut from, mut absent) = crate::signing::read_revocation_lists(extra).await?;
+    let mut seller_err = None;
+    if let Some(u) = &seller {
+        match crate::signing::read_revocation_lists(std::slice::from_ref(u)).await {
+            Ok((l, f, a)) => {
+                list.merge(l);
+                from.extend(f);
+                absent.extend(a);
+            }
+            Err(e) => seller_err = Some(format!("{e:#}")),
+        }
+    }
+    Ok(if !from.is_empty() {
+        RevocationInput::List {
+            list,
+            from: from.join(", "),
+        }
+    } else if let Some(e) = seller_err {
+        RevocationInput::Unavailable(e)
+    } else if !absent.is_empty() {
+        RevocationInput::Absent(absent.join(", "))
+    } else {
+        RevocationInput::NotChecked(match origin {
+            Origin::File(_) => {
+                "read from a file; pass --revocations, or check the URL, to check revocations"
+                    .into()
+            }
+            Origin::Url(_) => {
+                "the claim was not read from its well-known path; pass --revocations".into()
+            }
+        })
+    })
+}
+
 /// `tensorseed check-claim`.
 pub async fn run(cfg: &Config, args: &CheckClaimArgs) -> ExitCode {
     let opts = ClaimCheckOptions {
@@ -87,9 +131,18 @@ pub async fn run(cfg: &Config, args: &CheckClaimArgs) -> ExitCode {
         expect_wallet: args.expect_wallet.clone(),
         expect_url: args.expect_url.clone(),
         require_fresh: args.require_fresh,
+        require_expiry: args.require_expiry,
+        now_unix: crate::signing::now_unix(),
     };
     let rep = match read_claim(&args.source).await {
         Ok((raw, origin)) => {
+            let revs = match revocations(&origin, &args.revocations).await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: {e:#}");
+                    return ExitCode::from(2);
+                }
+            };
             check_claim_bytes(
                 cfg,
                 &args.source,
@@ -97,6 +150,7 @@ pub async fn run(cfg: &Config, args: &CheckClaimArgs) -> ExitCode {
                 origin,
                 args.catalog.as_deref(),
                 args.no_wait,
+                &revs,
                 &opts,
             )
             .await
@@ -153,6 +207,9 @@ fn print_text(r: &ClaimReport) {
             "not verified"
         };
         println!("  wallet   {w} ({v})");
+    }
+    if let Some(x) = &r.expires_at {
+        println!("  expires  {x}");
     }
     if let Some(c) = &r.catalog {
         println!("  catalog  {c}");

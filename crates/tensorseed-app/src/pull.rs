@@ -16,12 +16,15 @@ use tensorseed_catalog::signed::SignedEntry;
 use tensorseed_core::hash::ExpectedDigest;
 use tensorseed_core::keys::{RepoRef, RepoType, check_commit};
 use tensorseed_core::manifest::{
-    FilePage, LatestPointer, Manifest, SCHEMA_FILEPAGE, SCHEMA_LATEST, SCHEMA_TOMBSTONE, Tombstone,
+    LatestPointer, Manifest, SCHEMA_LATEST, SCHEMA_TOMBSTONE, Tombstone,
 };
 use tensorseed_core::paths::join_slash;
 use tensorseed_core::verify::{ExpectedFile, META_DIR};
 use tensorseed_fetch::state::StateDb;
 use tensorseed_hf::HfClient;
+
+pub use tensorseed_verify::manifest::{check_manifest_identity, tombstone_covers};
+use tensorseed_verify::manifest::{merge_file_pages, verify_manifest_entry};
 
 use crate::backend::{open_reader, pinned_key, read_verified};
 use crate::config::{Config, expand};
@@ -162,12 +165,6 @@ pub struct Resolved {
     pub taken_down_in: Vec<String>,
 }
 
-/// True when tombstone `t` covers `commit` (an empty list covers all).
-#[must_use]
-pub fn tombstone_covers(t: &Tombstone, commit: &str) -> bool {
-    t.revisions.is_empty() || t.revisions.iter().any(|r| r == commit)
-}
-
 /// Resolve a manifest through the configured catalog.
 ///
 /// # Errors
@@ -254,28 +251,15 @@ async fn catalog_manifest_one(
     let mut manifest = Manifest::from_json(entry.value.as_bytes()).context("parsing manifest")?;
     check_manifest_identity(&manifest, repo, &commit)?;
     if manifest.file_pages > 0 {
-        let mut files = Vec::new();
+        let mut pages = Vec::new();
         for page in 0..manifest.file_pages {
             let k = repo.file_page_key(&commit, page)?;
             let Some(e) = read_verified(b, &id, &k, &pk, name).await? else {
                 bail!("missing file page {k}");
             };
-            let p: FilePage =
-                serde_json::from_str(&e.value).with_context(|| format!("parsing {k}"))?;
-            if p.schema != SCHEMA_FILEPAGE || p.page != page {
-                bail!("file page {k} has the wrong schema or page number");
-            }
-            for f in &p.files {
-                f.validate()?;
-            }
-            files.extend(p.files);
+            pages.push(e.value);
         }
-        let bytes: u64 = files.iter().map(|f| f.size).sum();
-        if manifest.totals.files != files.len() as u64 || manifest.totals.bytes != bytes {
-            bail!("file pages do not match manifest totals");
-        }
-        manifest.files = files;
-        manifest.file_pages = 0;
+        merge_file_pages(&mut manifest, &pages)?;
     }
     Ok(Resolved {
         manifest,
@@ -416,27 +400,6 @@ async fn resolve_across(
     Ok(resolved)
 }
 
-/// Check that a manifest is for `repo` at `commit`.
-///
-/// # Errors
-///
-/// Fails when the repo or commit differs.
-pub fn check_manifest_identity(m: &Manifest, repo: &RepoRef, commit: &str) -> anyhow::Result<()> {
-    if m.repo.id != repo.id || m.repo.repo_type != repo.repo_type {
-        bail!(
-            "manifest is for {} {}, expected {} {}",
-            m.repo.repo_type,
-            m.repo.id,
-            repo.repo_type,
-            repo.id
-        );
-    }
-    if m.hf_commit != commit {
-        bail!("manifest is for commit {}, expected {commit}", m.hf_commit);
-    }
-    Ok(())
-}
-
 /// Parse manifest bytes: a signed entry (verified against the pinned key, if
 /// one is configured) or a plain manifest (accepted with a warning).
 ///
@@ -447,17 +410,8 @@ pub fn parse_manifest_bytes(cfg: &Config, bytes: &[u8], what: &str) -> anyhow::R
     if let Ok(entry) = SignedEntry::from_bytes(bytes) {
         let pk = pinned_key(cfg)
             .context("a signed manifest needs catalog.publisher_pubkey to verify")?;
-        entry
-            .verify(&pk, &cfg.catalog.name)
+        let manifest = verify_manifest_entry(&entry, &pk, &cfg.catalog.name)
             .with_context(|| format!("verifying the signature on {what}"))?;
-        let manifest = Manifest::from_json(entry.value.as_bytes())?;
-        let repo = RepoRef::new(manifest.repo.repo_type, manifest.repo.id.clone())?;
-        if entry.key != repo.manifest_key(&manifest.hf_commit)? {
-            bail!(
-                "{what}: signed key {:?} does not match the manifest it carries",
-                entry.key
-            );
-        }
         if manifest.file_pages > 0 {
             bail!("{what}: paged manifests need the catalog (file pages are separate entries)");
         }

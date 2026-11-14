@@ -13,7 +13,11 @@
 //! responses (HTML, plain text) are passed through unsigned, with the
 //! request id echoed. `Accept-Encoding` is not forwarded, so the signed
 //! bytes are the identity-encoded body. The claim is served at
-//! [`WELL_KNOWN_CLAIM`](crate::signing::WELL_KNOWN_CLAIM).
+//! [`WELL_KNOWN_CLAIM`], and the
+//! `revocations.json` next to the claim file (if any) at
+//! [`WELL_KNOWN_REVOCATIONS`],
+//! read on every request so a new revocation is served at once. The proxy
+//! refuses to start with an expired or revoked claim.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -28,8 +32,9 @@ use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
 
 use crate::signing::{
-    H_CLAIM, H_MODEL, H_REQUEST_ID, H_SIGNATURE_MODE, MODE_SSE_TRAILER, ResponseKey,
-    WELL_KNOWN_CLAIM, claim_from_bytes, load_claim, mint_request_id, sse_trailer, valid_request_id,
+    H_CLAIM, H_MODEL, H_REQUEST_ID, H_SIGNATURE_MODE, MODE_SSE_TRAILER, ResponseKey, Revocations,
+    WELL_KNOWN_CLAIM, WELL_KNOWN_REVOCATIONS, claim_from_bytes, load_claim, load_revocations,
+    mint_request_id, revocations_path, sse_trailer, valid_request_id,
 };
 
 /// Largest request or non-streaming response body (bytes).
@@ -67,9 +72,27 @@ pub struct SignProxy {
 ///
 /// # Errors
 ///
-/// Fails when the claim does not verify or names another key.
+/// Fails when the claim does not verify, names another key, has expired,
+/// or is revoked in the `revocations.json` next to it.
 pub fn check_claim_key(claim_path: &Path, key: &ResponseKey) -> anyhow::Result<(String, String)> {
     let (claim, _) = load_claim(claim_path)?;
+    let now = i64::try_from(tensorseed_core::time::unix_now()).unwrap_or(i64::MAX);
+    if let Some(x) = claim.expired_at(now) {
+        bail!(
+            "the claim at {} expired at {x}; write a fresh one with `tensorseed claim-serving`",
+            claim_path.display()
+        );
+    }
+    let revs = load_revocations(&revocations_path(claim_path))?;
+    if let Some(t) = revs.revoked_from(&claim)
+        && t <= now
+    {
+        bail!(
+            "the claim at {} is revoked in {}; write a new claim to serve again",
+            claim_path.display(),
+            revocations_path(claim_path).display()
+        );
+    }
     if claim.response_key.pubkey != key.pubkey_hex() {
         bail!(
             "the claim at {} names response key {}, but the loaded key is {}; write a new claim for this key",
@@ -151,6 +174,10 @@ impl SignProxy {
     ) -> anyhow::Result<()> {
         let app = axum::Router::new()
             .route(WELL_KNOWN_CLAIM, axum::routing::get(claim_handler))
+            .route(
+                WELL_KNOWN_REVOCATIONS,
+                axum::routing::get(revocations_handler),
+            )
             .fallback(proxy_handler)
             .with_state(self.state);
         axum::serve(self.listener, app)
@@ -188,6 +215,29 @@ async fn claim_handler(State(st): State<Arc<ProxyState>>) -> Response {
         Err(_) => json_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "claim file does not verify",
+        ),
+    }
+}
+
+async fn revocations_handler(State(st): State<Arc<ProxyState>>) -> Response {
+    let path = revocations_path(&st.claim_path);
+    let raw = match tokio::fs::read(&path).await {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return json_error(StatusCode::NOT_FOUND, "no revocations");
+        }
+        Err(_) => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "revocation list is not readable",
+            );
+        }
+    };
+    match Revocations::parse(&raw) {
+        Ok(_) => ([(header::CONTENT_TYPE, "application/json")], raw).into_response(),
+        Err(_) => json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "revocation list is malformed",
         ),
     }
 }
@@ -339,6 +389,7 @@ async fn read_capped(mut r: reqwest::Response, max: usize) -> anyhow::Result<Byt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signing::ClaimFile;
     use crate::signing::tests::{claim, key};
     use crate::signing::{
         DEFAULT_MAX_SKEW_SECS, Expect, H_BODY, H_SIGNATURE, SigError, extract_signed, verify_fields,
@@ -443,6 +494,8 @@ mod tests {
                 requested_model: Some("org/tiny"),
                 now_unix: i64::try_from(tensorseed_core::time::unix_now()).unwrap(),
                 max_skew_secs: DEFAULT_MAX_SKEW_SECS,
+                claim_expires_unix: None,
+                claim_revoked_unix: None,
             },
         )
     }

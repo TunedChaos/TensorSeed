@@ -522,6 +522,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             claim_sha256: c.claim_sha256.clone(),
             served_model_id: c.served_model_id.clone(),
             max_skew_secs: args.max_skew,
+            claim_expires_unix: c.expires_unix()?,
         });
     }
     let opts = CheckOptions {

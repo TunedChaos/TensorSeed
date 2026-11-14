@@ -818,6 +818,9 @@ pub struct SigContext {
     pub served_model_id: String,
     /// Allowed timestamp skew (seconds).
     pub max_skew_secs: u64,
+    /// The claim's `expires_at` (Unix seconds); responses signed after it
+    /// fail.
+    pub claim_expires_unix: Option<i64>,
 }
 
 /// Signature status of one response.
@@ -897,6 +900,8 @@ pub fn check_signature(
         requested_model: Some(requested_model),
         now_unix,
         max_skew_secs: ctx.max_skew_secs,
+        claim_expires_unix: ctx.claim_expires_unix,
+        claim_revoked_unix: None,
     };
     Some(match verify_fields(&f, body, &e) {
         Ok(()) => SigResult {
@@ -2662,6 +2667,7 @@ mod tests {
             claim_sha256: claim.clone(),
             served_model_id: "org/tiny".into(),
             max_skew_secs: 300,
+            claim_expires_unix: None,
         };
         let now = i64::try_from(tensorseed_core::time::unix_now()).unwrap();
         let st = |c: Option<&SigContext>, h: &[(String, String)], b: &[u8], m: &str| {

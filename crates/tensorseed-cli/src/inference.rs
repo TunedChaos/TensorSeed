@@ -16,7 +16,7 @@ use tensorseed_app::inference::{
     missing_engine_message, verify_copy, wait_ready,
 };
 use tensorseed_app::sign_proxy::SignProxy;
-use tensorseed_app::signing::{ClaimExtras, ServedClaim, WELL_KNOWN_CLAIM, claim_path};
+use tensorseed_app::signing::{ClaimExtras, ClaimFile, ServedClaim, WELL_KNOWN_CLAIM, claim_path};
 use tensorseed_core::commercial::DISCLAIMER;
 use tensorseed_core::keys::{RepoRef, RepoType};
 use tensorseed_core::paths::native_path;
@@ -271,7 +271,7 @@ pub async fn run(
             .unwrap_or_else(|| format!("{} (version unknown)", runtime.label())),
     };
     let proxy_base = local_base_url(listen);
-    let now = tensorseed_core::time::now_rfc3339();
+    let (now, expires_at) = crate::signing::claim_times(args.expires_in);
     let record = ServedWeights::from_parts(
         &copy,
         runtime,
@@ -291,6 +291,7 @@ pub async fn run(
             seller_wallet: args.wallet.clone(),
             logprobs: args.logprobs.into(),
             started_at: now,
+            expires_at,
         },
     )?;
     let cpath = claim_path(&copy.dir);

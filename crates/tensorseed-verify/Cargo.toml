@@ -1,6 +1,6 @@
 [package]
 name = "tensorseed-verify"
-description = "Tensorseed catalog verification: minisign, signed-file chain, and chain proofs (no network)."
+description = "Verify-only Tensorseed: catalog heads, manifests, served-weights claims, revocations, and signed responses (no network)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,16 +17,23 @@ keygen = ["dep:getrandom", "dep:scrypt"]
 [dependencies]
 base64.workspace = true
 blake2.workspace = true
-ed25519-dalek.workspace = true
+# RFC 3339 parsing only (no clock, so it builds for wasm32).
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# No `std` (see k256 below).
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 getrandom = { workspace = true, optional = true }
 hex.workspace = true
+# No `std`: it would pull in OS randomness, which wasm32 lacks.
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 scrypt = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sha3.workspace = true
 tensorseed-core = { workspace = true, default-features = false }
 thiserror.workspace = true
 toml.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

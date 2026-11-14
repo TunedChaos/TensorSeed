@@ -160,6 +160,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::CheckClaim(args) => Ok(claim_check::run(&load()?, args).await),
         Command::ResponseKey(cmd) => signing::key_cmd(&path, cmd),
         Command::ClaimServing(args) => signing::claim_serving(&load()?, &path, args).await,
+        Command::RevokeClaim(args) => signing::revoke_claim(&path, args),
         Command::SignResponses(args) => signing::sign_responses(&path, args).await,
         Command::VerifyResponse(args) => Ok(signing::verify_response(args).await),
         Command::Show {

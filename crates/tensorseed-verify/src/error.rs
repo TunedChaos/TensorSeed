@@ -53,6 +53,10 @@ pub enum Error {
     /// Operation does not exist for this backend.
     #[error("not supported by this backend: {0}")]
     Unsupported(&'static str),
+    /// A served-weights claim, revocation, or wallet signature is invalid.
+    /// The message is complete on its own.
+    #[error("{0}")]
+    Claim(String),
     /// Feature not implemented yet.
     #[error("not implemented yet: {0}")]
     NotImplemented(&'static str),

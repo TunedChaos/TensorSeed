@@ -2572,6 +2572,177 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     .await;
     assert_eq!(code(&o), 2, "no claim served: an error, not a verdict");
 
+    // No revocations yet: the proxy answers 404 and the claim passes.
+    let revs_url = format!("{proxy}/.well-known/tensorseed/revocations.json");
+    let r = http.get(&revs_url).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    let o = run(
+        &cfg,
+        &["check-claim", &format!("{proxy}/v1"), "--no-wait", "--json"],
+        &[],
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let st = |v: &serde_json::Value, name: &str| {
+        v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .map(|c| c["status"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("no {name} in {v}"))
+    };
+    assert_eq!(st(&v, "revocation"), "pass", "{v}");
+    assert_eq!(st(&v, "expiry"), "warn", "this claim has no expires_at");
+    assert_eq!(v["revoked"], false);
+
+    // The wallet can revoke too: --print-message shows what to sign.
+    let at = "2026-01-01T00:00:00Z";
+    let o = run(
+        &cfg,
+        &[
+            "revoke-claim",
+            claimp.to_str().unwrap(),
+            "--at",
+            at,
+            "--print-message",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let msg =
+        format!("ts.claim-revocation/1\nclaim_sha256={hash}\nrevoked_at={at}\nreason=superseded\n");
+    assert!(stdout(&o).contains(&msg), "{}", stdout(&o));
+    assert!(!claimp.with_file_name("revocations.json").exists());
+    // A bad reason or time is refused before anything is written.
+    let o = run(
+        &cfg,
+        &[
+            "revoke-claim",
+            claimp.to_str().unwrap(),
+            "--reason",
+            "Bad Reason",
+        ],
+        &[],
+    )
+    .await;
+    assert_ne!(code(&o), 0);
+    // Revoke with the response key and the wallet, dated in the past.
+    let o = run(
+        &cfg,
+        &[
+            "revoke-claim",
+            claimp.to_str().unwrap(),
+            "--at",
+            at,
+            "--wallet-sig",
+            &dev_wallet_sign(&msg),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("the response key and the seller wallet"),
+        "{}",
+        stdout(&o)
+    );
+    let listp = claimp.with_file_name("revocations.json");
+    let list: serde_json::Value = serde_json::from_slice(&std::fs::read(&listp).unwrap()).unwrap();
+    assert_eq!(list["schema"], "ts.claim-revocations/1");
+    assert_eq!(list["revocations"][0]["claim_sha256"], hash.as_str());
+    assert_eq!(list["revocations"][0]["revoked_at"], at);
+    // The running proxy serves the new list at once.
+    let r = http.get(&revs_url).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.bytes().await.unwrap(), std::fs::read(&listp).unwrap());
+    // check-claim finds it next to the claim and fails; from a file it
+    // needs --revocations.
+    let o = run(
+        &cfg,
+        &["check-claim", &format!("{proxy}/v1"), "--no-wait", "--json"],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(st(&v, "revocation"), "fail");
+    assert_eq!(v["revoked"], true);
+    let o = run(
+        &cfg,
+        &[
+            "check-claim",
+            claimp.to_str().unwrap(),
+            "--no-wait",
+            "--json",
+        ],
+        &[],
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(st(&v, "revocation"), "skip");
+    let o = run(
+        &cfg,
+        &[
+            "check-claim",
+            claimp.to_str().unwrap(),
+            "--no-wait",
+            "--json",
+            "--revocations",
+            listp.to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    // A response signed after the revocation time no longer verifies.
+    let o = verify(proxy.clone(), bp.clone(), vec!["--json".into()]).await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["error"], "claim_revoked");
+    let o = verify(
+        claimp.to_str().unwrap().into(),
+        bp.clone(),
+        vec!["--revocations".into(), listp.to_str().unwrap().into()],
+    )
+    .await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    // A revoked claim is never reused: writing again makes a new one.
+    let o = run(
+        &cfg,
+        &[
+            "claim-serving",
+            dir_s,
+            "--no-wait",
+            "--engine-version",
+            "llama.cpp b1-test",
+            "--base-url",
+            &format!("{proxy}/v1"),
+            "--public-url",
+            "https://llm.example.com/v1",
+            "--wallet",
+            DEV_WALLET,
+            "--expires-in",
+            "30d",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(!stdout(&o).contains("kept it"), "{}", stdout(&o));
+    let c: serde_json::Value = serde_json::from_slice(&std::fs::read(&claimp).unwrap()).unwrap();
+    assert_ne!(c["claim_sha256"], hash.as_str());
+    assert!(c["expires_at"].as_str().is_some());
+    assert!(stdout(&o).contains("expires      "), "{}", stdout(&o));
+    let o = run(
+        &cfg,
+        &["claim-serving", dir_s, "--no-wait", "--expires-in", "5m"],
+        &[],
+    )
+    .await;
+    assert_ne!(code(&o), 0, "under an hour is refused");
+
     let _ = child.kill().await;
     let out = child.wait_with_output().await.unwrap();
     let all = format!(

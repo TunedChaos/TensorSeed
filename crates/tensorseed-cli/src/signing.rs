@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026 Tuned Chaos
 
-//! `tensorseed response-key`, `claim-serving`, `sign-responses`, and
-//! `verify-response` (docs/plans/verified-serving.md sections 3 and 5.1).
+//! `tensorseed response-key`, `claim-serving`, `revoke-claim`,
+//! `sign-responses`, and `verify-response`
+//! (docs/plans/verified-serving.md sections 3 and 5.1).
 //! The logic lives in [`tensorseed_app::signing`] and
 //! [`tensorseed_app::sign_proxy`]; this module resolves paths and prints.
 
@@ -12,21 +13,24 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use tensorseed_app::claim_check::{revocations_url_next_to, rough_duration};
 use tensorseed_app::inference::{
     Runtime, ServedWeights, VerifyCopyOptions, check_extra_files, choose_runtime, default_model_id,
     find_binary, license_gate, missing_engine_message, verify_copy,
 };
 use tensorseed_app::sign_proxy::SignProxy;
 use tensorseed_app::signing::{
-    ClaimCheck, ClaimExtras, DEFAULT_MAX_SKEW_SECS, Expect, LogprobsMode, RESPONSE_KEY_FILE,
-    ResponseKey, ServedClaim, WELL_KNOWN_CLAIM, WalletStatus, claim_from_bytes, claim_path,
-    extract_signed, load_claim, verify_fields,
+    ClaimCheck, ClaimExtras, ClaimFile, DEFAULT_MAX_SKEW_SECS, Expect, LogprobsMode,
+    RESPONSE_KEY_FILE, ResponseKey, Revocations, ServedClaim, WELL_KNOWN_CLAIM,
+    WELL_KNOWN_REVOCATIONS, WalletStatus, claim_from_bytes, claim_path, extract_signed, load_claim,
+    load_revocations, parse_rfc3339, revocation_message, revocations_path, valid_reason,
+    verify_fields, write_revocations,
 };
 use tensorseed_core::commercial::DISCLAIMER;
 
 use crate::challenge::runtime_version;
 use crate::cli::{
-    ClaimServingArgs, LogprobsArg, ResponseKeyCmd, RuntimeArg, SignResponsesArgs,
+    ClaimServingArgs, LogprobsArg, ResponseKeyCmd, RevokeClaimArgs, RuntimeArg, SignResponsesArgs,
     VerifyResponseArgs,
 };
 use crate::config::Config;
@@ -102,6 +106,10 @@ fn print_claim_summary(path: &Path, c: &ServedClaim, check: &ClaimCheck) {
     );
     println!("  engine       {} {}", c.runtime.label(), c.engine_version);
     println!("  response key {}", c.response_key.pubkey);
+    match &c.expires_at {
+        Some(x) => println!("  expires      {x}"),
+        None => println!("  expires      never (pass --expires-in to set an expiry)"),
+    }
     match (&c.seller_wallet, &check.wallet) {
         (Some(_), WalletStatus::Verified(a)) => println!("  wallet       {a} (signature verified)"),
         (Some(w), WalletStatus::NotSigned) => {
@@ -128,9 +136,157 @@ pub fn print_wallet_instructions(c: &ServedClaim, target: &str) {
     println!("then attach it: tensorseed claim-serving {target} --sig 0x...");
 }
 
-/// Load the existing v1 claim at `path`, if one is there and verifies.
+/// Load the existing v1 claim at `path`, if one is there, verifies, has
+/// not expired, and is not revoked in the list next to it (a revoked claim
+/// is never reused, so writing again makes a new one).
 pub fn existing_claim(path: &Path) -> Option<ServedClaim> {
-    load_claim(path).ok().map(|(c, _)| c)
+    let (c, _) = load_claim(path).ok()?;
+    if c.expired_at(now_unix()).is_some() {
+        return None;
+    }
+    let revoked = load_revocations(&revocations_path(path))
+        .ok()
+        .and_then(|r| r.revoked_from(&c))
+        .is_some();
+    (!revoked).then_some(c)
+}
+
+/// The creation time of a new claim and, with a lifetime in seconds, its
+/// `expires_at` (both RFC 3339 UTC).
+pub fn claim_times(expires_in: Option<u64>) -> (String, Option<String>) {
+    let now = tensorseed_core::time::unix_now();
+    (
+        tensorseed_core::time::rfc3339(now),
+        expires_in.map(|s| tensorseed_core::time::rfc3339(now.saturating_add(s))),
+    )
+}
+
+/// The current time as signed Unix seconds.
+pub fn now_unix() -> i64 {
+    i64::try_from(tensorseed_core::time::unix_now()).unwrap_or(i64::MAX)
+}
+
+/// `tensorseed revoke-claim`.
+pub fn revoke_claim(config_path: &Path, args: &RevokeClaimArgs) -> anyhow::Result<ExitCode> {
+    // An expired claim can still be revoked, so load without the clock.
+    let (claim, _) = load_claim(&args.claim)?;
+    if !valid_reason(&args.reason) {
+        bail!(
+            "--reason {:?} must be 1 to 32 of a-z, 0-9, _ (superseded, stopped, key_compromised, or other)",
+            args.reason
+        );
+    }
+    let at = match &args.at {
+        Some(t) => {
+            if parse_rfc3339(t).is_none() {
+                bail!("--at {t:?} is not an RFC 3339 time like 2026-11-20T00:00:00Z");
+            }
+            t.clone()
+        }
+        None => tensorseed_core::time::now_rfc3339(),
+    };
+    if args.print_message {
+        if claim.seller_wallet.is_none() {
+            bail!("this claim names no seller_wallet, so only its response key can revoke it");
+        }
+        println!("Sign this exact message with EIP-191 (personal_sign) in the wallet");
+        println!(
+            "{} that the claim names; Tensorseed never holds wallet keys:",
+            claim.seller_wallet.as_deref().unwrap_or_default()
+        );
+        println!();
+        print!(
+            "{}",
+            revocation_message(&claim.claim_sha256, &at, &args.reason)
+        );
+        println!();
+        println!(
+            "then attach it: tensorseed revoke-claim {} --at {at} --reason {} --wallet-sig 0x...",
+            args.claim.display(),
+            args.reason
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut rev = if args.no_response_key {
+        tensorseed_app::signing::Revocation {
+            claim_sha256: claim.claim_sha256.clone(),
+            revoked_at: at.clone(),
+            reason: args.reason.clone(),
+            response_sig: None,
+            wallet_sig: None,
+        }
+    } else {
+        let (key, _) = load_key(config_path, args.response_key.as_deref())?;
+        if key.pubkey_hex() != claim.response_key.pubkey {
+            bail!(
+                "the claim names response key {}, but the loaded key is {}; pass the claim's key with --response-key, or use --no-response-key with --wallet-sig",
+                claim.response_key.pubkey,
+                key.pubkey_hex()
+            );
+        }
+        key.sign_revocation(&claim.claim_sha256, &at, &args.reason)?
+    };
+    if let Some(sig) = &args.wallet_sig {
+        let wallet = claim
+            .seller_wallet
+            .as_deref()
+            .context("this claim names no seller_wallet")?;
+        rev.attach_wallet_sig(wallet, sig)?;
+    }
+    let by = rev.verify_for(&claim)?;
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| revocations_path(&args.claim));
+    let mut list = load_revocations(&out)?;
+    list.upsert(rev);
+    write_revocations(&out, &list)?;
+    println!(
+        "revoked claim {} at {at} ({}), signed by {}",
+        claim.claim_sha256,
+        args.reason,
+        by.as_str()
+    );
+    println!(
+        "  list {} ({} entries)",
+        out.display(),
+        list.revocations.len()
+    );
+    println!(
+        "the signing proxy serves this file at {WELL_KNOWN_REVOCATIONS}; if you publish the claim another way, publish this file next to it"
+    );
+    if args.reason == tensorseed_app::signing::REASON_KEY_COMPROMISED {
+        eprintln!(
+            "note: key_compromised makes every response under this claim untrusted. Create a new key with `tensorseed response-key create --force` and write a new claim"
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Read revocation lists from files or URLs and merge them. A URL that
+/// answers 404 adds nothing. Returns the list and where it came from.
+pub async fn read_revocation_lists(
+    sources: &[String],
+) -> anyhow::Result<(Revocations, Vec<String>, Vec<String>)> {
+    let mut list = Revocations::default();
+    let mut from = Vec::new();
+    let mut absent = Vec::new();
+    for s in sources {
+        let raw = if s.starts_with("http://") || s.starts_with("https://") {
+            match fetch_capped_opt(s).await? {
+                Some(raw) => raw,
+                None => {
+                    absent.push(s.clone());
+                    continue;
+                }
+            }
+        } else {
+            std::fs::read(s).with_context(|| format!("reading {s}"))?
+        };
+        list.merge(Revocations::parse(&raw).with_context(|| format!("revocations at {s}"))?);
+        from.push(s.clone());
+    }
+    Ok((list, from, absent))
 }
 
 /// `tensorseed claim-serving`.
@@ -152,6 +308,11 @@ pub async fn claim_serving(
         let addr = c.attach_signature(sig)?;
         let check = c.verify()?;
         c.write(&path)?;
+        if let Some(x) = c.expired_at(now_unix()) {
+            eprintln!(
+                "warning: this claim expired at {x}; run claim-serving without --sig to write a fresh one"
+            );
+        }
         println!("attached the wallet signature of {addr}");
         print_claim_summary(&path, &c, &check);
         return Ok(ExitCode::SUCCESS);
@@ -213,7 +374,7 @@ pub async fn claim_serving(
         .model_id
         .clone()
         .unwrap_or_else(|| default_model_id(&copy.manifest));
-    let now = tensorseed_core::time::now_rfc3339();
+    let (now, expires_at) = claim_times(args.expires_in);
     let record = ServedWeights::from_parts(
         &copy,
         runtime,
@@ -233,6 +394,7 @@ pub async fn claim_serving(
             seller_wallet: args.wallet.clone(),
             logprobs: args.logprobs.into(),
             started_at: now,
+            expires_at,
         },
     )?;
     let out = args.out.clone().unwrap_or_else(|| claim_path(&copy.dir));
@@ -319,7 +481,7 @@ pub async fn fetch_claim(src: &str) -> anyhow::Result<(ServedClaim, ClaimCheck, 
 }
 
 /// GET `url`, `Ok(None)` on 404.
-async fn fetch_capped_opt(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+pub async fn fetch_capped_opt(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::limited(3))
@@ -409,7 +571,14 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
     let headers = parse_header_dump(&headers_text);
     let body =
         std::fs::read(&args.body).with_context(|| format!("reading {}", args.body.display()))?;
-    let now = i64::try_from(tensorseed_core::time::unix_now()).unwrap_or(i64::MAX);
+    let now = now_unix();
+    let mut sources = args.revocations.clone();
+    if let Some(u) = revocations_url_next_to(&source) {
+        sources.insert(0, u);
+    }
+    let (revs, rev_from, _) = read_revocation_lists(&sources).await?;
+    let claim_revoked_unix = revs.revoked_from(&claim);
+    let claim_expires_unix = claim.expires_unix()?;
     let result = extract_signed(&headers, &body).and_then(|(f, signed)| {
         let e = Expect {
             pubkey,
@@ -419,6 +588,8 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
             requested_model: args.model_id.as_deref(),
             now_unix: now,
             max_skew_secs: args.max_skew,
+            claim_expires_unix,
+            claim_revoked_unix,
         };
         verify_fields(&f, signed, &e).map(|()| f)
     });
@@ -437,11 +608,15 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
                 "timestamp": f.timestamp,
                 "body_sha256": f.body_sha256,
                 "seller_wallet": wallet,
+                "claim_expires_at": claim.expires_at,
+                "revocation_lists": rev_from,
             }),
             Err(e) => serde_json::json!({
                 "valid": false,
                 "claim_source": source,
                 "claim_sha256": claim.claim_sha256,
+                "claim_expires_at": claim.expires_at,
+                "revocation_lists": rev_from,
                 "error": e.label(),
                 "detail": e.to_string(),
             }),
@@ -460,6 +635,15 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
                 match &wallet {
                     Some(a) => println!("  wallet     {a} (claim signature verified)"),
                     None => println!("  wallet     (claim not wallet-signed)"),
+                }
+                if let (Some(x), Ok(Some(xu))) = (&claim.expires_at, claim.expires_unix()) {
+                    println!(
+                        "  claim      expires {x} (in {})",
+                        rough_duration(xu.abs_diff(now))
+                    );
+                }
+                if !rev_from.is_empty() {
+                    println!("  revoked    no (checked {})", rev_from.join(", "));
                 }
             }
             Err(e) => println!("invalid: {e}"),

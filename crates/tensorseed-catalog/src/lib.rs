@@ -140,7 +140,7 @@ impl From<tensorseed_verify::Error> for CatalogError {
             E::Backend(s) => Self::Backend(s),
             E::Config(s) => Self::Config(s),
             E::Core(e) => Self::Core(e),
-            E::Signature(s) => Self::Signature(s),
+            E::Signature(s) | E::Claim(s) => Self::Signature(s),
             E::Chain(s) => Self::Chain(s),
             E::Rollback { seen, offered } => Self::Rollback { seen, offered },
             E::Fork { revision } => Self::Fork { revision },

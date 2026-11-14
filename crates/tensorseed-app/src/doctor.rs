@@ -253,7 +253,7 @@ pub async fn run_with_config(cfg: &Config, opts: &Options) -> Vec<Check> {
 /// `[inference]`, when configured: runtime binaries, the listen port, and
 /// the upstream API key variable (its value is never shown).
 pub fn check_inference(inf: &crate::inference::InferenceConfig) -> Vec<Check> {
-    use crate::inference::{ENGINE_DOCS_URL, Runtime, find_binary};
+    use crate::inference::{ENGINE_DOCS_URL, Runtime, RuntimeExt, find_binary};
     let mut out = Vec::new();
     let mut any = false;
     for rt in Runtime::ALL {

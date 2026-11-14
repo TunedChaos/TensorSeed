@@ -30,9 +30,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
-use tensorseed_catalog::signed::SignedEntry;
 use tensorseed_core::commercial::{Assessment, CommercialServing, assess_license_info};
-use tensorseed_core::hash::sha256_bytes;
 use tensorseed_core::keys::{RepoRef, RepoType};
 use tensorseed_core::manifest::Manifest;
 use tensorseed_core::verify::{
@@ -44,6 +42,11 @@ use crate::pull::{
     Resolved, allow_missing_from, catalog_manifest, check_manifest_identity, parse_manifest_bytes,
     read_pull_record, tombstone_covers,
 };
+
+pub use tensorseed_verify::claim::{
+    Entrypoint, Runtime, ServedCatalog, ServedLicense, VerifiedFile,
+};
+pub use tensorseed_verify::manifest::signed_value_sha256;
 
 /// Schema of `.tensorseed/served-weights.json`.
 pub const SERVED_WEIGHTS_SCHEMA: &str = "ts.served-weights/0";
@@ -162,32 +165,24 @@ impl InferenceConfig {
     }
 }
 
-/// Supported OpenAI compatible runtimes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Runtime {
-    /// llama.cpp `llama-server` (GGUF).
-    LlamaCpp,
-    /// vLLM `vllm serve` (safetensors).
-    Vllm,
+/// Engine details the seller side needs (binary names, config keys, and
+/// install hints) for [`Runtime`], which the claim format defines.
+pub trait RuntimeExt {
+    /// Binary name searched on PATH.
+    fn default_binary(self) -> &'static str;
+    /// Config key holding the binary path.
+    fn config_key(self) -> &'static str;
+    /// Environment variable the runtime reads its API key from.
+    fn api_key_var(self) -> &'static str;
+    /// Environment variable that overrides [`Self::config_key`] for one run.
+    fn config_env(self) -> &'static str;
+    /// How to install this engine, in one sentence.
+    fn install_hint(self) -> &'static str;
 }
 
-impl Runtime {
-    /// Both runtimes.
-    pub const ALL: [Self; 2] = [Self::LlamaCpp, Self::Vllm];
-
-    /// `llama.cpp` or `vLLM`.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::LlamaCpp => "llama.cpp",
-            Self::Vllm => "vLLM",
-        }
-    }
-
+impl RuntimeExt for Runtime {
     /// Binary name searched on PATH.
-    #[must_use]
-    pub fn default_binary(self) -> &'static str {
+    fn default_binary(self) -> &'static str {
         match self {
             Self::LlamaCpp => "llama-server",
             Self::Vllm => "vllm",
@@ -195,8 +190,7 @@ impl Runtime {
     }
 
     /// Config key holding the binary path.
-    #[must_use]
-    pub fn config_key(self) -> &'static str {
+    fn config_key(self) -> &'static str {
         match self {
             Self::LlamaCpp => "inference.llama_server",
             Self::Vllm => "inference.vllm",
@@ -204,8 +198,7 @@ impl Runtime {
     }
 
     /// Environment variable the runtime reads its API key from.
-    #[must_use]
-    pub fn api_key_var(self) -> &'static str {
+    fn api_key_var(self) -> &'static str {
         match self {
             Self::LlamaCpp => "LLAMA_API_KEY",
             Self::Vllm => "VLLM_API_KEY",
@@ -213,8 +206,7 @@ impl Runtime {
     }
 
     /// Environment variable that overrides [`Self::config_key`] for one run.
-    #[must_use]
-    pub fn config_env(self) -> &'static str {
+    fn config_env(self) -> &'static str {
         match self {
             Self::LlamaCpp => "TENSORSEED_INFERENCE__LLAMA_SERVER",
             Self::Vllm => "TENSORSEED_INFERENCE__VLLM",
@@ -222,8 +214,7 @@ impl Runtime {
     }
 
     /// How to install this engine, in one sentence.
-    #[must_use]
-    pub fn install_hint(self) -> &'static str {
+    fn install_hint(self) -> &'static str {
         match self {
             Self::LlamaCpp => {
                 "install llama.cpp, which provides llama-server, with `winget install llama.cpp` (Windows), `brew install llama.cpp` (macOS, Linux), your distribution's llama-cpp package, or a release archive from https://github.com/ggml-org/llama.cpp/releases"
@@ -341,18 +332,6 @@ pub fn find_binary(cfg: &InferenceConfig, rt: Runtime) -> BinaryLookup {
         configured,
         found,
     }
-}
-
-/// What the runtime loads: one GGUF file (llama.cpp) or the directory
-/// (vLLM).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "path", rename_all = "snake_case")]
-pub enum Entrypoint {
-    /// GGUF file, relative to the copy (`/` separators). For split GGUF
-    /// files this is the first shard; llama.cpp loads the rest.
-    Gguf(String),
-    /// The whole directory (config.json plus safetensors).
-    Directory,
 }
 
 fn lower(p: &str) -> String {
@@ -501,17 +480,6 @@ pub fn license_gate(m: &Manifest, i_have_rights: bool) -> anyhow::Result<License
     })
 }
 
-/// A file that passed verification.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerifiedFile {
-    /// Path relative to the copy (`/` separators).
-    pub path: String,
-    /// Size in bytes.
-    pub size: u64,
-    /// SHA-256 from the signed manifest.
-    pub sha256: String,
-}
-
 /// A local copy that matched its signed manifest.
 #[derive(Debug, Clone)]
 pub struct VerifiedCopy {
@@ -554,16 +522,6 @@ pub struct VerifyCopyOptions {
     pub catalog: Option<String>,
     /// Hashing threads.
     pub threads: usize,
-}
-
-/// SHA-256 of the signed manifest value inside `raw` (a signed entry).
-///
-/// # Errors
-///
-/// Fails when `raw` is not a signed entry.
-pub fn signed_value_sha256(raw: &[u8]) -> anyhow::Result<String> {
-    let e = SignedEntry::from_bytes(raw).context("manifest is not a signed entry")?;
-    Ok(sha256_bytes(e.value.as_bytes()))
 }
 
 async fn resolve_signed(
@@ -969,32 +927,6 @@ pub async fn wait_ready(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-}
-
-/// Catalog provenance in a [`ServedWeights`] record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServedCatalog {
-    /// Catalog name.
-    pub name: String,
-    /// Publisher key id (hex).
-    pub publisher_key_id: Option<String>,
-    /// Catalog key of the manifest entry.
-    pub manifest_key: String,
-    /// SHA-256 of the signed manifest value.
-    pub manifest_sha256: String,
-}
-
-/// License facts in a [`ServedWeights`] record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServedLicense {
-    /// License id.
-    pub id: Option<String>,
-    /// Publisher license class.
-    pub class: tensorseed_core::manifest::LicenseClass,
-    /// Derived commercial serving mark.
-    pub commercial_serving: CommercialServing,
-    /// The operator passed `--i-have-rights`.
-    pub rights_asserted: bool,
 }
 
 /// `.tensorseed/served-weights.json` (`ts.served-weights/0`).

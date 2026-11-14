@@ -200,7 +200,7 @@ pub enum Command {
     /// Tensorseed does not bundle an engine. Install llama.cpp's
     /// `llama-server` for GGUF files (`winget install llama.cpp`, `brew
     /// install llama.cpp`, your distribution's package, or
-    /// https://github.com/ggml-org/llama.cpp/releases) or vLLM for
+    /// <https://github.com/ggml-org/llama.cpp/releases>) or vLLM for
     /// safetensors (`pip install vllm`; Linux with a supported GPU).
     /// Tensorseed looks for it on PATH, at `inference.llama_server` or
     /// `inference.vllm` in the config, or in
@@ -257,6 +257,10 @@ pub enum Command {
     /// the commercial serving mark recomputed from the catalog's license
     /// (the seller's own mark is not trusted).
     ///
+    /// Also checks `expires_at` and revocations: the seller's list at
+    /// `/.well-known/tensorseed/revocations.json` next to a claim fetched
+    /// from its well-known path, plus any `--revocations` you pass.
+    ///
     /// Exit status: 0 pass, 1 fail, 2 inconclusive (for example the claim
     /// or catalog could not be read).
     CheckClaim(CheckClaimArgs),
@@ -276,6 +280,14 @@ pub enum Command {
     /// wallet; Tensorseed never holds wallet keys. Run again with `--sig`
     /// to check and attach the signature.
     ClaimServing(ClaimServingArgs),
+    /// Revoke a `ts.served-weights/1` claim.
+    ///
+    /// Signs a revocation with your response key (or attaches an EIP-191
+    /// signature made in your own wallet) and adds it to `revocations.json`
+    /// next to the claim. The signing proxy serves that file at
+    /// `/.well-known/tensorseed/revocations.json`. A revocation cannot be
+    /// taken back; write a new claim to serve again.
+    RevokeClaim(RevokeClaimArgs),
     /// Run the signing proxy in front of an OpenAI compatible engine.
     ///
     /// The engine (llama.cpp's `llama-server` or vLLM) is not bundled: you
@@ -849,6 +861,10 @@ pub struct ServeInferenceArgs {
     /// Logprob tier recorded in the claim.
     #[arg(long, value_enum, default_value_t = LogprobsArg::Required, requires = "sign")]
     pub logprobs: LogprobsArg,
+    /// Make the claim expire this long after it is written (as in
+    /// `claim-serving --expires-in`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_lifetime, requires = "sign")]
+    pub expires_in: Option<u64>,
     /// Extra arguments passed to the runtime after the configured ones
     /// (after `--`).
     #[arg(last = true, value_name = "ARGS")]
@@ -942,6 +958,71 @@ pub struct ClaimServingArgs {
     /// existing claim after checking it recovers to the claim's wallet.
     #[arg(long, value_name = "0x...")]
     pub sig: Option<String>,
+    /// Make the claim expire this long after it is written, for example
+    /// `30d`, `12h`, or `2w` (1 hour to 400 days). Buyers reject an
+    /// expired claim and responses signed after it; run `claim-serving`
+    /// again to renew. Default: no expiry.
+    #[arg(long, value_name = "DURATION", value_parser = parse_lifetime)]
+    pub expires_in: Option<u64>,
+}
+
+/// `revoke-claim` arguments.
+#[derive(Debug, Args)]
+pub struct RevokeClaimArgs {
+    /// The claim file to revoke.
+    pub claim: PathBuf,
+    /// Why: superseded, stopped, key_compromised (every response under the
+    /// claim becomes untrusted, whenever it was signed), or other.
+    #[arg(long, default_value = "superseded", value_name = "REASON")]
+    pub reason: String,
+    /// When the revocation takes effect (RFC 3339 UTC; default: now).
+    /// Pass the same value again when attaching a wallet signature.
+    #[arg(long, value_name = "TIME")]
+    pub at: Option<String>,
+    /// Revocation list to update (default: revocations.json next to the
+    /// claim).
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub out: Option<PathBuf>,
+    /// Response key file (default: response-key.json next to the config).
+    #[arg(long, value_name = "PATH")]
+    pub response_key: Option<PathBuf>,
+    /// Do not sign with the response key (for a lost key; needs
+    /// `--wallet-sig`).
+    #[arg(long, requires = "wallet_sig")]
+    pub no_response_key: bool,
+    /// Attach this EIP-191 signature by the claim's seller wallet over the
+    /// message printed by `--print-message`.
+    #[arg(long, value_name = "0x...")]
+    pub wallet_sig: Option<String>,
+    /// Print the exact message to sign in your wallet and exit.
+    #[arg(long)]
+    pub print_message: bool,
+}
+
+/// Parse a claim lifetime such as `30d`, `12h`, `90m`, or `2w` to seconds
+/// (1 hour to 400 days).
+///
+/// # Errors
+///
+/// Fails on another format or a value out of range.
+pub fn parse_lifetime(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("{s:?} is not a duration like 30d, 12h, or 2w"))?;
+    let mult = match unit {
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        "w" => 7 * 86_400,
+        _ => return Err(format!("{s:?} is not a duration like 30d, 12h, or 2w")),
+    };
+    let secs = n.saturating_mul(mult);
+    if !(3_600..=400 * 86_400).contains(&secs) {
+        return Err(format!("{s} is outside 1h to 400d"));
+    }
+    Ok(secs)
 }
 
 /// `gui` arguments.
@@ -998,6 +1079,10 @@ pub struct VerifyResponseArgs {
     /// Allowed timestamp skew in seconds.
     #[arg(long, default_value_t = 300)]
     pub max_skew: u64,
+    /// Also check this revocation list (file or URL; repeatable). With a
+    /// claim URL, the seller's own list next to it is always checked.
+    #[arg(long, value_name = "PATH|URL")]
+    pub revocations: Vec<String>,
     /// Print a JSON result.
     #[arg(long)]
     pub json: bool,
@@ -1115,6 +1200,14 @@ pub struct CheckClaimArgs {
     /// For a claim file: the public base URL it must name.
     #[arg(long, value_name = "URL")]
     pub expect_url: Option<String>,
+    /// Fail a claim without `expires_at`.
+    #[arg(long)]
+    pub require_expiry: bool,
+    /// Also check this revocation list (file or URL; repeatable), for
+    /// example one your marketplace keeps. The seller's own list next to a
+    /// fetched claim is always checked.
+    #[arg(long, value_name = "PATH|URL")]
+    pub revocations: Vec<String>,
     /// Print a `ts.claim-check/1` report.
     #[arg(long)]
     pub json: bool,
@@ -1338,6 +1431,7 @@ impl Command {
             Self::ResponseKey(ResponseKeyCmd::Create { .. }) => "response-key create",
             Self::ResponseKey(ResponseKeyCmd::Show { .. }) => "response-key show",
             Self::ClaimServing(_) => "claim-serving",
+            Self::RevokeClaim(_) => "revoke-claim",
             Self::SignResponses(_) => "sign-responses",
             Self::VerifyResponse(_) => "verify-response",
             Self::List { .. } => "list",
