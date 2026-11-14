@@ -12,11 +12,13 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use tensorseed_app::challenge::{
-    CHECK_SCHEMA, CheckOptions, CheckReference, CheckReport, CheckSample, Counts, Endpoint,
-    GEN_FILE, GEN_METHOD, GENERATOR_NOTE, GENERATOR_TOOL, Generation, Generator, Outcome,
-    REFERENCE_SCHEMA, ReferenceFile, Sampling, SigContext, SigStatus, SignatureSummary, Tolerance,
-    Verdict, engine_version_line, expected_from, generate_prompts, no_prompt_cache, overall,
-    parse_prompt_file, parse_seed, random_32, reference_request_extra, run_checks, sample_indexes,
+    CALIBRATION_METHOD, CHECK_SCHEMA, Calibration, CheckOptions, CheckReference, CheckReport,
+    CheckSample, Comparison, Counts, Endpoint, GEN_FILE, GEN_METHOD, GENERATOR_NOTE,
+    GENERATOR_TOOL, Generation, Generator, Outcome, REFERENCE_SCHEMA, ReferenceFile, Sampling,
+    SigContext, SigStatus, SignatureSummary, Tolerance, Verdict, calibrated_tolerance,
+    calibration_stats, decide, engine_version_line, expected_from, generate_prompts, median_steps,
+    no_prompt_cache, parse_prompt_file, parse_seed, random_32, reference_request_extra, run_checks,
+    sample_indexes,
 };
 use tensorseed_app::inference::{
     Entrypoint, LaunchPlan, PlanInput, Runtime, VerifyCopyOptions, check_extra_files,
@@ -24,7 +26,7 @@ use tensorseed_app::inference::{
 };
 use tensorseed_core::hash::is_lower_hex;
 
-use crate::cli::{CheckEndpointArgs, ReferenceLogprobsArgs, RuntimeArg};
+use crate::cli::{CalibrateReferenceArgs, CheckEndpointArgs, ReferenceLogprobsArgs, RuntimeArg};
 use crate::config::Config;
 use crate::inference::resolve_target;
 
@@ -131,6 +133,9 @@ pub async fn reference(cfg: &Config, args: &ReferenceLogprobsArgs) -> anyhow::Re
     })?;
     if args.timeout == 0 {
         bail!("--timeout must be at least 1");
+    }
+    if args.samples == 0 || args.samples > 50 {
+        bail!("--samples must be 1 to 50");
     }
     // Prompts first, so a bad file fails before any hashing.
     let (mut prompts, generation) = match &args.prompts {
@@ -306,19 +311,38 @@ pub async fn reference(cfg: &Config, args: &ReferenceLogprobsArgs) -> anyhow::Re
         )?;
         ep.extra.clone_from(&request_extra);
         let total = prompts.len();
-        for (i, p) in prompts.iter_mut().enumerate() {
-            match ep.ask(p, &sampling).await {
-                Outcome::Steps(steps) => {
-                    p.expected = expected_from(steps, sampling.top_logprobs);
+        let passes = args.samples as usize;
+        // Whole passes over the set, so the samples of one prompt come from
+        // different engine states (cache contents, batch neighbours).
+        let mut samples: Vec<Vec<Vec<tensorseed_app::challenge::Step>>> =
+            vec![Vec::with_capacity(passes); total];
+        for pass in 0..passes {
+            for (i, p) in prompts.iter().enumerate() {
+                match ep.ask(p, &sampling).await {
+                    Outcome::Steps(steps) => samples[i].push(steps),
+                    Outcome::NoLogprobs => bail!(
+                        "{base_url} returned no logprobs for {}; this engine cannot produce a reference",
+                        p.id
+                    ),
+                    Outcome::Error(e) => bail!("{}: {e}", p.id),
                 }
-                Outcome::NoLogprobs => bail!(
-                    "{base_url} returned no logprobs for {}; this engine cannot produce a reference",
-                    p.id
-                ),
-                Outcome::Error(e) => bail!("{}: {e}", p.id),
+                let done = pass * total + i + 1;
+                if done % 8 == 0 || done == total * passes {
+                    if passes > 1 {
+                        println!(
+                            "  {done}/{} requests ({total} challenges x {passes} samples)",
+                            total * passes
+                        );
+                    } else {
+                        println!("  {done}/{total} challenges");
+                    }
+                }
             }
-            if (i + 1) % 8 == 0 || i + 1 == total {
-                println!("  {}/{total} challenges", i + 1);
+        }
+        for (p, s) in prompts.iter_mut().zip(&samples) {
+            p.expected = expected_from(median_steps(s), sampling.top_logprobs);
+            if p.expected.is_empty() {
+                bail!("{}: the samples disagree from the first token", p.id);
             }
         }
         anyhow::Ok(())
@@ -347,12 +371,14 @@ pub async fn reference(cfg: &Config, args: &ReferenceLogprobsArgs) -> anyhow::Re
             runtime,
             engine_version,
             request_extra,
+            samples: (args.samples > 1).then_some(args.samples),
             note: GENERATOR_NOTE.into(),
         },
         generation,
         salt: hex::encode(random_32()?),
         created_at: tensorseed_core::time::now_rfc3339(),
         set_hash: String::new(),
+        calibration: None,
         prompts,
     };
     file.seal()?;
@@ -412,15 +438,6 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
     if args.repeats == 0 || args.repeats > 10 {
         bail!("--repeats must be 1 to 10");
     }
-    let tolerance = Tolerance {
-        max_mean_abs: args.max_mean_abs,
-        max_token_abs: args.max_token_abs,
-    };
-    if !(tolerance.max_mean_abs.is_finite() && tolerance.max_mean_abs >= 0.0)
-        || !(tolerance.max_token_abs.is_finite() && tolerance.max_token_abs >= 0.0)
-    {
-        bail!("tolerances must be finite and not negative");
-    }
     let url = reqwest::Url::parse(&args.base_url)
         .with_context(|| format!("{:?} is not a URL", args.base_url))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -430,6 +447,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
         bail!("do not put credentials in the URL; use --api-key-env");
     }
     let reference = ReferenceFile::load(&args.reference)?;
+    let (tolerance, tolerance_source) = resolve_tolerance(args, &reference)?;
     if let Some(h) = &args.expect_set_hash {
         let h = h.trim().to_ascii_lowercase();
         if !is_lower_hex(&h, 64) {
@@ -528,8 +546,13 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             hex::encode(seed)
         );
         println!(
-            "  tolerance mean <= {} nats, token <= {} nats, {} attempt(s)",
+            "  tolerance mean <= {} nats, token <= {} nats, {} attempt(s) ({tolerance_source})",
             tolerance.max_mean_abs, tolerance.max_token_abs, args.repeats
+        );
+        println!(
+            "  set rule: at most {:.0}% of challenges outside tolerance, median deviation <= {} nats",
+            tolerance.max_fail_fraction * 100.0,
+            tolerance.max_median_mean_abs
         );
         if let Some((c, _, src)) = &claim {
             println!(
@@ -542,7 +565,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
         r = run_checks(&ep, &chosen, &reference.sampling, &opts) => r,
         _ = tokio::signal::ctrl_c() => bail!("interrupted"),
     };
-    let verdict = overall(&results);
+    let (verdict, decision) = decide(&results, &tolerance);
     let counts = Counts::of(&results);
     let (verified, invalid, absent, unverifiable) = SignatureSummary::count(&results);
     let signatures = (claim.is_some() || unverifiable > 0).then(|| SignatureSummary {
@@ -578,6 +601,8 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
                 seed: hex::encode(seed),
             },
             verdict,
+            decision: Some(decision),
+            tolerance_source: Some(tolerance_source.to_string()),
             counts,
             signatures,
             challenges: results,
@@ -626,6 +651,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             counts.inconclusive,
             counts.unsupported
         );
+        println!("  {}", decision.reason);
         if let Some(s) = &signatures {
             println!(
                 "signatures: {} verified, {} invalid, {} absent, {} unverifiable{}",
@@ -641,4 +667,191 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
         }
     }
     Ok(verdict)
+}
+
+/// Tolerances for a check: each flag, else the reference file's
+/// calibration, else the default. Returns them and where they came from.
+fn resolve_tolerance(
+    args: &CheckEndpointArgs,
+    reference: &ReferenceFile,
+) -> anyhow::Result<(Tolerance, &'static str)> {
+    let base = reference
+        .calibration
+        .as_ref()
+        .map_or_else(Tolerance::default, |c| c.tolerance);
+    let flags = [
+        args.max_mean_abs,
+        args.max_token_abs,
+        args.max_fail_fraction,
+        args.max_median,
+    ];
+    let any_flag = flags.iter().any(Option::is_some);
+    let t = Tolerance {
+        max_mean_abs: args.max_mean_abs.unwrap_or(base.max_mean_abs),
+        max_token_abs: args.max_token_abs.unwrap_or(base.max_token_abs),
+        max_fail_fraction: args.max_fail_fraction.unwrap_or(base.max_fail_fraction),
+        max_median_mean_abs: args.max_median.unwrap_or(base.max_median_mean_abs),
+    };
+    t.validate().map_err(|e| {
+        anyhow::anyhow!(
+            "{}",
+            e.to_string()
+                .replace("tolerance max_mean_abs", "--max-mean-abs")
+                .replace("tolerance max_token_abs", "--max-token-abs")
+                .replace("tolerance max_fail_fraction", "--max-fail-fraction")
+                .replace("tolerance max_median_mean_abs", "--max-median")
+        )
+    })?;
+    let source = match (reference.calibration.is_some(), any_flag) {
+        (false, false) => "default",
+        (true, false) => "calibration",
+        (false, true) => "flags",
+        (true, true) => "calibration+flags",
+    };
+    Ok((t, source))
+}
+
+/// `tensorseed calibrate-reference`.
+pub async fn calibrate(args: &CalibrateReferenceArgs) -> anyhow::Result<ExitCode> {
+    if args.runs < 2 || args.runs > 100 {
+        bail!("--runs must be 2 to 100");
+    }
+    if !args.margin.is_finite() || args.margin < 1.0 || args.margin > 10.0 {
+        bail!("--margin must be 1 to 10");
+    }
+    if args.timeout == 0 {
+        bail!("--timeout must be at least 1");
+    }
+    if args.concurrency == 0 || args.concurrency > 64 {
+        bail!("--concurrency must be 1 to 64");
+    }
+    let url = reqwest::Url::parse(&args.base_url)
+        .with_context(|| format!("{:?} is not a URL", args.base_url))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("{} must be an http or https URL", args.base_url);
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("do not put credentials in the URL; use --api-key-env");
+    }
+    let mut reference = ReferenceFile::load(&args.reference)?;
+    let api_key = api_key_from_env(args.api_key_env.as_deref())?;
+    let model_id = args
+        .model_id
+        .clone()
+        .unwrap_or_else(|| reference.repo.clone());
+    let engine_version = match &args.engine_version {
+        Some(v) => v.clone(),
+        None => endpoint_version(&args.base_url, api_key.as_deref())
+            .await
+            .unwrap_or_else(|| "unknown".into()),
+    };
+    let mut ep = Endpoint::new(
+        &args.base_url,
+        &model_id,
+        api_key,
+        Duration::from_secs(args.timeout),
+    )?;
+    if args.no_prompt_cache {
+        ep.extra = Some(no_prompt_cache());
+    }
+    // One attempt per challenge and no tolerance: every answer is recorded.
+    let opts = CheckOptions {
+        tolerance: Tolerance {
+            max_mean_abs: f64::MAX,
+            max_token_abs: f64::MAX,
+            ..Tolerance::default()
+        },
+        repeats: 1,
+        concurrency: args.concurrency,
+    };
+    let chosen: Vec<_> = reference.prompts.iter().collect();
+    let total = chosen.len();
+    println!(
+        "calibrating against {} (model {model_id}): {} runs of {total} challenges",
+        ep.base_url, args.runs
+    );
+    let mut runs: Vec<Vec<Comparison>> = Vec::new();
+    for run in 0..args.runs {
+        let results = tokio::select! {
+            r = run_checks(&ep, &chosen, &reference.sampling, &opts) => r,
+            _ = tokio::signal::ctrl_c() => bail!("interrupted"),
+        };
+        let cmps: Vec<Comparison> = results
+            .iter()
+            .filter_map(|r| r.comparison.clone())
+            .collect();
+        if cmps.len() < total {
+            let why = results
+                .iter()
+                .find_map(|r| r.reason.clone())
+                .unwrap_or_default();
+            bail!(
+                "run {}: only {} of {total} challenges answered with logprobs ({why}); calibrate against a healthy endpoint",
+                run + 1,
+                cmps.len()
+            );
+        }
+        let means: Vec<f64> = cmps.iter().map(|c| c.mean_abs_dev).collect();
+        let worst = means.iter().copied().fold(0.0, f64::max);
+        println!(
+            "  run {:>2}: median {:.3}  max {:.3} nats",
+            run + 1,
+            tensorseed_app::challenge::median(&means),
+            worst
+        );
+        runs.push(cmps);
+    }
+    let observed = calibration_stats(&runs);
+    let base = reference
+        .calibration
+        .as_ref()
+        .map_or_else(Tolerance::default, |c| c.tolerance);
+    let tolerance = calibrated_tolerance(&observed, args.margin, &base);
+    let old_hash = reference.set_hash.clone();
+    reference.calibration = Some(Calibration {
+        method: CALIBRATION_METHOD.into(),
+        runs: args.runs,
+        challenges: u32::try_from(total).unwrap_or(u32::MAX),
+        engine_version,
+        no_prompt_cache: args.no_prompt_cache,
+        margin: args.margin,
+        observed,
+        tolerance,
+        created_at: tensorseed_core::time::now_rfc3339(),
+    });
+    reference.seal()?;
+    reference.validate()?;
+    write_private(&args.out, &pretty(&reference)?)?;
+    println!();
+    println!(
+        "observed: per challenge mean p50 {:.3}, p90 {:.3}, p99 {:.3}, max {:.3}; token max {:.3}; run median max {:.3}; first token match {:.0}%",
+        observed.mean_abs_p50,
+        observed.mean_abs_p90,
+        observed.mean_abs_p99,
+        observed.mean_abs_max,
+        observed.token_abs_max,
+        observed.run_median_max,
+        observed.first_token_match_rate * 100.0
+    );
+    println!(
+        "calibrated tolerance: mean <= {}, token <= {}, median <= {}, at most {:.0}% failing",
+        tolerance.max_mean_abs,
+        tolerance.max_token_abs,
+        tolerance.max_median_mean_abs,
+        tolerance.max_fail_fraction * 100.0
+    );
+    println!("wrote {}", args.out.display());
+    println!("  set_hash   {} (was {old_hash})", reference.set_hash);
+    if let Some(c) = &args.commitment {
+        let data = pretty(&reference.commitment())?;
+        if let Some(parent) = c.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(c, data).with_context(|| format!("writing {}", c.display()))?;
+        println!("  commitment {} (public)", c.display());
+    }
+    eprintln!(
+        "note: the calibration is part of the sealed set, so set_hash changed; publish the new set_hash (or commitment), not the old one"
+    );
+    Ok(ExitCode::SUCCESS)
 }

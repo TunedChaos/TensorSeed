@@ -155,6 +155,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::ServeInference(args) => inference::run(&load()?, &path, args).await,
         Command::ReferenceLogprobs(args) => challenge::reference(&load()?, args).await,
         Command::CheckEndpoint(args) => Ok(challenge::check(args).await),
+        Command::CalibrateReference(args) => challenge::calibrate(args).await,
         Command::ResponseKey(cmd) => signing::key_cmd(&path, cmd),
         Command::ClaimServing(args) => signing::claim_serving(&load()?, &path, args).await,
         Command::SignResponses(args) => signing::sign_responses(&path, args).await,

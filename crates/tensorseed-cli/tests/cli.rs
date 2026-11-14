@@ -1779,7 +1779,10 @@ async fn reference_logprobs_then_check_endpoint() {
         .filter(|q| q.url.path() == "/v1/chat/completions")
         .map(|q| serde_json::from_slice(&q.body).unwrap())
         .collect();
-    assert_eq!(chat.len(), 6);
+    // Five whole passes over the set by default; the expected values are
+    // per-token medians over the samples.
+    assert_eq!(chat.len(), 30);
+    assert_eq!(r["generator"]["samples"], 5);
     for b in &chat {
         assert_eq!(b["model"], "org/tiny");
         assert_eq!(b["temperature"], 0.0);
@@ -1807,6 +1810,8 @@ async fn reference_logprobs_then_check_endpoint() {
             "6",
             "--gen-seed",
             &seed,
+            "--samples",
+            "1",
             "--out",
             refp2.to_str().unwrap(),
         ],
@@ -1816,6 +1821,10 @@ async fn reference_logprobs_then_check_endpoint() {
     assert_eq!(code(&o), 0);
     let r2: serde_json::Value = serde_json::from_slice(&std::fs::read(&refp2).unwrap()).unwrap();
     assert_eq!(r2["prompts"], r["prompts"]);
+    assert!(
+        r2["generator"].get("samples").is_none(),
+        "one sample is the 0.3.0 file shape"
+    );
     assert_ne!(r2["set_hash"], r["set_hash"], "a fresh salt each time");
 
     // A prompt file mixing chat and legacy completions prompts.
@@ -1913,6 +1922,12 @@ async fn reference_logprobs_then_check_endpoint() {
     assert_eq!(rep["sample"]["sent"], 4);
     assert_eq!(rep["reference"]["set_hash"], set_hash.as_str());
     assert_eq!(rep["challenges"][0]["verdict"], "pass");
+    assert_eq!(rep["tolerance_source"], "default");
+    assert_eq!(rep["tolerance"]["max_fail_fraction"], 0.25);
+    assert_eq!(rep["tolerance"]["max_median_mean_abs"], 0.35);
+    assert_eq!(rep["decision"]["rule"], "ts.set-decision/1");
+    assert_eq!(rep["decision"]["scored"], 4);
+    assert_eq!(rep["decision"]["failed"], 0);
     assert!(
         rep["challenges"][0]["comparison"]["mean_abs_dev"]
             .as_f64()
@@ -1943,6 +1958,106 @@ async fn reference_logprobs_then_check_endpoint() {
         "{}",
         stdout(&o)
     );
+
+    // calibrate-reference: repeated runs against the reference engine write
+    // tolerances into the file, sealed by a new set_hash.
+    let calp = tmp.path().join("ref.cal.json");
+    let calc = tmp.path().join("ref.cal.commit.json");
+    let o = run(
+        &cfg,
+        &[
+            "calibrate-reference",
+            &same_url,
+            "-r",
+            refp.to_str().unwrap(),
+            "-o",
+            calp.to_str().unwrap(),
+            "--commitment",
+            calc.to_str().unwrap(),
+            "--runs",
+            "2",
+            "--api-key-env",
+            "TS_TEST_EP_KEY",
+        ],
+        &[("TS_TEST_EP_KEY", "s3cr3t-key")],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("calibrated tolerance"),
+        "{}",
+        stdout(&o)
+    );
+    let cal: serde_json::Value = serde_json::from_slice(&std::fs::read(&calp).unwrap()).unwrap();
+    assert_eq!(cal["calibration"]["method"], "ts.calibrate/1");
+    assert_eq!(cal["calibration"]["runs"], 2);
+    assert_eq!(cal["calibration"]["challenges"], 6);
+    assert_eq!(cal["calibration"]["observed"]["scored"], 12);
+    assert_eq!(cal["prompts"], r["prompts"]);
+    assert_ne!(cal["set_hash"], set_hash.as_str());
+    let cc: serde_json::Value = serde_json::from_slice(&std::fs::read(&calc).unwrap()).unwrap();
+    assert_eq!(cc["set_hash"], cal["set_hash"]);
+    assert_eq!(cc["tolerance"], cal["calibration"]["tolerance"]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&calp).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the calibrated set stays private");
+    }
+    // check-endpoint takes the calibrated tolerances; flags override them.
+    let key = |mut v: Vec<String>| {
+        v.extend([
+            "--api-key-env".into(),
+            "TS_TEST_EP_KEY".into(),
+            "--json".into(),
+        ]);
+        v
+    };
+    let o = check(same_url.clone(), calp.clone(), key(vec![])).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(rep["tolerance_source"], "calibration");
+    assert_eq!(rep["tolerance"], cal["calibration"]["tolerance"]);
+    assert_eq!(rep["reference"]["set_hash"], cal["set_hash"]);
+    let o = check(
+        same_url.clone(),
+        calp.clone(),
+        key(vec!["--max-mean-abs".into(), "0.01".into()]),
+    )
+    .await;
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(rep["tolerance_source"], "calibration+flags");
+    assert_eq!(rep["decision"]["failed"], 6);
+    assert!(
+        rep["decision"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("6 of 6"),
+        "{}",
+        rep["decision"]["reason"]
+    );
+    let o = check(
+        same_url.clone(),
+        refp.clone(),
+        key(vec!["--max-fail-fraction".into(), "1.5".into()]),
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    assert!(stderr(&o).contains("--max-fail-fraction"), "{}", stderr(&o));
+    // A calibrated file edited after sealing gives no verdict.
+    let mut t = cal.clone();
+    t["calibration"]["tolerance"]["max_mean_abs"] = serde_json::json!(5.0);
+    let loose = tmp.path().join("loose.json");
+    std::fs::write(&loose, serde_json::to_vec(&t).unwrap()).unwrap();
+    let o = check(same_url.clone(), loose, key(vec![])).await;
+    assert_eq!(code(&o), 2);
+    assert!(
+        stderr(&o).contains("set_hash does not match"),
+        "{}",
+        stderr(&o)
+    );
+
     // Without the key the endpoint rejects every request: inconclusive.
     let o = check(
         same_url.clone(),

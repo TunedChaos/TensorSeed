@@ -738,7 +738,8 @@ listed (the floor), so it contributes the lower bound
 whose chosen token differs, because later positions follow different
 text. A challenge passes when the mean deviation is at most
 `--max-mean-abs` (default 0.5 nats) and no single deviation exceeds
-`--max-token-abs` (default 2 nats). Both are uncalibrated starting points.
+`--max-token-abs` (default 2 nats). Both are uncalibrated starting points
+(0.3.1 adds calibration and a set decision, section 5.7.1).
 
 **Verdicts and repeats.** A challenge outside tolerance is re-sent up to
 `--repeats` attempts in total (default 3) and is `fail` only when every
@@ -776,6 +777,104 @@ Individual challenges of a wrong model can still pass, which is why a
 verdict needs several challenges. The gap between honest noise and a
 different file is narrower for low-bit quantizations, so open question 7
 still stands.
+
+### 5.7.1 Changed in 0.3.1 (false fails, set decision, calibration)
+
+0.3.0 failed honest sellers. Against the same q2_k file it was referenced
+from, `check-endpoint` with the default tolerances passed 1 run in 11 on
+the 0.3.0 reference set. Measured causes, in order of weight:
+
+1. **Logprobs are not a function of the request.** On CPU, llama.cpp
+   with several threads returns different logprobs for the same request
+   from run to run and with server state (prompt cache, KV slots, batch
+   neighbours). With one thread (`-t 1 -tb 1`) the values were stable and
+   equal to the most common multi thread value; one slot (`-np 1`) alone
+   was not enough. Decoding parameters were identical on both sides.
+2. **A single sample reference.** 0.3.0 recorded one response per
+   challenge. When that one response was an unlucky draw, the challenge
+   sat near or over tolerance for every honest run (one 0.3.0 challenge
+   averaged 0.435 nats against the stable value). In a simulation of
+   single sample references, 2 of 10 had such a permanent outlier.
+3. **Low bit quantizations.** q2_k has flat next-token distributions:
+   tail tokens move by more than a nat, and the floor bound for a
+   missing token adds large deviations.
+4. **Repeats do not help** because the drift is correlated (repeats often
+   return identical values), and **one failing challenge failed the run**.
+
+Tokenization and top-k alignment were checked and are not a cause: the
+comparison is by token string over the reference top-k, and the floor
+bound is a lower bound, not a guess.
+
+**Fixes.**
+
+- `reference-logprobs --samples N` (default 5) makes N whole passes over
+  the set and records the per-token median at each position
+  (`generator.samples`, absent for one sample). A token listed by fewer
+  than half the samples is dropped; later positions use only samples that
+  agree on the earlier tokens.
+- **Set decision `ts.set-decision/1`.** The per-challenge verdict is
+  unchanged (mean over the reference top-k with the floor bound, and the
+  per-token cap). The run is then decided over the set: any unsigned or
+  badly signed response under a claim fails; fewer than half the sampled
+  challenges scored is `inconclusive`; the run fails when more than
+  `--max-fail-fraction` of the scored challenges fail (default 0.25) or
+  when the median per-challenge mean deviation exceeds `--max-median`
+  (default 0.35 nats); otherwise it passes. `--max-fail-fraction 0`
+  restores the 0.3.0 rule. The report gains `decision` (rule, scored,
+  failed, fail fraction, median, signature failures, reason) and
+  `tolerance_source`; `tolerance` gains `max_fail_fraction` and
+  `max_median_mean_abs`, which default when absent, so 0.3.0 reports and
+  commitments still parse.
+- **`calibrate-reference`** runs the whole set N times (default 10)
+  against the reference engine and writes a `calibration` block into the
+  reference file: method `ts.calibrate/1`, runs, engine, margin (default
+  1.5), the observed spread (per-challenge mean p50, p90, p99, max; token
+  max; largest run median; first token match rate), and the derived
+  tolerance. `max_mean_abs` is `max(p99 + 0.1, p90 x margin)`,
+  `max_token_abs` is `max(token max + 0.25, 0.5)`, `max_median_mean_abs`
+  is `max(run median x margin, run median + 0.15)`, each rounded up to
+  0.05; the fail fraction is kept. The block is covered by `set_hash`, so
+  calibrating changes the hash and the commitment (which gains
+  `tolerance`). `check-endpoint` uses flags first, then the calibration,
+  then the defaults.
+- **Compatibility.** 0.3.0 reference files load unchanged and keep their
+  `set_hash`. Files written by 0.3.1 with `--samples` above 1 or a
+  calibration are rejected by 0.3.0 binaries, which deny unknown fields.
+
+**Validation (one CPU host, 8 threads, llama.cpp build 12366, real
+endpoints).** Honest seller: the q2_k file behind `serve-inference
+--sign`. Dishonest sellers: other files served under the claimed model id
+behind a valid signing proxy and claim.
+
+| Setup | Runs | Result |
+| --- | --- | --- |
+| Honest, calibrated q2_k set (32), `--sample 8` | 25 | 25 pass; worst run 1 of 8 outside tolerance, median 0.27 |
+| Honest, calibrated set, all 32 | 10 | 10 pass; worst run 1 of 32 outside |
+| Honest, uncalibrated 5 sample set, defaults, all 32 | 10 | 10 pass |
+| Honest, the 0.3.0 reference set (16), defaults | 10 | 10 pass (0.3.0: 1 pass in 11) |
+| q3_k_m, q4_k_m, Qwen2.5-0.5B q8_0, calibrated set, `--sample 8` | 10 each | 30 fail; failing fraction 0.38 to 1.00 |
+| The same three, all 32 | 3 each | 9 fail; 69 to 84% of challenges fail, medians 0.64 to 0.80 |
+| The same three, the 0.3.0 set, `--sample 8` | 3 each | 9 fail |
+| Honest responses with logprobs shifted 0.3 to 0.9 nats, signatures kept | 5 | 5 fail (8 of 8 signatures invalid) |
+| The same shift, signatures stripped and the claim hidden | 5 | 5 fail on the logprobs (medians 0.48 to 0.55) |
+
+**Per quantization.** The honest spread depends on the file; calibrate
+each set rather than relying on the defaults. Observed on the same host:
+
+| File | p50 | p90 | p99 | Token max | Largest run median | Calibrated tolerance (mean, token, median) |
+| --- | --- | --- | --- | --- | --- | --- |
+| q2_k | 0.167 | 0.278 | 0.384 | 0.892 | 0.198 | 0.5, 1.15, 0.35 |
+| q4_k_m | 0.105 | 0.187 | 0.272 | 1.051 | 0.138 | 0.4, 1.35, 0.3 |
+
+Against the calibrated q4_k_m set with `--sample 8`: honest 15 of 15
+pass (no challenge outside tolerance); q2_k, q3_k_m, and the 0.5B model
+5 of 5 fail each. The neighbouring quantization is the closest case
+(q3_k_m: 38 to 50% failing, medians 0.36 to 0.50 against limits of 25%
+and 0.3), so use `--sample 16` or more when a seller could swap in an
+adjacent quantization. The defaults (0.5, 2.0, 0.35, 25%) suit q2_k to
+q8_0 sets without calibration; tighter calibrated limits catch more.
+These are one host's numbers, not a GPU calibration; open question 7
+narrows but stands.
 
 ### 5.8 As built in 0.3.0 (response signing)
 
@@ -1187,7 +1286,7 @@ developers.
 | Seller changes weights after attesting | Revoke-and-replace rule; ongoing challenges; hardware re-attestation on guest restart | A window between the change and the next challenge |
 | Seller special-cases the live challenge set | Secret sets, rotation, commit-reveal, and cover logprobs on real traffic (section 5.2) | Perfect indistinguishability is not claimed |
 | Seller runs the real model only when `logprobs` is set | Cover: some real buyer requests also ask for logprobs; challenges vary in shape | A sophisticated filter may still exist; dispute checks and hardware help |
-| False failure from GPU or batch nondeterminism | Fixed sampling, tolerances, and required repeats | Tolerances that are too loose miss cheats; too tight punish honest sellers |
+| False failure from GPU or batch nondeterminism | Fixed sampling, median of several reference samples, calibrated tolerances, and a decision over the set (5.7.1) | Tolerances that are too loose miss cheats; too tight punish honest sellers |
 | Different quantization served than claimed | Per-entrypoint reference files; logprob distance | None, if the set is present and logprobs are required |
 | Engine cannot return logprobs | Offer is claim-only / unverifiable tier, not logprob-verified | Buyers must see the weaker mark |
 | Stolen response key or stolen seller wallet | Key lives only on the seller host; rotation is a new claim; marketplace binds offers to the signed-in wallet | A stolen key is still a stolen identity; wallet and host hygiene are out of band |

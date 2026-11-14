@@ -19,7 +19,12 @@
 //!   (`choices[0].logprobs.content[]`) and legacy completions
 //!   (`choices[0].logprobs.tokens` / `token_logprobs` / `top_logprobs`).
 //! - [`compare`] and [`Tolerance`] are the tolerance math; [`run_checks`]
-//!   sends sampled challenges with bounded concurrency and repeats.
+//!   sends sampled challenges with bounded concurrency and repeats, and
+//!   [`decide`] turns the per-challenge results into one verdict over the
+//!   set (`ts.set-decision/1`).
+//! - [`median_steps`] builds expected values from several samples of the
+//!   same request, and [`Calibration`] records tolerances measured
+//!   against an honest endpoint inside the sealed set.
 //!
 //! Nothing here holds a wallet, marketplace, or signing key. API keys are
 //! read by the caller from an environment variable and are never recorded.
@@ -42,6 +47,12 @@ pub const REFERENCE_SCHEMA: &str = "ts.reference-logprobs/1";
 pub const COMMITMENT_SCHEMA: &str = "ts.reference-logprobs-commitment/1";
 /// Schema of `check-endpoint --json`.
 pub const CHECK_SCHEMA: &str = "ts.check-endpoint/1";
+/// Method name of a [`Calibration`].
+pub const CALIBRATION_METHOD: &str = "ts.calibrate/1";
+/// Rule name of [`decide`].
+pub const DECISION_RULE: &str = "ts.set-decision/1";
+/// Default number of samples per prompt for a reference run.
+pub const DEFAULT_REFERENCE_SAMPLES: u32 = 5;
 /// Prompt generator method id.
 pub const GEN_METHOD: &str = "ts.challenge-gen/1";
 /// Generation method for prompts read from a file.
@@ -124,6 +135,10 @@ pub struct Generator {
     /// full prefill and repeats are reproducible).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_extra: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Requests sent per prompt; the expected values are their per-token
+    /// medians ([`median_steps`]). Absent in 0.3.0 files, which used one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples: Option<u32>,
     /// [`GENERATOR_NOTE`].
     pub note: String,
 }
@@ -248,6 +263,11 @@ pub struct ReferenceFile {
     pub created_at: String,
     /// SHA-256 (64 lowercase hex) of the canonical object without this field.
     pub set_hash: String,
+    /// Tolerances measured against an honest endpoint
+    /// (`tensorseed calibrate-reference`). Covered by `set_hash`, so the
+    /// tolerances are committed together with the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<Calibration>,
     /// The challenges.
     pub prompts: Vec<ChallengePrompt>,
 }
@@ -320,6 +340,9 @@ impl ReferenceFile {
                 bail!("prompt {} has no expected values", p.id);
             }
         }
+        if let Some(c) = &self.calibration {
+            c.validate()?;
+        }
         let want = self.compute_set_hash()?;
         if want != self.set_hash {
             bail!(
@@ -361,6 +384,7 @@ impl ReferenceFile {
             generation_method: self.generation.method.clone(),
             prompt_count: u32::try_from(self.prompts.len()).unwrap_or(u32::MAX),
             created_at: self.created_at.clone(),
+            tolerance: self.calibration.as_ref().map(|c| c.tolerance),
         }
     }
 }
@@ -397,6 +421,10 @@ pub struct Commitment {
     pub prompt_count: u32,
     /// When the set was written.
     pub created_at: String,
+    /// The calibrated tolerances, when the set was calibrated. Publishing
+    /// them commits the checker to them before any check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerance: Option<Tolerance>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,14 +1036,37 @@ fn without_url(e: &reqwest::Error) -> String {
 // Tolerance math
 // ---------------------------------------------------------------------------
 
-/// Thresholds for one challenge, in nats. Starting points for
-/// calibration (verified-serving.md section 5.2), not a claim about any model.
+/// Default [`Tolerance::max_fail_fraction`].
+pub const DEFAULT_MAX_FAIL_FRACTION: f64 = 0.25;
+/// Default [`Tolerance::max_median_mean_abs`].
+pub const DEFAULT_MAX_MEDIAN_MEAN_ABS: f64 = 0.35;
+
+fn default_max_fail_fraction() -> f64 {
+    DEFAULT_MAX_FAIL_FRACTION
+}
+
+fn default_max_median_mean_abs() -> f64 {
+    DEFAULT_MAX_MEDIAN_MEAN_ABS
+}
+
+/// Thresholds, in nats: two per challenge, and two over the whole set
+/// ([`decide`]). The defaults are starting points; `calibrate-reference`
+/// measures an honest endpoint and writes calibrated values into the set.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Tolerance {
-    /// Largest mean absolute deviation over the compared tokens.
+    /// Largest mean absolute deviation over the compared tokens of one
+    /// challenge.
     pub max_mean_abs: f64,
     /// Largest deviation of any one token (spike cap).
     pub max_token_abs: f64,
+    /// Largest share of scored challenges that may fail before the run
+    /// fails (0 restores the 0.3.0 rule: any failing challenge fails the run).
+    #[serde(default = "default_max_fail_fraction")]
+    pub max_fail_fraction: f64,
+    /// Largest median, over the scored challenges, of their mean absolute
+    /// deviation.
+    #[serde(default = "default_max_median_mean_abs")]
+    pub max_median_mean_abs: f64,
 }
 
 impl Default for Tolerance {
@@ -1023,7 +1074,195 @@ impl Default for Tolerance {
         Self {
             max_mean_abs: 0.5,
             max_token_abs: 2.0,
+            max_fail_fraction: DEFAULT_MAX_FAIL_FRACTION,
+            max_median_mean_abs: DEFAULT_MAX_MEDIAN_MEAN_ABS,
         }
+    }
+}
+
+impl Tolerance {
+    /// Check values.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a negative or non-finite value, or a fail fraction above 1.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        for (name, v) in [
+            ("max_mean_abs", self.max_mean_abs),
+            ("max_token_abs", self.max_token_abs),
+            ("max_fail_fraction", self.max_fail_fraction),
+            ("max_median_mean_abs", self.max_median_mean_abs),
+        ] {
+            if !v.is_finite() || v < 0.0 {
+                bail!("tolerance {name} must be finite and not negative");
+            }
+        }
+        if self.max_fail_fraction > 1.0 {
+            bail!("tolerance max_fail_fraction must be at most 1");
+        }
+        Ok(())
+    }
+}
+
+/// What a calibration run observed (nats, over every challenge of every run).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationStats {
+    /// Challenges scored across all runs.
+    pub scored: usize,
+    /// Median of the per-challenge mean deviation.
+    pub mean_abs_p50: f64,
+    /// 90th percentile of the per-challenge mean deviation.
+    pub mean_abs_p90: f64,
+    /// 99th percentile of the per-challenge mean deviation.
+    pub mean_abs_p99: f64,
+    /// Largest per-challenge mean deviation.
+    pub mean_abs_max: f64,
+    /// Largest single token deviation.
+    pub token_abs_max: f64,
+    /// Largest per-run median of the per-challenge mean deviation.
+    pub run_median_max: f64,
+    /// Share of challenges whose first chosen token matched the reference.
+    pub first_token_match_rate: f64,
+}
+
+/// Tolerances measured against an honest endpoint serving the same
+/// verified file (`ts.calibrate/1`), stored in the reference file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Calibration {
+    /// [`CALIBRATION_METHOD`].
+    pub method: String,
+    /// Full passes over the set.
+    pub runs: u32,
+    /// Challenges per pass.
+    pub challenges: u32,
+    /// Engine version the calibration endpoint reported (or `unknown`).
+    pub engine_version: String,
+    /// True when the calibration sent llama.cpp's `cache_prompt: false`.
+    pub no_prompt_cache: bool,
+    /// Safety factor applied to the observations.
+    pub margin: f64,
+    /// What was observed.
+    pub observed: CalibrationStats,
+    /// The tolerances derived from it.
+    pub tolerance: Tolerance,
+    /// When the calibration finished (RFC 3339 UTC).
+    pub created_at: String,
+}
+
+impl Calibration {
+    /// Check values.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unknown method, zero runs, or invalid tolerances.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.method != CALIBRATION_METHOD {
+            bail!(
+                "calibration.method is {:?}, expected {CALIBRATION_METHOD}",
+                self.method
+            );
+        }
+        if self.runs == 0 || self.challenges == 0 {
+            bail!("calibration needs at least one run and one challenge");
+        }
+        self.tolerance.validate()
+    }
+}
+
+/// Round `v` up to the next multiple of 0.05 (and to 6 decimals).
+fn ceil_005(v: f64) -> f64 {
+    round_logprob((v / 0.05).ceil() * 0.05)
+}
+
+/// Value at quantile `q` (0..=1) of `sorted` (nearest rank).
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * q).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+/// Median of `v` (0 for an empty slice).
+#[must_use]
+pub fn median(v: &[f64]) -> f64 {
+    let mut s: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
+    if s.is_empty() {
+        return 0.0;
+    }
+    s.sort_by(f64::total_cmp);
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+}
+
+/// Observations from calibration runs: one `Vec<Comparison>` per run.
+#[must_use]
+pub fn calibration_stats(runs: &[Vec<Comparison>]) -> CalibrationStats {
+    let mut means: Vec<f64> = Vec::new();
+    let mut token_max = 0.0_f64;
+    let mut run_median_max = 0.0_f64;
+    let mut first_match = 0usize;
+    for run in runs {
+        let m: Vec<f64> = run.iter().map(|c| c.mean_abs_dev).collect();
+        run_median_max = run_median_max.max(median(&m));
+        for c in run {
+            means.push(c.mean_abs_dev);
+            token_max = token_max.max(c.max_abs_dev);
+            first_match += usize::from(c.first_token_match);
+        }
+    }
+    means.sort_by(f64::total_cmp);
+    let n = means.len();
+    CalibrationStats {
+        scored: n,
+        mean_abs_p50: round_logprob(quantile(&means, 0.5)),
+        mean_abs_p90: round_logprob(quantile(&means, 0.9)),
+        mean_abs_p99: round_logprob(quantile(&means, 0.99)),
+        mean_abs_max: round_logprob(means.last().copied().unwrap_or(0.0)),
+        token_abs_max: round_logprob(token_max),
+        run_median_max: round_logprob(run_median_max),
+        first_token_match_rate: if n == 0 {
+            0.0
+        } else {
+            round_logprob(first_match as f64 / n as f64)
+        },
+    }
+}
+
+/// Tolerances from calibration observations, with safety factor `margin`
+/// (at least 1). Failing challenges are allowed up to
+/// `max_fail_fraction`, so the per-challenge limits sit just above the
+/// honest tail rather than above every outlier, and the median limit,
+/// which separates other weights best, sits above the worst honest run:
+///
+/// - `max_mean_abs`: the 99th percentile plus 0.1, at least the 90th
+///   percentile times `margin`;
+/// - `max_token_abs`: the largest observed token deviation plus 0.25, at
+///   least 0.5;
+/// - `max_median_mean_abs`: the largest per-run median times `margin`, at
+///   least that median plus 0.15 (honest run medians move by about 0.1
+///   between engine instances);
+/// - `max_fail_fraction`: kept from `base`.
+///
+/// Every value is rounded up to a multiple of 0.05.
+#[must_use]
+pub fn calibrated_tolerance(o: &CalibrationStats, margin: f64, base: &Tolerance) -> Tolerance {
+    let m = if margin.is_finite() {
+        margin.max(1.0)
+    } else {
+        1.0
+    };
+    Tolerance {
+        max_mean_abs: ceil_005((o.mean_abs_p99 + 0.1).max(o.mean_abs_p90 * m)),
+        max_token_abs: ceil_005((o.token_abs_max + 0.25).max(0.5)),
+        max_fail_fraction: base.max_fail_fraction,
+        max_median_mean_abs: ceil_005((o.run_median_max * m).max(o.run_median_max + 0.15)),
     }
 }
 
@@ -1365,8 +1604,9 @@ pub async fn run_checks(
     out.into_iter().map(|(_, r)| r).collect()
 }
 
-/// Overall verdict: any fail is a fail; all pass is a pass; all
-/// unsupported is unsupported; anything else is inconclusive.
+/// The 0.3.0 overall rule, kept for callers that want it: any fail is a
+/// fail; all pass is a pass; all unsupported is unsupported; anything else
+/// is inconclusive. `check-endpoint` uses [`decide`].
 #[must_use]
 pub fn overall(results: &[ChallengeResult]) -> Verdict {
     if results.is_empty() {
@@ -1381,6 +1621,135 @@ pub fn overall(results: &[ChallengeResult]) -> Verdict {
     } else {
         Verdict::Inconclusive
     }
+}
+
+/// How [`decide`] reached the verdict (`ts.set-decision/1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetDecision {
+    /// [`DECISION_RULE`].
+    pub rule: String,
+    /// Challenges with a comparison (pass, fail, or attempts that disagree).
+    pub scored: usize,
+    /// Challenges that failed on every attempt.
+    pub failed: usize,
+    /// `failed / scored` (0 when nothing was scored).
+    pub fail_fraction: f64,
+    /// Median over the scored challenges of their mean deviation (nats).
+    pub median_mean_abs_dev: f64,
+    /// Responses that were unsigned or badly signed while a claim was in force.
+    pub signature_failures: usize,
+    /// One line explanation of the verdict.
+    pub reason: String,
+}
+
+/// Overall verdict over the set (`ts.set-decision/1`).
+///
+/// Low-bit quantizations and engines such as llama.cpp return logprobs that
+/// move by tenths of a nat between identical requests, so one challenge
+/// just outside tolerance is expected now and then from an honest endpoint,
+/// while serving other weights moves most challenges. In order:
+///
+/// 1. Any response that is unsigned or badly signed under a claim: `fail`.
+/// 2. Nothing sent: `inconclusive`. Every challenge unsupported: `unsupported`.
+/// 3. Fewer than half of the challenges scored (errors, timeouts, no
+///    logprobs): `inconclusive`.
+/// 4. More than `max_fail_fraction` of the scored challenges failed, or the
+///    median of their mean deviations is above `max_median_mean_abs`: `fail`.
+/// 5. Otherwise `pass`.
+#[must_use]
+pub fn decide(results: &[ChallengeResult], t: &Tolerance) -> (Verdict, SetDecision) {
+    let signature_failures = results
+        .iter()
+        .filter(|r| {
+            r.verdict == Verdict::Fail
+                && r.signature
+                    .as_ref()
+                    .is_some_and(|s| matches!(s.status, SigStatus::Absent | SigStatus::Invalid))
+        })
+        .count();
+    let scored: Vec<&ChallengeResult> = results
+        .iter()
+        .filter(|r| r.comparison.is_some() && r.verdict != Verdict::Unsupported)
+        .filter(|r| {
+            !(r.verdict == Verdict::Fail
+                && r.signature
+                    .as_ref()
+                    .is_some_and(|s| matches!(s.status, SigStatus::Absent | SigStatus::Invalid)))
+        })
+        .collect();
+    let failed = scored.iter().filter(|r| r.verdict == Verdict::Fail).count();
+    let fail_fraction = if scored.is_empty() {
+        0.0
+    } else {
+        round_logprob(failed as f64 / scored.len() as f64)
+    };
+    let means: Vec<f64> = scored
+        .iter()
+        .filter_map(|r| r.comparison.as_ref().map(|c| c.mean_abs_dev))
+        .collect();
+    let median_mean_abs_dev = round_logprob(median(&means));
+    let (verdict, reason) = if signature_failures > 0 {
+        (
+            Verdict::Fail,
+            format!("{signature_failures} response(s) unsigned or badly signed under the claim"),
+        )
+    } else if results.is_empty() {
+        (Verdict::Inconclusive, "no challenges were sent".to_string())
+    } else if results.iter().all(|r| r.verdict == Verdict::Unsupported) {
+        (
+            Verdict::Unsupported,
+            "the endpoint returned no logprobs".to_string(),
+        )
+    } else if scored.len() * 2 < results.len() {
+        (
+            Verdict::Inconclusive,
+            format!(
+                "only {} of {} challenges could be scored",
+                scored.len(),
+                results.len()
+            ),
+        )
+    } else if fail_fraction > t.max_fail_fraction {
+        (
+            Verdict::Fail,
+            format!(
+                "{failed} of {} scored challenges outside tolerance ({:.0}% > {:.0}%)",
+                scored.len(),
+                fail_fraction * 100.0,
+                t.max_fail_fraction * 100.0
+            ),
+        )
+    } else if median_mean_abs_dev > t.max_median_mean_abs {
+        (
+            Verdict::Fail,
+            format!(
+                "median deviation {median_mean_abs_dev:.3} nats > {}",
+                t.max_median_mean_abs
+            ),
+        )
+    } else {
+        (
+            Verdict::Pass,
+            format!(
+                "{failed} of {} scored challenges outside tolerance (max {:.0}%), median deviation {median_mean_abs_dev:.3} nats (max {})",
+                scored.len(),
+                t.max_fail_fraction * 100.0,
+                t.max_median_mean_abs
+            ),
+        )
+    };
+    (
+        verdict,
+        SetDecision {
+            rule: DECISION_RULE.into(),
+            scored: scored.len(),
+            failed,
+            fail_fraction,
+            median_mean_abs_dev,
+            signature_failures,
+            reason,
+        },
+    )
 }
 
 /// Pick `n` prompt indexes (all when `n` is 0 or at least the set size),
@@ -1498,6 +1867,13 @@ pub struct CheckReport {
     pub sample: CheckSample,
     /// Overall verdict.
     pub verdict: Verdict,
+    /// How the verdict was reached over the set (added in 0.3.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<SetDecision>,
+    /// Where the tolerances came from: `default`, `calibration`, `flags`,
+    /// or `calibration+flags` (added in 0.3.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerance_source: Option<String>,
     /// Counts.
     pub counts: Counts,
     /// Signature summary, when a claim was used or signatures were seen.
@@ -1566,6 +1942,126 @@ impl CheckReference {
             prompt_count: r.prompts.len(),
         }
     }
+}
+
+/// Expected positions from several samples of the same request: the
+/// per-token median.
+///
+/// At each position the chosen token is the one most samples chose (ties go
+/// to the higher median logprob). Every token listed by any sample gets the
+/// median of its logprobs, where a sample that does not list it counts as
+/// below its list (so a token most samples do not list is dropped).
+/// Alternatives are sorted most likely first. Only samples that chose the
+/// same tokens at every earlier position are used for a position, and the
+/// positions stop when fewer than half of the samples remain. One sample is
+/// returned unchanged.
+#[must_use]
+pub fn median_steps(samples: &[Vec<Step>]) -> Vec<Step> {
+    match samples {
+        [] => return Vec::new(),
+        [one] => return one.clone(),
+        _ => {}
+    }
+    let need = samples.len().div_ceil(2);
+    let mut live: Vec<&Vec<Step>> = samples.iter().collect();
+    let mut out = Vec::new();
+    let max_len = samples.iter().map(Vec::len).max().unwrap_or(0);
+    for i in 0..max_len {
+        live.retain(|s| s.len() > i);
+        if live.len() < need {
+            break;
+        }
+        let n = live.len();
+        // Every token and the logprobs the samples gave it at this position.
+        let mut values: Vec<(String, Vec<f64>)> = Vec::new();
+        for s in &live {
+            let st = &s[i];
+            let mut seen: BTreeSet<&str> = BTreeSet::new();
+            let listed = std::iter::once((st.token.as_str(), st.logprob)).chain(
+                st.top_logprobs
+                    .iter()
+                    .map(|t| (t.token.as_str(), t.logprob)),
+            );
+            for (tok, lp) in listed {
+                if !seen.insert(tok) {
+                    continue;
+                }
+                match values.iter_mut().find(|(t, _)| t == tok) {
+                    Some((_, v)) => v.push(lp),
+                    None => values.push((tok.to_string(), vec![lp])),
+                }
+            }
+        }
+        let med = |v: &[f64]| -> Option<f64> {
+            // Absent from more than half of the samples: below the lists.
+            if v.len() * 2 < n {
+                return None;
+            }
+            let mut all: Vec<f64> = v.to_vec();
+            all.resize(n, f64::NEG_INFINITY);
+            all.sort_by(f64::total_cmp);
+            let m = if n % 2 == 1 {
+                all[n / 2]
+            } else {
+                (all[n / 2 - 1] + all[n / 2]) / 2.0
+            };
+            m.is_finite().then_some(m)
+        };
+        let mut chosen_counts: Vec<(&str, usize)> = Vec::new();
+        for s in &live {
+            let t = s[i].token.as_str();
+            match chosen_counts.iter_mut().find(|(k, _)| *k == t) {
+                Some((_, c)) => *c += 1,
+                None => chosen_counts.push((t, 1)),
+            }
+        }
+        let median_of = |tok: &str| {
+            values
+                .iter()
+                .find(|(t, _)| t == tok)
+                .and_then(|(_, v)| med(v))
+                .unwrap_or(f64::NEG_INFINITY)
+        };
+        let Some(&(chosen, _)) = chosen_counts.iter().max_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| median_of(a.0).total_cmp(&median_of(b.0)))
+                .then_with(|| b.0.cmp(a.0))
+        }) else {
+            break;
+        };
+        let chosen = chosen.to_string();
+        let chosen_lp = Some(median_of(&chosen))
+            .filter(|m| m.is_finite())
+            .unwrap_or_else(|| {
+                let v: Vec<f64> = live
+                    .iter()
+                    .filter(|s| s[i].token == chosen)
+                    .map(|s| s[i].logprob)
+                    .collect();
+                median(&v)
+            });
+        let mut top: Vec<TopLogprob> = values
+            .iter()
+            .filter_map(|(t, v)| {
+                med(v).map(|m| TopLogprob {
+                    token: t.clone(),
+                    logprob: m,
+                })
+            })
+            .collect();
+        top.sort_by(|a, b| {
+            b.logprob
+                .total_cmp(&a.logprob)
+                .then_with(|| a.token.cmp(&b.token))
+        });
+        out.push(Step {
+            token: chosen.clone(),
+            logprob: chosen_lp,
+            top_logprobs: top,
+        });
+        live.retain(|s| s[i].token == chosen);
+    }
+    out
 }
 
 /// Positions to store as expected values: rounded, at most `top` alternatives.
@@ -1648,6 +2144,7 @@ mod tests {
                 runtime: Runtime::LlamaCpp,
                 engine_version: "version: test".into(),
                 request_extra: reference_request_extra(Runtime::LlamaCpp),
+                samples: None,
                 note: GENERATOR_NOTE.into(),
             },
             generation: Generation {
@@ -1658,6 +2155,7 @@ mod tests {
             salt: "c".repeat(64),
             created_at: "2026-11-13T00:00:00Z".into(),
             set_hash: String::new(),
+            calibration: None,
             prompts,
         };
         r.seal().unwrap();
@@ -1841,6 +2339,7 @@ mod tests {
         let t = Tolerance {
             max_mean_abs: 10.0,
             max_token_abs: 1.0,
+            ..Tolerance::default()
         };
         assert!(!c.within(&t));
         // Comparison stops after divergence.
@@ -1875,6 +2374,211 @@ mod tests {
             [Pass, Fail, Inconclusive, Unsupported].map(Verdict::exit_code),
             [0, 1, 2, 2]
         );
+    }
+
+    fn cmp(mean: f64) -> Comparison {
+        Comparison {
+            compared: 5,
+            positions: 1,
+            mean_abs_dev: mean,
+            max_abs_dev: mean * 2.0,
+            missing: 0,
+            first_token_match: true,
+            diverged_at: None,
+        }
+    }
+
+    fn res(v: Verdict, mean: Option<f64>, sig: Option<SigStatus>) -> ChallengeResult {
+        ChallengeResult {
+            id: "x".into(),
+            verdict: v,
+            attempts: 1,
+            comparison: mean.map(cmp),
+            attempt_mean_abs_dev: vec![],
+            reason: None,
+            signature: sig.map(|status| SigResult {
+                status,
+                detail: None,
+            }),
+            elapsed_ms: 0,
+        }
+    }
+
+    #[test]
+    fn set_decision_tolerates_isolated_drift_but_not_other_weights() {
+        use Verdict::*;
+        let t = Tolerance::default();
+        // One honest challenge just outside tolerance out of eight: pass.
+        let mut honest: Vec<_> = (0..7).map(|_| res(Pass, Some(0.18), None)).collect();
+        honest.push(res(Fail, Some(0.62), None));
+        let (v, d) = decide(&honest, &t);
+        assert_eq!(v, Pass, "{}", d.reason);
+        assert_eq!((d.scored, d.failed), (8, 1));
+        assert!((d.fail_fraction - 0.125).abs() < 1e-9);
+        assert_eq!(d.rule, DECISION_RULE);
+        // The 0.3.0 rule (any fail) is max_fail_fraction 0.
+        let strict = Tolerance {
+            max_fail_fraction: 0.0,
+            ..t
+        };
+        assert_eq!(decide(&honest, &strict).0, Fail);
+        assert_eq!(overall(&honest), Fail);
+        // Attempts that disagree are scored, not failed.
+        let mut mixed: Vec<_> = (0..6).map(|_| res(Pass, Some(0.2), None)).collect();
+        mixed.push(res(Inconclusive, Some(0.3), None));
+        assert_eq!(decide(&mixed, &t).0, Pass);
+        // Other weights: most challenges fail.
+        let other: Vec<_> = (0..8)
+            .map(|i| res(if i < 5 { Fail } else { Pass }, Some(0.7), None))
+            .collect();
+        let (v, d) = decide(&other, &t);
+        assert_eq!(v, Fail);
+        assert!(d.reason.contains("5 of 8"), "{}", d.reason);
+        // A shifted median fails even when every challenge passes alone.
+        let shifted: Vec<_> = (0..8).map(|_| res(Pass, Some(0.45), None)).collect();
+        let (v, d) = decide(&shifted, &t);
+        assert_eq!(v, Fail);
+        assert!(d.reason.contains("median"), "{}", d.reason);
+        // Any bad signature under a claim fails the run outright.
+        let mut signed: Vec<_> = (0..8)
+            .map(|_| res(Pass, Some(0.1), Some(SigStatus::Verified)))
+            .collect();
+        signed[3] = res(Fail, None, Some(SigStatus::Invalid));
+        let (v, d) = decide(&signed, &t);
+        assert_eq!((v, d.signature_failures), (Fail, 1));
+        // Too few answers: inconclusive. No logprobs at all: unsupported.
+        let errs = vec![
+            res(Pass, Some(0.1), None),
+            res(Inconclusive, None, None),
+            res(Inconclusive, None, None),
+        ];
+        assert_eq!(decide(&errs, &t).0, Inconclusive);
+        assert_eq!(decide(&[res(Unsupported, None, None)], &t).0, Unsupported);
+        assert_eq!(decide(&[], &t).0, Inconclusive);
+    }
+
+    #[test]
+    fn median_steps_drop_an_unlucky_sample() {
+        // Three samples of one position; the second is an outlier.
+        let s = vec![
+            vec![step(
+                "The",
+                -0.52,
+                &[("The", -0.52), ("Based", -1.40), ("To", -2.85)],
+            )],
+            vec![step(
+                "The",
+                -0.75,
+                &[("The", -0.75), ("Based", -0.98), ("I", -2.90)],
+            )],
+            vec![step(
+                "The",
+                -0.50,
+                &[("The", -0.50), ("Based", -1.42), ("To", -2.80)],
+            )],
+        ];
+        let m = median_steps(&s);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].token, "The");
+        assert!((m[0].logprob + 0.52).abs() < 1e-9);
+        let get = |t: &str| {
+            m[0].top_logprobs
+                .iter()
+                .find(|x| x.token == t)
+                .map(|x| x.logprob)
+        };
+        assert!((get("Based").unwrap() + 1.40).abs() < 1e-9);
+        assert!((get("To").unwrap() + 2.85).abs() < 1e-9);
+        // Listed by one sample of three: below the lists, dropped.
+        assert_eq!(get("I"), None);
+        // Sorted most likely first.
+        assert_eq!(m[0].top_logprobs[0].token, "The");
+        // The chosen token is the majority choice.
+        let s2 = vec![
+            vec![step("A", -0.9, &[("A", -0.9), ("B", -1.0)])],
+            vec![step("B", -0.8, &[("B", -0.8), ("A", -1.1)])],
+            vec![step("A", -0.85, &[("A", -0.85), ("B", -1.05)])],
+        ];
+        assert_eq!(median_steps(&s2)[0].token, "A");
+        // One sample is returned as is; none gives nothing.
+        assert_eq!(median_steps(&s[..1]), s[0]);
+        assert!(median_steps(&[]).is_empty());
+        // Later positions only use samples that agree on earlier tokens.
+        let s3 = vec![
+            vec![step("A", -0.1, &[]), step("x", -0.2, &[])],
+            vec![step("A", -0.1, &[]), step("x", -0.4, &[])],
+            vec![step("B", -0.1, &[]), step("y", -0.1, &[])],
+        ];
+        let m3 = median_steps(&s3);
+        assert_eq!(m3.len(), 2);
+        assert_eq!(m3[1].token, "x");
+        assert!((m3[1].logprob + 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn calibration_is_sealed_and_older_files_still_load() {
+        let mut r = sample_file();
+        let old_hash = r.set_hash.clone();
+        // A 0.3.0 file has no samples, calibration, or tolerance fields.
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("calibration").is_none());
+        assert!(v["generator"].get("samples").is_none());
+        let back: ReferenceFile = serde_json::from_value(v).unwrap();
+        back.validate().unwrap();
+        assert_eq!(back.compute_set_hash().unwrap(), old_hash);
+        assert!(r.commitment().tolerance.is_none());
+        // Calibrate from observations of two runs.
+        let runs = vec![
+            vec![cmp(0.10), cmp(0.20), cmp(0.30)],
+            vec![cmp(0.15), cmp(0.25), cmp(0.45)],
+        ];
+        let o = calibration_stats(&runs);
+        assert_eq!(o.scored, 6);
+        assert!((o.mean_abs_max - 0.45).abs() < 1e-9);
+        assert!((o.token_abs_max - 0.9).abs() < 1e-9);
+        assert!((o.run_median_max - 0.25).abs() < 1e-9);
+        let t = calibrated_tolerance(&o, 1.5, &Tolerance::default());
+        t.validate().unwrap();
+        // mean max(p99 + 0.1, p90 x 1.5) = 0.675, rounded up to 0.7;
+        // token 0.9 + 0.25; median max(0.25 x 1.5, 0.25 + 0.15).
+        assert!((t.max_mean_abs - 0.7).abs() < 1e-9, "{t:?}");
+        assert!((t.max_token_abs - 1.15).abs() < 1e-9, "{t:?}");
+        assert!((t.max_median_mean_abs - 0.4).abs() < 1e-9, "{t:?}");
+        assert!((t.max_fail_fraction - DEFAULT_MAX_FAIL_FRACTION).abs() < 1e-9);
+        r.calibration = Some(Calibration {
+            method: CALIBRATION_METHOD.into(),
+            runs: 2,
+            challenges: 3,
+            engine_version: "test".into(),
+            no_prompt_cache: false,
+            margin: 1.5,
+            observed: o,
+            tolerance: t,
+            created_at: "2026-11-14T00:00:00Z".into(),
+        });
+        // The calibration is covered by set_hash.
+        assert!(r.validate().is_err());
+        r.seal().unwrap();
+        r.validate().unwrap();
+        assert_ne!(r.set_hash, old_hash);
+        assert_eq!(r.commitment().tolerance, Some(t));
+        let mut tampered = r.clone();
+        tampered
+            .calibration
+            .as_mut()
+            .unwrap()
+            .tolerance
+            .max_median_mean_abs = 9.0;
+        assert!(tampered.validate().is_err());
+        let mut bad = r.clone();
+        bad.calibration.as_mut().unwrap().method = "other".into();
+        bad.seal().unwrap();
+        assert!(bad.validate().is_err());
+        // Reports and commitments from 0.3.0 still parse: the set-level
+        // tolerances take their defaults.
+        let t0: Tolerance =
+            serde_json::from_str(r#"{"max_mean_abs":0.5,"max_token_abs":2.0}"#).unwrap();
+        assert_eq!(t0, Tolerance::default());
     }
 
     #[test]

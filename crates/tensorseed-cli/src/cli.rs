@@ -222,9 +222,26 @@ pub enum Command {
     /// Send logprob challenges from a reference file to an OpenAI
     /// compatible endpoint and compare the answers within tolerances.
     ///
+    /// The verdict is decided over the set (`ts.set-decision/1`): the run
+    /// fails when more than `--max-fail-fraction` of the scored challenges
+    /// fail or their median deviation is above `--max-median`, and always
+    /// when a response is unsigned or badly signed under a claim.
+    /// Tolerances come from the flags, else from the reference file's
+    /// calibration (`calibrate-reference`), else the defaults.
+    ///
     /// Exit status: 0 pass, 1 fail, 2 inconclusive or unsupported (also
     /// for errors that prevent a verdict).
     CheckEndpoint(CheckEndpointArgs),
+    /// Measure how far an honest endpoint's logprobs drift from a
+    /// reference set, and write calibrated tolerances into a copy of it.
+    ///
+    /// Point it at an endpoint you run yourself that serves the same
+    /// verified file. It sends every challenge `--runs` times, records the
+    /// spread, and writes the reference file again with a `calibration`
+    /// block, which is covered by `set_hash` (so the set gets a new
+    /// `set_hash`; publish that one). `check-endpoint` then uses the
+    /// calibrated tolerances unless flags override them.
+    CalibrateReference(CalibrateReferenceArgs),
     /// Create or show the Ed25519 response signing key.
     ///
     /// The key lives in an owner-only file next to the config file
@@ -1011,6 +1028,11 @@ pub struct ReferenceLogprobsArgs {
     /// Request seed sent with every challenge.
     #[arg(long, default_value_t = 1)]
     pub sampling_seed: u64,
+    /// Requests per prompt (1 to 50). The expected values are the
+    /// per-token medians, which keeps one unlucky run of a
+    /// nondeterministic engine out of the set.
+    #[arg(long, default_value_t = tensorseed_app::challenge::DEFAULT_REFERENCE_SAMPLES)]
+    pub samples: u32,
     /// Use this already running OpenAI compatible endpoint (for example
     /// `http://127.0.0.1:8090/v1`) instead of starting the runtime. It
     /// must be serving this verified copy and entrypoint.
@@ -1084,12 +1106,23 @@ pub struct CheckEndpointArgs {
     /// every attempt does.
     #[arg(long, default_value_t = 3)]
     pub repeats: u32,
-    /// Largest mean absolute logprob deviation per challenge (nats).
-    #[arg(long, value_name = "NATS", default_value_t = 0.5)]
-    pub max_mean_abs: f64,
-    /// Largest deviation of any one token (nats).
-    #[arg(long, value_name = "NATS", default_value_t = 2.0)]
-    pub max_token_abs: f64,
+    /// Largest mean absolute logprob deviation per challenge (nats;
+    /// default: the reference file's calibration, else 0.5).
+    #[arg(long, value_name = "NATS")]
+    pub max_mean_abs: Option<f64>,
+    /// Largest deviation of any one token (nats; default: calibration,
+    /// else 2).
+    #[arg(long, value_name = "NATS")]
+    pub max_token_abs: Option<f64>,
+    /// Largest share of scored challenges that may fail before the run
+    /// fails, 0 to 1 (default: calibration, else 0.25). 0 fails the run on
+    /// any failing challenge, as 0.3.0 did.
+    #[arg(long, value_name = "FRACTION")]
+    pub max_fail_fraction: Option<f64>,
+    /// Largest median, over the scored challenges, of their mean deviation
+    /// (nats; default: calibration, else 0.35).
+    #[arg(long, value_name = "NATS")]
+    pub max_median: Option<f64>,
     /// Send llama.cpp's `cache_prompt: false` with every challenge, for
     /// self-checks and calibration against your own llama.cpp server. A
     /// marketplace should not send it, so challenges look like ordinary
@@ -1111,6 +1144,52 @@ pub struct CheckEndpointArgs {
     /// Print one JSON document (`ts.check-endpoint/1`) on stdout.
     #[arg(long)]
     pub json: bool,
+}
+
+/// `calibrate-reference` arguments.
+#[derive(Debug, Args)]
+pub struct CalibrateReferenceArgs {
+    /// Base URL of an endpoint you run that serves the same verified
+    /// file, usually ending in `/v1`.
+    pub base_url: String,
+    /// Reference file (`ts.reference-logprobs/1`).
+    #[arg(long, short = 'r', value_name = "PATH")]
+    pub reference: PathBuf,
+    /// Write the calibrated reference file here (owner-only). It may be
+    /// the input path.
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub out: PathBuf,
+    /// Also write the new public commitment here.
+    #[arg(long, value_name = "PATH")]
+    pub commitment: Option<PathBuf>,
+    /// Full passes over the set (2 to 100).
+    #[arg(long, default_value_t = 10)]
+    pub runs: u32,
+    /// Safety factor applied to the observed spread (1 to 10).
+    #[arg(long, default_value_t = 1.5)]
+    pub margin: f64,
+    /// Model id to request (default: the reference file's repo id).
+    #[arg(long, value_name = "ID")]
+    pub model_id: Option<String>,
+    /// Environment variable holding the endpoint's API key. The key is
+    /// never taken on the command line and never printed.
+    #[arg(long, value_name = "VAR")]
+    pub api_key_env: Option<String>,
+    /// Seconds per request.
+    #[arg(long, value_name = "SECS", default_value_t = 60)]
+    pub timeout: u64,
+    /// Challenges in flight at once. Use the concurrency your checks will
+    /// use, so batching effects are measured.
+    #[arg(long, default_value_t = 2)]
+    pub concurrency: usize,
+    /// Send llama.cpp's `cache_prompt: false`. Leave it off to measure the
+    /// prompt cache effects that real checks will see.
+    #[arg(long)]
+    pub no_prompt_cache: bool,
+    /// Engine version to record (default: the endpoint's `/props` build
+    /// info, or `unknown`).
+    #[arg(long, value_name = "TEXT")]
+    pub engine_version: Option<String>,
 }
 
 /// `verify` arguments.
@@ -1205,6 +1284,7 @@ impl Command {
             Self::ServeInference(_) => "serve-inference",
             Self::ReferenceLogprobs(_) => "reference-logprobs",
             Self::CheckEndpoint(_) => "check-endpoint",
+            Self::CalibrateReference(_) => "calibrate-reference",
             Self::ResponseKey(ResponseKeyCmd::Create { .. }) => "response-key create",
             Self::ResponseKey(ResponseKeyCmd::Show { .. }) => "response-key show",
             Self::ClaimServing(_) => "claim-serving",
