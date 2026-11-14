@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-seeds-pause"
+description = "Enables the seeds_pause command without any pre-configured scope."
+commands.allow = ["seeds_pause"]
+
+[[permission]]
+identifier = "deny-seeds-pause"
+description = "Denies the seeds_pause command without any pre-configured scope."
+commands.deny = ["seeds_pause"]

@@ -746,6 +746,7 @@ Single binary `tensorseed`.
 | `seed [--dir DIR]... [--for DURATION] [--serve-catalog]` | Seed published revisions or pulled directories in place; `--serve-catalog` also serves the local catalog files on `serve.http_listen` (8.3). | done |
 | `serve [--for DURATION] [--serve-catalog] [--http ADDR] [--health ADDR\|off] [--fetch\|--no-fetch] [--dir DIR]... [--sync-interval SECS]` | Long running seeder: catalog loop, selection rules, takedowns, budget, auto fetch, HTTP webseed, catalog mirror, health endpoint, port mapping (8.3). | done |
 | `takedown <repo_id> --reason ... [--revisions ...] [--delete-webseed]` | Write a tombstone, optionally delete webseed objects on every storage target. | stub |
+| `gui [TARGET] [--type model\|dataset] [--print-command]` | Open Tensorseed Desktop, optionally at an entry (`org/name`) or a `tensorseed://` link; exit 1 with where it looked and the download link if it is not installed (19). | done (unreleased 0.3.0) |
 | `hf login` / `hf logout` / `hf status` | Save, forget, or check a Hugging Face token without printing it. Also reuse a token already saved by `hf auth login`. | done (unreleased 0.2.0) |
 
 Exit codes: 0 success, 1 error, 2 not implemented yet, 3 verification or download failure.

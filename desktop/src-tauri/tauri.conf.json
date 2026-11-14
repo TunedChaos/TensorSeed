@@ -47,7 +47,11 @@
     ],
     "linux": {
       "deb": {
-        "section": "utils"
+        "section": "utils",
+        "desktopTemplate": "linux/tensorseed-desktop.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "linux/tensorseed-desktop.desktop"
       }
     },
     "windows": {},

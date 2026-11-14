@@ -9,6 +9,7 @@ mod challenge;
 mod cli;
 mod consumer;
 mod doctor;
+mod gui;
 mod harvest;
 mod hf_auth;
 mod inference;
@@ -88,6 +89,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Doctor(args) => doctor::run(&path, args).await,
         Command::Hf(cmd) => hf_auth::run(&load()?, cmd).await,
+        Command::Gui(args) => gui::run(&path, args),
         Command::Catalog(cmd) => catalog_cmd::run(cmd, load, &path).await,
         Command::Harvest(args) => harvest::run(&load()?, args).await,
         Command::Publish {

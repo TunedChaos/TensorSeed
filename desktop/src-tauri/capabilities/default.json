@@ -1,12 +1,24 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: the read only catalog commands, events (for deep links), and nothing else.",
+  "description": "Main window: the app commands (catalogs, entries, entry pages, local copies, torrent settings, pull, verify, seed, status, start link), events (deep links, jobs, status), and nothing else.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-catalogs-list",
-    "allow-entries-list"
+    "allow-entries-list",
+    "allow-entry-show",
+    "allow-local-list",
+    "allow-settings-get",
+    "allow-settings-check",
+    "allow-settings-set",
+    "allow-pull-start",
+    "allow-verify-start",
+    "allow-seed-start",
+    "allow-seeds-pause",
+    "allow-seeds-resume",
+    "allow-status",
+    "allow-initial-route"
   ]
 }

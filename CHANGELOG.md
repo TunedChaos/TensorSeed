@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Tensorseed Desktop (M3.2, `desktop/`): a tray icon (show or hide the
+  window, live seeding and downloading counts and rates, pause all,
+  resume all, quit); a settings view for every `[torrent]` option (caps,
+  per torrent caps, peer and connection limits, uTP, SOCKS5, bind
+  interface, ratio and time stop rules, scheduled limits) that validates
+  with the CLI's loader and edits only `[torrent]` in the CLI's config
+  file, keeping comments, other sections, and unknown keys; entry pages
+  with the manifest, signature and chain anchor status, license and
+  commercial mark, files and sizes, and pull, verify, and seed actions;
+  a local copies view; and `tensorseed://` deep links (`catalogs`,
+  `settings`, `entry/[model|dataset/]<org>/<name>?revision=&catalog=`)
+  that only navigate, with single instance forwarding to the running
+  window. Pull runs the `tensorseed` CLI for now; verify and seed run in
+  process, one seeder per machine (Desktop will not start a second one
+  next to a running `serve`). Linux packages get a desktop file with
+  `%u` and `MimeType=x-scheme-handler/tensorseed`. The updater stays
+  off. See `desktop/README.md`.
+- `tensorseed gui [TARGET] [--type] [--print-command]` opens Tensorseed
+  Desktop, optionally at an entry or a `tensorseed://` link. It looks in
+  `TENSORSEED_DESKTOP`, next to the CLI, on `PATH`, and in the standard
+  install places for Linux (including AppImage and Flatpak), Windows,
+  and macOS, and passes the config path along. If Desktop is not
+  installed it says where it looked and where to get it, and exits 1.
+  The CLI links no GUI code.
+- Config: `TENSORSEED_CLI` and `TENSORSEED_DESKTOP` (binary locations
+  for Desktop and `tensorseed gui`) are no longer read as config keys,
+  so setting them does not break config loading.
 - Response signing (`docs/plans/verified-serving.md` sections 3, 5.1,
   and 5.8). `tensorseed response-key create|show` makes an Ed25519
   response key in an owner-only `response-key.json` next to the config

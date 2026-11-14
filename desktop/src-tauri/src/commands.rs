@@ -1,17 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026 Tuned Chaos
 
-//! Tauri commands over `tensorseed-app`. Read only for now (M3.2): list the
-//! followed catalogs and show one catalog's entries with their signature and
-//! chain anchor status. Pull and seed move here in M3.3 and M3.4.
+//! Tauri commands over `tensorseed-app`: the followed catalogs, one
+//! catalog's entries, entry pages (manifest, signature and chain anchor
+//! status, license, files, local copy), local copies, the `[torrent]`
+//! settings, and the pull, verify, and seed actions.
 //!
 //! Results use camelCase field names to match `@tensorseed/ui` types
 //! (`ui/src/source.ts`). Errors cross the bridge as display strings.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::Serialize;
+use tauri::{AppHandle, State};
+use tensorseed_app::links::Route;
+use tensorseed_app::pull::{
+    catalog_manifest, default_out, parse_manifest_bytes, read_pull_record, tombstone_covers,
+};
+use tensorseed_core::keys::{RepoRef, RepoType};
+use tensorseed_core::verify::META_DIR;
+
+use crate::jobs::Jobs;
+use crate::seeder::Seeder;
 use tensorseed_app::backend::{Backend, file_catalog, open_reader, pinned_key};
 use tensorseed_app::config::{self, ChainCheck, Config, Subscription};
 use tensorseed_catalog::CatalogId;
@@ -19,13 +30,18 @@ use tensorseed_core::keys::index_prefix;
 use tensorseed_core::manifest::{IndexEntry, SCHEMA_INDEX};
 
 /// Same lookup as the CLI: `TENSORSEED_CONFIG`, else the default path.
-fn config_path() -> PathBuf {
+pub fn config_path() -> PathBuf {
     std::env::var_os("TENSORSEED_CONFIG")
         .filter(|v| !v.is_empty())
         .map_or_else(config::default_path, PathBuf::from)
 }
 
-fn load_config() -> Result<(PathBuf, Config), String> {
+/// Load and validate the shared config.
+///
+/// # Errors
+///
+/// Fails when the config does not load or validate.
+pub fn load_config() -> Result<(PathBuf, Config), String> {
     let path = config_path();
     let cfg = config::load(&path)
         .with_context(|| format!("loading {}", path.display()))
@@ -342,6 +358,504 @@ async fn read_entries(
     }
     entries.sort_by_key(|a| a.id.to_lowercase());
     Ok((entries, problems))
+}
+
+fn err(e: anyhow::Error) -> String {
+    format!("{e:#}")
+}
+
+fn parse_type(t: &str) -> Result<RepoType, String> {
+    match t {
+        "model" => Ok(RepoType::Model),
+        "dataset" => Ok(RepoType::Dataset),
+        other => Err(format!("unknown repo type {other:?} (model or dataset)")),
+    }
+}
+
+/// A local copy under `general.download_dir` (`LocalCopy` in
+/// `src/lib/native.ts`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCopy {
+    /// `model` or `dataset`.
+    repo_type: &'static str,
+    /// Repo id.
+    id: String,
+    /// Directory.
+    dir: String,
+    /// A finished pull is recorded (`.tensorseed/pull.json`).
+    pulled: bool,
+    /// Pulled commit.
+    commit: Option<String>,
+    /// When it was pulled (RFC 3339 UTC).
+    pulled_at: Option<String>,
+    /// The pull used a signature verified manifest.
+    signed: bool,
+    /// Files in the revision.
+    files: usize,
+    /// Bytes in the revision.
+    bytes: u64,
+    /// Files deliberately not downloaded.
+    skipped: usize,
+    /// It has a torrent, so it can be seeded.
+    has_torrent: bool,
+    /// The in-app seeder is seeding it.
+    seeding: bool,
+    /// Why the record could not be read.
+    error: Option<String>,
+}
+
+async fn local_copy(seeder: &Seeder, repo_type: RepoType, id: &str, dir: &Path) -> LocalCopy {
+    let (record, error) = match read_pull_record(dir) {
+        Ok(r) => (r, None),
+        Err(e) => (None, Some(err(e))),
+    };
+    LocalCopy {
+        repo_type: repo_type.as_str(),
+        id: record
+            .as_ref()
+            .map_or_else(|| id.to_string(), |r| r.repo.clone()),
+        dir: dir.display().to_string(),
+        pulled: record.is_some(),
+        commit: record.as_ref().map(|r| r.commit.clone()),
+        pulled_at: record.as_ref().map(|r| r.pulled_at.clone()),
+        signed: record.as_ref().is_some_and(|r| r.signed),
+        files: record.as_ref().map_or(0, |r| r.files.len()),
+        bytes: record
+            .as_ref()
+            .map_or(0, |r| r.files.iter().map(|f| f.size).sum()),
+        skipped: record.as_ref().map_or(0, |r| r.skipped.len()),
+        has_torrent: dir
+            .join(META_DIR)
+            .join(tensorseed_app::torrents::PULLED_TORRENT)
+            .is_file(),
+        seeding: seeder.is_seeding(dir).await,
+        error,
+    }
+}
+
+/// Pulled copies under `general.download_dir`: `<org>/<name>` for models
+/// and `datasets/<org>/<name>` for datasets, each with a `pull.json`.
+fn scan_local(cfg: &Config) -> Vec<(RepoType, String, PathBuf)> {
+    let base = config::expand(&cfg.general.download_dir);
+    let mut out = Vec::new();
+    let mut scan = |root: &Path, ty: RepoType, skip: Option<&str>| {
+        let Ok(orgs) = std::fs::read_dir(root) else {
+            return;
+        };
+        for org in orgs.filter_map(Result::ok) {
+            let on = org.file_name().to_string_lossy().into_owned();
+            if skip == Some(on.as_str()) || !org.path().is_dir() {
+                continue;
+            }
+            let Ok(names) = std::fs::read_dir(org.path()) else {
+                continue;
+            };
+            for n in names.filter_map(Result::ok) {
+                let d = n.path();
+                if d.join(META_DIR).join("pull.json").is_file() {
+                    let id = format!("{on}/{}", n.file_name().to_string_lossy());
+                    out.push((ty, id, d));
+                }
+            }
+        }
+    };
+    scan(&base, RepoType::Model, Some("datasets"));
+    scan(&base.join("datasets"), RepoType::Dataset, None);
+    out.sort_by_key(|a| a.1.to_lowercase());
+    out
+}
+
+/// `local_list` result.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalList {
+    download_dir: String,
+    copies: Vec<LocalCopy>,
+}
+
+/// Pulled copies on this machine. No network requests.
+///
+/// # Errors
+///
+/// Fails when the config cannot be loaded.
+#[tauri::command]
+pub async fn local_list(seeder: State<'_, Seeder>) -> Result<LocalList, String> {
+    let (_, cfg) = load_config()?;
+    let mut copies = Vec::new();
+    for (ty, id, dir) in scan_local(&cfg) {
+        copies.push(local_copy(&seeder, ty, &id, &dir).await);
+    }
+    Ok(LocalList {
+        download_dir: config::expand(&cfg.general.download_dir)
+            .display()
+            .to_string(),
+        copies,
+    })
+}
+
+/// `entry_show` result (`EntryPage` in `src/lib/native.ts`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryPage {
+    id: String,
+    repo_type: &'static str,
+    /// Catalog the manifest was resolved through.
+    catalog: Option<String>,
+    catalog_label: Option<String>,
+    /// The manifest (file pages merged), as `Manifest` in `ui/src/types.ts`.
+    manifest: Option<serde_json::Value>,
+    /// `catalog` or `local` (the copy's stored manifest).
+    manifest_source: Option<&'static str>,
+    manifest_error: Option<String>,
+    /// The manifest signature verified against the pinned publisher key.
+    signed: bool,
+    /// A tombstone covering this revision.
+    tombstone: Option<serde_json::Value>,
+    taken_down: bool,
+    taken_down_in: Vec<String>,
+    /// Chain anchor status of the catalog revision the manifest came from.
+    chain: Option<ChainView>,
+    commercial: Option<tensorseed_core::commercial::Assessment>,
+    synced: bool,
+    sync_error: Option<String>,
+    local: LocalCopy,
+    /// The `tensorseed` CLI that runs pulls was found.
+    cli_found: bool,
+}
+
+/// One entry: its signed manifest, signature and chain anchor status,
+/// license and commercial serving mark, files, and the local copy. With
+/// `sync`, the catalog is synced first (gated by the chain check as in the
+/// CLI); without it only the local catalog copy is read. When the catalog
+/// has no manifest, a pulled copy's stored manifest is shown instead (its
+/// signature checked the same way).
+///
+/// # Errors
+///
+/// Fails when the config cannot be loaded or the type or id are invalid.
+#[tauri::command]
+pub async fn entry_show(
+    seeder: State<'_, Seeder>,
+    repo_type: String,
+    id: String,
+    revision: Option<String>,
+    catalog: Option<String>,
+    sync: bool,
+) -> Result<EntryPage, String> {
+    let (_, cfg) = load_config()?;
+    let ty = parse_type(&repo_type)?;
+    let route = Route::entry(ty, &id, revision.as_deref(), catalog.as_deref()).map_err(err)?;
+    let Route::Entry { revision, .. } = route else {
+        return Err("internal error: not an entry route".into());
+    };
+    let repo = RepoRef::new(ty, id.clone()).map_err(|e| e.to_string())?;
+    let sub = cfg.subscription(catalog.as_deref()).ok();
+    let catalog_name = sub.as_ref().map(|s| s.name.clone());
+
+    let mut sync_error = None;
+    let mut resolved = catalog_manifest(
+        &cfg,
+        &repo,
+        revision.as_deref(),
+        !sync,
+        catalog_name.as_deref(),
+    )
+    .await;
+    if sync && let Err(e) = &resolved {
+        sync_error = Some(err(anyhow::anyhow!("{e:#}")));
+        resolved = catalog_manifest(
+            &cfg,
+            &repo,
+            revision.as_deref(),
+            true,
+            catalog_name.as_deref(),
+        )
+        .await;
+    }
+    let dir = default_out(&cfg, &repo);
+    let mut source = Some("catalog");
+    let mut manifest_error = None;
+    let resolved = match resolved {
+        Ok(r) => Some(r),
+        Err(e) => {
+            manifest_error = Some(err(e));
+            let stored = dir.join(META_DIR).join("manifest.json");
+            source = Some("local");
+            std::fs::read(&stored)
+                .ok()
+                .and_then(|b| parse_manifest_bytes(&cfg, &b, &stored.display().to_string()).ok())
+        }
+    };
+    if resolved.is_none() {
+        source = None;
+    }
+
+    let chain = match &sub {
+        Some(s) if source == Some("catalog") => {
+            let view = cfg.for_subscription(s);
+            match open_reader(&view, None, true).await {
+                Ok((backend, _)) => Some(chain_view(&view, &backend, sync_error.as_deref())),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+    let local = local_copy(&seeder, ty, &id, &dir).await;
+    let (manifest, signed, tombstone, taken_down, taken_down_in, commercial) = match resolved {
+        Some(r) => {
+            let covered = r
+                .tombstone
+                .as_ref()
+                .is_some_and(|t| tombstone_covers(t, &r.manifest.hf_commit));
+            (
+                serde_json::to_value(&r.manifest).ok(),
+                r.signed,
+                r.tombstone
+                    .as_ref()
+                    .and_then(|t| serde_json::to_value(t).ok()),
+                covered,
+                r.taken_down_in,
+                Some(tensorseed_core::commercial::assess_license_info(
+                    &r.manifest.license,
+                )),
+            )
+        }
+        None => (None, false, None, false, Vec::new(), None),
+    };
+    Ok(EntryPage {
+        id,
+        repo_type: ty.as_str(),
+        catalog: catalog_name,
+        catalog_label: sub.as_ref().map(|s| s.display().to_string()),
+        manifest,
+        manifest_source: source,
+        manifest_error,
+        signed,
+        tombstone,
+        taken_down,
+        taken_down_in,
+        chain,
+        commercial,
+        synced: sync && sync_error.is_none(),
+        sync_error,
+        local,
+        cli_found: crate::jobs::cli_path().is_some(),
+    })
+}
+
+/// `settings_get` result (`SettingsView` in `src/lib/native.ts`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsView {
+    config_path: String,
+    /// The file exists (else defaults are shown and saving creates it).
+    exists: bool,
+    /// `[torrent]` from the file over the defaults (no environment).
+    torrent: config::Torrent,
+    /// The defaults, so the form can mark changed fields.
+    defaults: config::Torrent,
+    /// `TENSORSEED_TORRENT__*` variables that override the file.
+    env_overrides: Vec<String>,
+    /// `bind_interface` works on this platform.
+    bind_interface_supported: bool,
+}
+
+/// The `[torrent]` settings from the shared config file.
+///
+/// # Errors
+///
+/// Fails when the file is not valid TOML or `[torrent]` does not parse.
+#[tauri::command]
+pub async fn settings_get() -> Result<SettingsView, String> {
+    let path = config_path();
+    let torrent = tensorseed_app::settings::read_torrent(&path).map_err(err)?;
+    Ok(SettingsView {
+        config_path: path.display().to_string(),
+        exists: path.is_file(),
+        torrent,
+        defaults: config::Torrent::default(),
+        env_overrides: tensorseed_app::settings::torrent_env_overrides(),
+        bind_interface_supported: !cfg!(windows),
+    })
+}
+
+/// Validate `[torrent]` settings without saving (the same checks the CLI
+/// runs when it loads the config).
+///
+/// # Errors
+///
+/// Fails with the first validation error.
+#[tauri::command]
+pub async fn settings_check(torrent: config::Torrent) -> Result<(), String> {
+    torrent.validate().map_err(err)
+}
+
+/// `settings_set` result.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSaved {
+    config_path: String,
+    /// The running seeder took the new caps, schedule, and stop rules.
+    applied_to_seeder: bool,
+    env_overrides: Vec<String>,
+}
+
+/// Validate and save `[torrent]` into the shared config file, keeping
+/// comments, other sections, and untouched keys. Nothing is written when
+/// validation fails. A running seeder picks up the new caps, schedule, and
+/// stop rules; other options apply when seeding starts again.
+///
+/// # Errors
+///
+/// Fails with the validation error, or when the file cannot be written.
+#[tauri::command]
+pub async fn settings_set(
+    seeder: State<'_, Seeder>,
+    torrent: config::Torrent,
+) -> Result<SettingsSaved, String> {
+    let path = config_path();
+    tensorseed_app::settings::write_torrent(&path, &torrent).map_err(err)?;
+    let applied = match config::load(&path) {
+        Ok(cfg) => seeder.reload(&cfg).await.map_err(err)?,
+        Err(_) => false,
+    };
+    Ok(SettingsSaved {
+        config_path: path.display().to_string(),
+        applied_to_seeder: applied,
+        env_overrides: tensorseed_app::settings::torrent_env_overrides(),
+    })
+}
+
+/// Start `tensorseed pull` for an entry; progress arrives as job events.
+///
+/// # Errors
+///
+/// Fails when the inputs are invalid or the CLI cannot be started.
+#[tauri::command]
+pub async fn pull_start(
+    app: AppHandle,
+    jobs: State<'_, Jobs>,
+    repo_type: String,
+    id: String,
+    revision: Option<String>,
+    catalog: Option<String>,
+) -> Result<u64, String> {
+    let (path, cfg) = load_config()?;
+    let ty = parse_type(&repo_type)?;
+    let route = Route::entry(ty, &id, revision.as_deref(), catalog.as_deref()).map_err(err)?;
+    let Route::Entry {
+        revision, catalog, ..
+    } = route
+    else {
+        return Err("internal error: not an entry route".into());
+    };
+    let out = default_out(
+        &cfg,
+        &RepoRef::new(ty, id.clone()).map_err(|e| e.to_string())?,
+    );
+    let req = crate::jobs::PullRequest {
+        repo_type: ty.as_str().to_string(),
+        id,
+        revision,
+        catalog,
+        out,
+    };
+    crate::jobs::start_pull(app, jobs.inner().clone(), path, &req).map_err(err)
+}
+
+/// Verify the local copy of an entry against its signed manifest.
+///
+/// # Errors
+///
+/// Fails when the inputs are invalid or there is no local copy.
+#[tauri::command]
+pub async fn verify_start(
+    app: AppHandle,
+    jobs: State<'_, Jobs>,
+    repo_type: String,
+    id: String,
+    catalog: Option<String>,
+) -> Result<u64, String> {
+    let (path, cfg) = load_config()?;
+    let ty = parse_type(&repo_type)?;
+    let repo = RepoRef::new(ty, id).map_err(|e| e.to_string())?;
+    let dir = default_out(&cfg, &repo);
+    if !dir.join(META_DIR).join("pull.json").is_file() {
+        return Err(format!("{} has no finished pull to verify", dir.display()));
+    }
+    crate::jobs::start_verify(app, jobs.inner().clone(), path, cfg, repo, dir, catalog).map_err(err)
+}
+
+/// Seed the local copy of an entry with the in-app seeder.
+///
+/// # Errors
+///
+/// Fails when `tensorseed serve` already seeds on this machine, the copy
+/// has no torrent, or the files do not match it.
+#[tauri::command]
+pub async fn seed_start(
+    seeder: State<'_, Seeder>,
+    repo_type: String,
+    id: String,
+) -> Result<String, String> {
+    let (_, cfg) = load_config()?;
+    let ty = parse_type(&repo_type)?;
+    let repo = RepoRef::new(ty, id).map_err(|e| e.to_string())?;
+    if crate::status::probe_serve(&cfg).await.is_some() {
+        return Err(
+            "tensorseed serve is running on this machine and seeds there; stop it to seed from Desktop (one seeder per machine)"
+                .into(),
+        );
+    }
+    let dir = default_out(&cfg, &repo);
+    seeder.seed_dir(&cfg, &dir).await.map_err(err)
+}
+
+/// Pause every copy the in-app seeder is seeding.
+///
+/// # Errors
+///
+/// Fails when the engine rejects a pause.
+#[tauri::command]
+pub async fn seeds_pause(seeder: State<'_, Seeder>) -> Result<usize, String> {
+    seeder.pause_all().await.map_err(err)
+}
+
+/// Resume every copy the user paused.
+///
+/// # Errors
+///
+/// Fails when the engine rejects a resume.
+#[tauri::command]
+pub async fn seeds_resume(seeder: State<'_, Seeder>) -> Result<usize, String> {
+    seeder.resume_all().await.map_err(err)
+}
+
+/// Torrent activity now (the same data the tray shows).
+///
+/// # Errors
+///
+/// Never; the result type is for the command bridge.
+#[tauri::command]
+pub async fn status(
+    seeder: State<'_, Seeder>,
+    jobs: State<'_, Jobs>,
+) -> Result<crate::status::Status, String> {
+    let cfg = load_config().ok().map(|(_, c)| c);
+    Ok(crate::status::gather(&seeder, &jobs, cfg.as_ref()).await)
+}
+
+/// The link Desktop was started with, once (later links arrive as events).
+///
+/// # Errors
+///
+/// Never; the result type is for the command bridge.
+#[tauri::command]
+pub async fn initial_route(
+    link: State<'_, crate::InitialLink>,
+) -> Result<Option<crate::DeepLink>, String> {
+    Ok(link.0.lock().ok().and_then(|mut l| l.take()))
 }
 
 #[cfg(test)]

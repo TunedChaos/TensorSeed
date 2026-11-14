@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-seeds-resume"
+description = "Enables the seeds_resume command without any pre-configured scope."
+commands.allow = ["seeds_resume"]
+
+[[permission]]
+identifier = "deny-seeds-resume"
+description = "Denies the seeds_resume command without any pre-configured scope."
+commands.deny = ["seeds_resume"]

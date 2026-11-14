@@ -6,16 +6,15 @@
 
 use tauri::Runtime;
 
-/// Linux and Windows: a `tensorseed://` link launches a second process, so
-/// forward its URL (and focus) to the running window and exit.
+/// Linux and Windows: a second launch (`tensorseed gui`, or a
+/// `tensorseed://` link) starts a second process. It hands its arguments to
+/// the running one and exits; the plugin's deep-link feature routes the
+/// link to `on_open_url`. Here the window is shown again (it may be hidden
+/// in the tray) and brought forward.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn single_instance<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
-    use tauri::Manager;
     builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.unminimize();
-            let _ = w.set_focus();
-        }
+        crate::tray::show_window(app);
     }))
 }
 

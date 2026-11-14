@@ -316,6 +316,14 @@ pub enum Command {
     /// Hugging Face token: login, logout, and status.
     #[command(subcommand)]
     Hf(HfCmd),
+    /// Open Tensorseed Desktop, if it is installed.
+    ///
+    /// Looks for the `tensorseed-desktop` binary in `TENSORSEED_DESKTOP`,
+    /// next to this binary, on PATH, and in the standard install locations
+    /// (and the Flatpak `dev.tensorseed.desktop`). Desktop gets the same
+    /// config file. With a target, it opens that entry page. Prints where
+    /// to get Desktop when it is not installed. The CLI links no GUI code.
+    Gui(GuiArgs),
     /// Print a shell completion script (bash, zsh, fish, or powershell).
     Completions {
         /// Shell to generate completions for.
@@ -887,6 +895,20 @@ pub struct ClaimServingArgs {
     pub sig: Option<String>,
 }
 
+/// `gui` arguments.
+#[derive(Debug, Args)]
+pub struct GuiArgs {
+    /// A `tensorseed://` link, or a repo id `org/name` to open its entry
+    /// page.
+    pub target: Option<String>,
+    /// Repo type when the target is a repo id.
+    #[arg(long = "type", value_enum, default_value_t = RepoTypeArg::Model)]
+    pub repo_type: RepoTypeArg,
+    /// Print the command that would start Desktop and exit.
+    #[arg(long)]
+    pub print_command: bool,
+}
+
 /// `sign-responses` arguments.
 #[derive(Debug, Args)]
 pub struct SignResponsesArgs {
@@ -1184,6 +1206,7 @@ impl Command {
             Self::Hf(HfCmd::Login) => "hf login",
             Self::Hf(HfCmd::Logout) => "hf logout",
             Self::Hf(HfCmd::Status) => "hf status",
+            Self::Gui(_) => "gui",
             Self::Completions { .. } => "completions",
             Self::GenerateDocs { .. } => "generate-docs",
         }

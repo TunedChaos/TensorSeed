@@ -2452,3 +2452,58 @@ async fn serve_inference_sign_moves_the_runtime_behind_the_proxy() {
     .await;
     assert_eq!(code(&o), 1, "a malformed wallet is refused");
 }
+
+/// `tensorseed gui` starts the Desktop binary it finds with the entry link
+/// and the same config, and says where to get Desktop when there is none.
+#[cfg(unix)]
+#[test]
+fn gui_starts_desktop_or_says_where_to_get_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let cfg = tmp.path().join("tensorseed.toml");
+    std::fs::write(&cfg, "").unwrap();
+    let run = |path: &Path| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tensorseed"))
+            .args(["--config", cfg.to_str().unwrap(), "gui", "org/tiny"])
+            .env("PATH", path)
+            .env("HOME", tmp.path())
+            .env_remove("TENSORSEED_DESKTOP")
+            .output()
+            .unwrap()
+    };
+
+    let out = run(&bin);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(code(&out), 1, "{err}");
+    assert!(err.contains("Tensorseed Desktop is not installed"), "{err}");
+    assert!(err.contains("https://tensorseed.dev"), "{err}");
+
+    let log = tmp.path().join("started");
+    let fake = bin.join("tensorseed-desktop");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\necho \"$1 $TENSORSEED_CONFIG\" > {}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = run(&bin);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout(&out).contains("opened Tensorseed Desktop (PATH)"));
+    let mut seen = String::new();
+    for _ in 0..50 {
+        seen = std::fs::read_to_string(&log).unwrap_or_default();
+        if !seen.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        seen.trim(),
+        format!("tensorseed://entry/model/org/tiny {}", cfg.display())
+    );
+}

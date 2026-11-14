@@ -1997,8 +1997,10 @@ pub fn figment(path: &Path) -> Figment {
     Figment::from(Serialized::defaults(Config::default()))
         .merge(Toml::file(path))
         .merge(
+            // CLI and DESKTOP name the binaries `tensorseed gui` and
+            // Desktop start (TENSORSEED_CLI, TENSORSEED_DESKTOP).
             Env::prefixed("TENSORSEED_")
-                .ignore(&["CONFIG", "KEY_PASSWORD"])
+                .ignore(&["CONFIG", "KEY_PASSWORD", "CLI", "DESKTOP"])
                 .split("__"),
         )
 }
@@ -2099,6 +2101,17 @@ mod tests {
                 jail.create_file("d.toml", bad)?;
                 assert!(load(Path::new("d.toml")).is_err(), "{bad}");
             }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn binary_location_variables_are_not_config() {
+        Jail::expect_with(|jail| {
+            jail.create_file("tensorseed.toml", EXAMPLE)?;
+            jail.set_env("TENSORSEED_CLI", "/opt/tensorseed/tensorseed");
+            jail.set_env("TENSORSEED_DESKTOP", "/opt/tensorseed/tensorseed-desktop");
+            load(Path::new("tensorseed.toml")).map_err(|e| e.to_string())?;
             Ok(())
         });
     }

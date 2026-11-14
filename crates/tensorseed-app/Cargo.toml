@@ -33,6 +33,8 @@ tensorseed-hf.workspace = true
 tensorseed-serve.workspace = true
 tensorseed-torrent.workspace = true
 tokio.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
