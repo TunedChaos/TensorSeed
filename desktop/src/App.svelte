@@ -6,6 +6,7 @@
   import CatalogsView from "./lib/CatalogsView.svelte";
   import EntryPage from "./lib/EntryPage.svelte";
   import DownloadsView from "./lib/DownloadsView.svelte";
+  import SeedingView from "./lib/SeedingView.svelte";
   import LocalView from "./lib/LocalView.svelte";
   import SettingsView from "./lib/SettingsView.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
@@ -44,6 +45,7 @@
   const tabs = [
     { href: "#/", label: "Catalogs", kinds: ["catalogs", "entry"] },
     { href: "#/downloads", label: "Downloads", kinds: ["downloads"] },
+    { href: "#/seeding", label: "Seeding", kinds: ["seeding"] },
     { href: "#/local", label: "Library", kinds: ["local"] },
     { href: "#/settings", label: "Settings", kinds: ["settings"] },
   ];
@@ -79,6 +81,8 @@
       <LocalView />
     {:else if view.kind === "downloads"}
       <DownloadsView />
+    {:else if view.kind === "seeding"}
+      <SeedingView />
     {:else if view.kind === "settings"}
       <SettingsView />
     {:else if view.kind === "entry"}

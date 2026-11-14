@@ -10,8 +10,8 @@
 //! chain check requests `tensorseed-app` makes when the user syncs, the
 //! downloads of a pull the user starts or resumes (catalog, mirrors, the
 //! Hub, and the swarm, as in `tensorseed pull`), the BitTorrent swarm when
-//! the user seeds, and a probe of the local
-//! `tensorseed serve` health endpoint (`serve.health_listen`), and the
+//! the user seeds, requests to a `tensorseed serve` on this machine (its
+//! 127.0.0.1 control endpoint, or else `serve.health_listen`), and the
 //! update check in [`updater`] (one GET of `latest.json`, at start when
 //! enabled and when the user asks, then the installer once they confirm).
 
@@ -127,6 +127,9 @@ pub fn run() {
             commands::seed_start,
             commands::seeds_pause,
             commands::seeds_resume,
+            commands::seed_set_paused,
+            commands::seed_stop,
+            commands::serve_set_paused,
             commands::status,
             commands::initial_route,
             updater::update_info,

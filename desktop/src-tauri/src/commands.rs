@@ -1030,8 +1030,9 @@ pub async fn verify_start(
 ///
 /// # Errors
 ///
-/// Fails when `tensorseed serve` already seeds on this machine, the copy
-/// has no torrent, or the files do not match it.
+/// Fails when another seeder (`tensorseed serve` or `tensorseed seed`)
+/// runs on this machine, the copy has no torrent, or the files do not
+/// match it.
 #[tauri::command]
 pub async fn seed_start(
     seeder: State<'_, Seeder>,
@@ -1041,11 +1042,15 @@ pub async fn seed_start(
     let (_, cfg) = load_config()?;
     let ty = parse_type(&repo_type)?;
     let repo = RepoRef::new(ty, id).map_err(|e| e.to_string())?;
-    if crate::status::probe_serve(&cfg).await.is_some() {
-        return Err(
-            "tensorseed serve is running on this machine and seeds there; stop it to seed from Desktop (one seeder per machine)"
-                .into(),
-        );
+    if let Some(other) = crate::status::probe_serve(&cfg).await {
+        let who = match (other.kind.as_str(), other.pid) {
+            ("seed", Some(p)) => format!("tensorseed seed (pid {p})"),
+            (_, Some(p)) => format!("tensorseed serve (pid {p})"),
+            _ => "tensorseed serve".to_string(),
+        };
+        return Err(format!(
+            "{who} is seeding on this machine; stop it to seed from Desktop (one seeder per machine)"
+        ));
     }
     let dir = default_out(&cfg, &repo);
     seeder.seed_dir(&cfg, &dir).await.map_err(err)
@@ -1061,7 +1066,66 @@ pub async fn seeds_pause(seeder: State<'_, Seeder>) -> Result<usize, String> {
     seeder.pause_all().await.map_err(err)
 }
 
-/// Pause every seed and every running pull (the tray's Pause all).
+/// Pause or resume one copy the in-app seeder seeds.
+///
+/// # Errors
+///
+/// Fails when it is not seeding here or the engine refuses.
+#[tauri::command]
+pub async fn seed_set_paused(
+    seeder: State<'_, Seeder>,
+    name: String,
+    pause: bool,
+) -> Result<String, String> {
+    seeder.set_paused(&name, pause).await.map_err(err)
+}
+
+/// Stop seeding one copy (files stay).
+///
+/// # Errors
+///
+/// Fails when it is not seeded here.
+#[tauri::command]
+pub async fn seed_stop(seeder: State<'_, Seeder>, name: String) -> Result<String, String> {
+    seeder.remove(&name).await.map_err(err)
+}
+
+/// Pause or resume one revision (`name`) or all in the `tensorseed serve`
+/// Desktop is attached to. Returns how many changed.
+///
+/// # Errors
+///
+/// Fails when no serve is attached or it refuses.
+#[tauri::command]
+pub async fn serve_set_paused(name: Option<String>, pause: bool) -> Result<usize, String> {
+    let (_, cfg) = load_config()?;
+    let c = crate::status::serve_control(&cfg)
+        .ok_or("no tensorseed serve with a control endpoint is running on this machine")?;
+    c.action(if pause { "pause" } else { "resume" }, name.as_deref())
+        .await
+        .map_err(err)
+}
+
+/// Pause or resume everything in an attached serve, for Pause all and
+/// Resume all (0 when none is attached).
+pub(crate) async fn serve_all(pause: bool) -> usize {
+    let Ok((_, cfg)) = load_config() else {
+        return 0;
+    };
+    let Some(c) = crate::status::serve_control(&cfg) else {
+        return 0;
+    };
+    match c.action(if pause { "pause" } else { "resume" }, None).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("serve {}: {e:#}", if pause { "pause" } else { "resume" });
+            0
+        }
+    }
+}
+
+/// Pause every seed (here and in an attached serve) and every running
+/// pull (the tray's Pause all).
 ///
 /// # Errors
 ///
@@ -1069,7 +1133,7 @@ pub async fn seeds_pause(seeder: State<'_, Seeder>) -> Result<usize, String> {
 #[tauri::command]
 pub async fn all_pause(seeder: State<'_, Seeder>, jobs: State<'_, Jobs>) -> Result<usize, String> {
     let pulls = crate::pulls::pause(&jobs, None);
-    Ok(seeder.pause_all().await.map_err(err)? + pulls)
+    Ok(seeder.pause_all().await.map_err(err)? + pulls + serve_all(true).await)
 }
 
 /// Resume what Pause all stopped.
@@ -1088,7 +1152,7 @@ pub async fn all_resume(
         Ok((_, cfg)) => crate::pulls::resume_all(&app, &jobs, &cfg),
         Err(_) => 0,
     };
-    Ok(n + pulls)
+    Ok(n + pulls + serve_all(false).await)
 }
 
 /// Resume every copy the user paused.

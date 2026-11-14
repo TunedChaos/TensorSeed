@@ -1349,11 +1349,15 @@ mod tests {
         db.upsert_job("j", "model o/n@c", &out.display().to_string(), 2)
             .unwrap();
         db.upsert_file("j", "verified.bin", 1, "sha256:00").unwrap();
-        db.file_done("j", "verified.bin", "https://x/", None).unwrap();
+        db.file_done("j", "verified.bin", "https://x/", None)
+            .unwrap();
         discard(&cfg, &out, "j").unwrap();
         assert!(out.join("kept.bin").exists());
         assert!(out.join("verified.bin").exists());
-        assert!(!out.join("sub").exists(), "unverified file and its empty folder go");
+        assert!(
+            !out.join("sub").exists(),
+            "unverified file and its empty folder go"
+        );
         assert!(!out.join(META_DIR).join(SWARM_FILE).exists());
         assert!(db.jobs().unwrap().is_empty());
         assert!(out.exists(), "finished files keep the folder");

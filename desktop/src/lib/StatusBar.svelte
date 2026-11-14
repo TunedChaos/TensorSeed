@@ -12,12 +12,14 @@
     return mibps >= 1 ? `${mibps.toFixed(1)} MiB/s` : `${Math.round(mibps * 1024)} KiB/s`;
   }
 
-  let seeding = $derived((st?.desktop.seeding ?? 0) + (st?.serve?.torrents ?? 0));
+  let seeding = $derived((st?.desktop.seeding ?? 0) + Math.max(0, (st?.serve?.torrents ?? 0) - (st?.serve?.paused ?? 0)));
   let up = $derived((st?.desktop.uploadMibps ?? 0) + (st?.serve?.uploadMibps ?? 0));
   let down = $derived((st?.desktop.downloadMibps ?? 0) + (st?.serve?.downloadMibps ?? 0));
   /** Pulls' network rate, MiB/s. */
   let pullRate = $derived((st?.jobs ?? []).reduce((a, j) => a + (j.progress?.rate ?? 0), 0) / (1024 * 1024));
-  let paused = $derived((st?.desktop.paused ?? 0) + (st?.pausedPulls ?? 0));
+  let paused = $derived((st?.desktop.paused ?? 0) + (st?.pausedPulls ?? 0) + (st?.serve?.paused ?? 0));
+  /** Something Pause all can pause: seeds here, pulls, or an attached serve. */
+  let pausable = $derived((st?.desktop.seeding ?? 0) + (st?.downloading ?? 0) + (st?.serve?.control ? seeding - (st?.desktop.seeding ?? 0) : 0));
 
   async function act(f: () => Promise<number>) {
     busy = true;
@@ -48,8 +50,8 @@
   {#if st?.desktop.running || st?.serve}
     <span class="opacity-70">up {rate(up)}, down {rate(down)}</span>
   {/if}
-  {#if st?.serve}<span class="badge badge-info" title="A tensorseed serve on this machine is seeding">serve</span>{/if}
-  <button type="button" class="btn btn-xs" title="Pause every seed and pull" disabled={busy || ((st?.desktop.seeding ?? 0) === 0 && (st?.downloading ?? 0) === 0)} onclick={() => act(allPause)}>Pause all</button>
+  {#if st?.serve}<a class="badge badge-info" href="#/seeding" title="Another seeder runs on this machine">{st.serve.kind === "seed" ? "tensorseed seed" : st.serve.control ? "serve attached" : "serve"}</a>{/if}
+  <button type="button" class="btn btn-xs" title="Pause every seed and pull" disabled={busy || pausable === 0} onclick={() => act(allPause)}>Pause all</button>
   <button type="button" class="btn btn-xs" title="Resume what Pause all stopped" disabled={busy || paused === 0} onclick={() => act(allResume)}>Resume all</button>
   {#if error}<span class="text-error">{error}</span>{/if}
 </div>

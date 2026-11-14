@@ -306,6 +306,19 @@ export function seedsResume(): Promise<number> {
   return invoke<number>("seeds_resume");
 }
 
+export function seedSetPaused(name: string, pause: boolean): Promise<string> {
+  return invoke<string>("seed_set_paused", { name, pause });
+}
+
+export function seedStop(name: string): Promise<string> {
+  return invoke<string>("seed_stop", { name });
+}
+
+/** Pause or resume one revision, or all (`name` null), in the attached serve. */
+export function serveSetPaused(name: string | null, pause: boolean): Promise<number> {
+  return invoke<number>("serve_set_paused", { name, pause });
+}
+
 export type SeedView = {
   name: string;
   dir: string;
@@ -314,6 +327,23 @@ export type SeedView = {
   peers: number;
   state: "seeding" | "paused" | "stopped" | "error";
   detail: string | null;
+};
+
+export type ServeTorrent = { name: string; state: string; bytes: number; uploaded: number; peers: number };
+
+export type ServeView = {
+  kind: "serve" | "seed";
+  pid: number | null;
+  /** Attached over the local control endpoint, so it can be paused here. */
+  control: boolean;
+  torrents: number;
+  paused: number;
+  uploaded: number;
+  list: ServeTorrent[];
+  uploadMibps: number;
+  downloadMibps: number;
+  peers: number;
+  status: string;
 };
 
 export type Status = {
@@ -329,7 +359,8 @@ export type Status = {
     uploaded: number;
     torrents: SeedView[];
   };
-  serve: { torrents: number; uploadMibps: number; downloadMibps: number; peers: number; status: string } | null;
+  /** Another seeder on this machine (`tensorseed serve` or `tensorseed seed`). */
+  serve: ServeView | null;
   jobs: JobEvent[];
   downloading: number;
   pausedPulls: number;

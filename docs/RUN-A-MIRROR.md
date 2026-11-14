@@ -423,6 +423,28 @@ answer 503 when the last sync failed and the head has expired, which makes
 them easy to wire into uptime checks. Keep the endpoint on localhost; it is
 meant for you, not the internet.
 
+### One seeder per machine, and Desktop
+
+`serve`, `tensorseed seed`, and Tensorseed Desktop take an exclusive lock
+on `seeder.lock` next to the job database (`general.state_db`) before
+they start a listening engine, and describe themselves in `seeder.json`
+beside it. A second seeder with the same config refuses to start and
+names the one that runs ("another seeder is running on this machine:
+tensorseed serve (pid 1234)").
+
+`serve` also opens a control endpoint on a random `127.0.0.1` port and
+writes its address and a random token to `seeder.json`, which is
+readable by its owner only (mode 600 on Unix; on Windows it sits in the
+user's own app data folder). Desktop, run by the same user with the same
+config, reads it to attach: it shows each revision's state, upload, and
+peers, and pauses or resumes one revision or all of them. A revision
+paused this way stays paused across restarts (`serve-state.json`) until
+resumed, and is reported as `paused: by the user` in `/health`. Every
+control request needs the token; the endpoint never listens beyond
+localhost and has no configuration. A `serve` running as a service user
+with its own state folder is not attached; Desktop shows it read only
+through `serve.health_listen`.
+
 ## 11. Operating notes
 
 - **Disk**: revisions are stored as plain files under

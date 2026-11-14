@@ -637,11 +637,73 @@ async fn serve_seeds_published_tree_resumes_and_respects_selection() {
     })
     .await;
     assert_eq!(v["torrents"][0]["owned"], false);
-    assert!(d.sigterm().success());
 
-    // Restart: seeding resumes from the state file before the first sync.
+    // One seeder per machine: the lock names serve, and a second seeder
+    // is refused while it runs.
+    let info: tensorseed_app::seeder_lock::SeederInfo =
+        serde_json::from_slice(&std::fs::read(host.join("seeder.json")).unwrap()).unwrap();
+    assert_eq!(info.kind, "serve");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(host.join("seeder.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the control token is owner only");
+    }
+    let o = run(&cfg, &["seed", "--for", "1s"], &[]).await;
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stderr)
+            .contains("another seeder is running on this machine: tensorseed serve (pid"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    // The control endpoint: loopback, token required, pause and resume.
+    let ctl = tensorseed_app::seeder_lock::Control::of(&info).expect("control endpoint");
+    let r = reqwest::get(format!(
+        "http://{}/control/status",
+        info.control.as_deref().unwrap()
+    ))
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 401);
+    let st = ctl.status().await.unwrap();
+    assert_eq!(st["torrents"][0]["name"], NAME);
+    assert_eq!(ctl.action("pause", Some(NAME)).await.unwrap(), 1);
+    assert_eq!(
+        ctl.action("pause", None).await.unwrap(),
+        0,
+        "already paused"
+    );
+    assert!(ctl.action("pause", Some("nope")).await.is_err());
+    let v = health_until(&haddr, "paused by the user", |v| {
+        v["torrents"][0]["state"] == "paused: by the user"
+    })
+    .await;
+    assert_eq!(v["torrents"].as_array().unwrap().len(), 1);
+    assert!(d.sigterm().success());
+    assert!(!host.join("seeder.json").exists(), "removed on exit");
+
+    // Restart: seeding resumes from the state file before the first sync,
+    // and a revision the user paused stays paused until resumed.
     let mut d = Daemon::spawn(&cfg, &["--sync-interval", "3600"]);
+    let haddr = Daemon::addr(&d.wait_for("health ", 30));
     d.wait_for("resumed 1 revision(s)", 60);
+    health_until(&haddr, "still paused", |v| {
+        v["torrents"][0]["state"] == "paused: by the user"
+    })
+    .await;
+    let info: tensorseed_app::seeder_lock::SeederInfo =
+        serde_json::from_slice(&std::fs::read(host.join("seeder.json")).unwrap()).unwrap();
+    let ctl = tensorseed_app::seeder_lock::Control::of(&info).unwrap();
+    assert_eq!(ctl.action("resume", None).await.unwrap(), 1);
+    health_until(&haddr, "seeding again", |v| {
+        v["torrents"][0]["state"] != "paused: by the user"
+    })
+    .await;
     assert!(d.sigterm().success());
     assert!(
         pubdir.join("t").join(NAME).exists(),

@@ -231,7 +231,7 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn snapshot(s: &SharedStatus) -> (bool, Status) {
+pub(crate) fn snapshot(s: &SharedStatus) -> (bool, Status) {
     let mut st = s.read().unwrap_or_else(|e| e.into_inner()).clone();
     let now = now_unix();
     st.uptime_secs = now.saturating_sub(st.started_unix);

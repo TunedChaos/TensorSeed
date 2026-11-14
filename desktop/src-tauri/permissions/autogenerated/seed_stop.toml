@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-seed-stop"
+description = "Enables the seed_stop command without any pre-configured scope."
+commands.allow = ["seed_stop"]
+
+[[permission]]
+identifier = "deny-seed-stop"
+description = "Denies the seed_stop command without any pre-configured scope."
+commands.deny = ["seed_stop"]

@@ -98,6 +98,7 @@ pub fn build(app: &tauri::App) -> tauri::Result<()> {
                     if let Err(e) = app.state::<Seeder>().pause_all().await {
                         tracing::warn!("pause all: {e:#}");
                     }
+                    crate::commands::serve_all(true).await;
                 });
             }
             "resume" => {
@@ -109,6 +110,7 @@ pub fn build(app: &tauri::App) -> tauri::Result<()> {
                     if let Err(e) = app.state::<Seeder>().resume_all().await {
                         tracing::warn!("resume all: {e:#}");
                     }
+                    crate::commands::serve_all(false).await;
                 });
             }
             "quit" => quit(app),
@@ -139,8 +141,8 @@ pub fn build(app: &tauri::App) -> tauri::Result<()> {
                 let _ = tray.set_tooltip(Some(format!("Tensorseed Desktop: {line}")));
                 last = line;
             }
-            let _ = pause.set_enabled(st.desktop.seeding > 0 || st.downloading > 0);
-            let _ = resume.set_enabled(st.desktop.paused > 0 || st.paused_pulls > 0);
+            let _ = pause.set_enabled(st.pausable() > 0);
+            let _ = resume.set_enabled(st.paused() > 0);
             let _ = toggle.set_text(toggle_label(&handle));
             let _ = handle.emit(STATUS_EVENT, &st);
             tokio::time::sleep(TICK).await;

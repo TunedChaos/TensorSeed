@@ -27,6 +27,8 @@ pub async fn run_seeder(
         println!("nothing to seed");
         return Ok(ExitCode::SUCCESS);
     }
+    // One seeder per machine (serve, seed, or Desktop).
+    let _lock = tensorseed_app::seeder_lock::acquire(cfg, "seed")?;
     let state = expand(&cfg.general.state_db);
     let scratch = state
         .parent()

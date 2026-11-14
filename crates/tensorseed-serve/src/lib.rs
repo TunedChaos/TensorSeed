@@ -43,6 +43,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
+pub mod control;
 pub mod health;
 pub mod http;
 pub mod portmap;

@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
+use tensorseed_app::seeder_lock::{self, SeederInfo, SeederLock};
 use tensorseed_app::swarm::{
     LimitHit, SeedLimitAction, SeedLimits, SeedTotals, SeedTracker, SpeedSchedule, apply_plan,
 };
@@ -42,6 +43,7 @@ use tensorseed_core::manifest::{
 };
 use tensorseed_core::paths::join_slash;
 use tensorseed_core::verify::META_DIR;
+use tensorseed_serve::control;
 use tensorseed_serve::health::{self, Note, SharedStatus, Status, TorrentStatus};
 use tensorseed_serve::http::{self as web, CatalogDir, HttpConfig, HttpStats, Library, Published};
 use tensorseed_serve::portmap::{PortMapOptions, PortMapper, Protocol};
@@ -108,6 +110,9 @@ struct PersistedRev {
     owned: bool,
     bytes: u64,
     only: Option<Vec<String>>,
+    /// Paused by the user (Desktop, over the control endpoint).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    user_paused: bool,
 }
 
 #[derive(Clone)]
@@ -129,6 +134,8 @@ struct Seeding {
     tracker: SeedTracker,
     /// Paused by a seeding stop rule.
     paused: Option<LimitHit>,
+    /// Paused by the user over the control endpoint.
+    user_paused: bool,
 }
 
 type FetchResult = (String, Result<(), String>);
@@ -162,6 +169,10 @@ struct Daemon {
     /// Revisions removed from the swarm by a seeding stop rule.
     limited: BTreeMap<String, LimitHit>,
     _speed: SpeedSchedule,
+    /// Requests from the local control endpoint.
+    control_rx: mpsc::Receiver<control::Command>,
+    /// One seeder per machine; released (and `seeder.json` removed) on drop.
+    _seeder: SeederLock,
 }
 
 /// `tensorseed serve`.
@@ -209,6 +220,8 @@ impl Daemon {
     async fn start(cfg: Arc<Config>) -> anyhow::Result<Self> {
         let sc = &cfg.serve;
         let pk = pinned_key(&cfg)?;
+        // One seeder per machine (serve, seed, or Desktop).
+        let seeder = seeder_lock::acquire(&cfg, "serve")?;
         let data_dir = expand(&sc.data_dir);
         std::fs::create_dir_all(data_dir.join("t"))
             .with_context(|| format!("creating {}", data_dir.display()))?;
@@ -268,6 +281,26 @@ impl Daemon {
             servers.push(tokio::spawn(async move {
                 if let Err(e) = health::serve(l, s, stop_signal(rx)).await {
                     tracing::error!("health endpoint stopped: {e}");
+                }
+            }));
+        }
+        // Local control endpoint for Desktop: loopback only, and the token
+        // is only in the owner only seeder.json.
+        let (control_tx, control_rx) = mpsc::channel(16);
+        {
+            let (l, addr) = control::bind()
+                .await
+                .context("binding the local control endpoint")?;
+            let token = seeder_lock::new_token()?;
+            let mut info = SeederInfo::this_process("serve");
+            info.control = Some(addr.to_string());
+            info.token = Some(token.clone());
+            seeder.publish(&info)?;
+            let router = control::router(status.clone(), &token, control_tx);
+            let rx = shutdown_rx.clone();
+            servers.push(tokio::spawn(async move {
+                if let Err(e) = control::serve(l, router, stop_signal(rx)).await {
+                    tracing::error!("control endpoint stopped: {e}");
                 }
             }));
         }
@@ -364,6 +397,8 @@ impl Daemon {
             seed_stats,
             limited: BTreeMap::new(),
             _speed: speed,
+            control_rx,
+            _seeder: seeder,
         };
         d.resume().await;
         d.refresh_status();
@@ -404,6 +439,9 @@ impl Daemon {
                 )
                 .await
             {
+                Ok(()) if r.user_paused => {
+                    self.user_pause(&r.name, true).await;
+                }
                 Ok(()) => {}
                 Err(e) => println!("FAILED   {} (resume): {e:#}", r.name),
             }
@@ -480,9 +518,69 @@ impl Daemon {
                 }
                 _ = persist_tick.tick() => self.persist(),
                 _ = report_tick.tick() => self.report(),
+                Some(c) = self.control_rx.recv() => {
+                    let r = self.control(&c.action, c.name.as_deref()).await;
+                    self.refresh_status();
+                    let _ = c.reply.send(r);
+                }
             }
         }
         Ok(ExitCode::SUCCESS)
+    }
+
+    /// Pause (`on`) or resume one revision for the user. True when it
+    /// changed. A revision a stop rule paused stays paused.
+    async fn user_pause(&mut self, n: &str, on: bool) -> bool {
+        let Some(s) = self.seeding.get_mut(n) else {
+            return false;
+        };
+        if s.user_paused == on {
+            return false;
+        }
+        if s.paused.is_none() {
+            let r = if on {
+                self.engine.pause(&s.handle).await
+            } else {
+                self.engine.resume(&s.handle).await
+            };
+            if let Err(e) = r {
+                tracing::warn!("{} {n}: {e}", if on { "pausing" } else { "resuming" });
+                return false;
+            }
+        }
+        if on {
+            // Keep the seeding time and upload counted so far.
+            let t = s.tracker.totals(s.handle.progress().uploaded);
+            self.seed_stats.insert(n.to_owned(), t);
+        } else {
+            s.tracker = SeedTracker::new(self.seed_stats.get(n).copied().unwrap_or_default());
+        }
+        s.user_paused = on;
+        println!(
+            "{}  {n} (by the user)",
+            if on { "paused  " } else { "resumed " }
+        );
+        true
+    }
+
+    /// A request from the local control endpoint.
+    async fn control(&mut self, a: &control::Action, name: Option<&str>) -> Result<usize, String> {
+        let on = *a == control::Action::Pause;
+        let names: Vec<String> = match name {
+            Some(n) if self.seeding.contains_key(n) => vec![n.to_owned()],
+            Some(n) => return Err(format!("{n} is not seeding")),
+            None => self.seeding.keys().cloned().collect(),
+        };
+        let mut changed = 0;
+        for n in names {
+            if self.user_pause(&n, on).await {
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.persist();
+        }
+        Ok(changed)
     }
 
     fn report(&self) {
@@ -1196,6 +1294,7 @@ impl Daemon {
                 only,
                 tracker: SeedTracker::new(prior),
                 paused,
+                user_paused: false,
             },
         );
         Ok(())
@@ -1225,7 +1324,7 @@ impl Daemon {
     }
 
     fn save_totals(&mut self, n: &str, s: &Seeding) {
-        if s.paused.is_some() {
+        if s.paused.is_some() || s.user_paused {
             return; // already saved when it was paused
         }
         let t = s.tracker.totals(s.handle.progress().uploaded);
@@ -1242,6 +1341,9 @@ impl Daemon {
             let Some(s) = self.seeding.get_mut(&n) else {
                 continue;
             };
+            if s.user_paused {
+                continue; // not seeding, so nothing to count
+            }
             if let Some(hit) = s.paused {
                 if self
                     .seed_limits
@@ -1405,6 +1507,7 @@ impl Daemon {
                     state: match (p.error, s.paused) {
                         (Some(e), _) => format!("error: {e}"),
                         (None, Some(hit)) => format!("paused: {hit}"),
+                        (None, None) if s.user_paused => "paused: by the user".into(),
                         (None, None) if p.live => "live".into(),
                         (None, None) => "checking".into(),
                     },
@@ -1454,11 +1557,16 @@ impl Daemon {
                     owned: s.owned,
                     bytes: s.bytes,
                     only: s.only.clone(),
+                    user_paused: s.user_paused,
                 })
                 .collect(),
             seed_stats: {
                 let mut m = self.seed_stats.clone();
-                for (n, s) in self.seeding.iter().filter(|(_, s)| s.paused.is_none()) {
+                for (n, s) in self
+                    .seeding
+                    .iter()
+                    .filter(|(_, s)| s.paused.is_none() && !s.user_paused)
+                {
                     m.insert(n.clone(), s.tracker.totals(s.handle.progress().uploaded));
                 }
                 m

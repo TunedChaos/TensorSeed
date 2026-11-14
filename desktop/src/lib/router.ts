@@ -7,6 +7,7 @@
 //   #/                                       catalogs
 //   #/local                                  library (local copies)
 //   #/downloads                              running and unfinished pulls
+//   #/seeding                                seeding here and in tensorseed serve
 //   #/settings                               torrent settings
 //   #/entry/<model|dataset>/<org>/<name>?revision=<40 hex>&catalog=<name>
 
@@ -16,6 +17,7 @@ export type View =
   | { kind: "catalogs" }
   | { kind: "local" }
   | { kind: "downloads" }
+  | { kind: "seeding" }
   | { kind: "settings" }
   | { kind: "entry"; repoType: RepoType; id: string; revision: string | null; catalog: string | null }
   | { kind: "notFound"; hash: string };
@@ -31,6 +33,7 @@ export function parseHash(hash: string): View {
   if (parts.length === 0 || (parts.length === 1 && parts[0] === "catalogs")) return { kind: "catalogs" };
   if (parts.length === 1 && parts[0] === "local") return { kind: "local" };
   if (parts.length === 1 && parts[0] === "downloads") return { kind: "downloads" };
+  if (parts.length === 1 && parts[0] === "seeding") return { kind: "seeding" };
   if (parts.length === 1 && parts[0] === "settings") return { kind: "settings" };
   if (parts[0] === "entry" && parts.length === 4 && (parts[1] === "model" || parts[1] === "dataset")) {
     const [, repoType, org, name] = parts;

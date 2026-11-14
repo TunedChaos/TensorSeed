@@ -3,9 +3,11 @@
 
 //! The in-app seeder: pulled copies seeded with the same engine options,
 //! speed schedule, and stop rules as `tensorseed seed` (all from the shared
-//! `[torrent]` config). One seeder per machine: when `tensorseed serve` is
-//! running it already seeds, so Desktop shows its status read only and
-//! does not start a second engine on the same port.
+//! `[torrent]` config). One seeder per machine: the engine holds the
+//! shared seeder lock (`tensorseed_app::seeder_lock`) while it runs, so it
+//! never starts next to `tensorseed serve` or `tensorseed seed`. Desktop
+//! attaches to a running serve over its local control endpoint instead
+//! (see `status`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, bail};
 use serde::Serialize;
 use tensorseed_app::config::{Config, expand};
+use tensorseed_app::seeder_lock::{self, SeederLock};
 use tensorseed_app::swarm::{
     SeedLimitAction, SeedLimits, SeedTotals, SeedTracker, SpeedSchedule, apply_plan,
 };
@@ -39,6 +42,8 @@ struct Seeded {
 }
 
 struct Running {
+    /// One seeder per machine; released when the engine stops.
+    _lock: SeederLock,
     engine: Arc<Engine>,
     speed: Option<SpeedSchedule>,
     limits: SeedLimits,
@@ -99,6 +104,7 @@ pub struct SeedStatus {
 
 impl Running {
     async fn start(cfg: &Config) -> anyhow::Result<Self> {
+        let lock = seeder_lock::acquire(cfg, "desktop").map_err(|e| anyhow::anyhow!("{e}"))?;
         let state = expand(&cfg.general.state_db);
         let scratch = state
             .parent()
@@ -117,6 +123,7 @@ impl Running {
             })?;
         let speed = apply_plan(engine.rate_handle(), plan);
         Ok(Self {
+            _lock: lock,
             engine: Arc::new(engine),
             speed: Some(speed),
             limits,
@@ -227,6 +234,66 @@ impl Seeder {
                 }
             }
         });
+    }
+
+    /// Pause (`pause`) or resume one copy by name. Returns a short message.
+    ///
+    /// # Errors
+    ///
+    /// Fails when nothing by that name is seeding (a copy a stop rule
+    /// stopped cannot be resumed here), or the engine refuses.
+    pub async fn set_paused(&self, name: &str, pause: bool) -> anyhow::Result<String> {
+        let g = self.inner.lock().await;
+        let Some(r) = g.as_ref() else {
+            bail!("the seeder is not running");
+        };
+        let Some(s) = r
+            .seeds
+            .iter()
+            .find(|s| s.name == name && s.stopped.is_none())
+        else {
+            bail!("{name} is not seeding here");
+        };
+        match (pause, s.handle.is_paused()) {
+            (true, false) => {
+                r.engine.pause(&s.handle).await?;
+                Ok(format!("paused {name}"))
+            }
+            (false, true) => {
+                r.engine.resume(&s.handle).await?;
+                Ok(format!("resumed {name}"))
+            }
+            (true, true) => Ok(format!("{name} is already paused")),
+            (false, false) => Ok(format!("{name} is already seeding")),
+        }
+    }
+
+    /// Stop seeding one copy (its files stay). Stops the engine, and
+    /// releases the machine's seeder lock, when it was the last one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when nothing by that name is seeded here.
+    pub async fn remove(&self, name: &str) -> anyhow::Result<String> {
+        let mut g = self.inner.lock().await;
+        let Some(r) = g.as_mut() else {
+            bail!("the seeder is not running");
+        };
+        let Some(i) = r.seeds.iter().position(|s| s.name == name) else {
+            bail!("{name} is not seeded here");
+        };
+        let s = r.seeds.remove(i);
+        // A copy a remove rule stopped is already out of the engine.
+        let in_engine = s.stopped.is_none() || matches!(r.limits.action, SeedLimitAction::Pause);
+        if in_engine && let Err(e) = r.engine.remove(&s.handle).await {
+            tracing::warn!("removing {name}: {e}");
+        }
+        let last = r.seeds.is_empty();
+        drop(g);
+        if last {
+            self.stop().await;
+        }
+        Ok(format!("stopped seeding {name} (files kept)"))
     }
 
     /// Pause every seeding copy. Returns how many were paused.

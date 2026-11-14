@@ -5,9 +5,9 @@ Tensorseed catalogs natively, and (in later 0.3.0 milestones) pull and seed
 with the same config, job state, and seeder as the `tensorseed` CLI. See
 `docs/plans/0.3.0-desktop.md`.
 
-Status: M3.3. The window has five views: the followed catalogs and their
-entries, an entry page, downloads, the library of local copies, and the
-torrent settings. A tray icon shows what is running. Pull, verify, and
+Status: M3.4. The window has six views: the followed catalogs and their
+entries, an entry page, downloads, seeding, the library of local copies,
+and the torrent settings. A tray icon shows what is running. Pull, verify, and
 seed run in process. The AppImage, MSI, and NSIS
 builds update themselves (see Updates).
 
@@ -65,9 +65,20 @@ builds update themselves (see Updates).
   signed catalog into the same folder, keeping the files already there.
   - **Seed** starts the in process torrent engine on the pulled copy with
     the `[torrent]` settings, including the caps, schedule, and stop
-    rules. One seeder per machine: if `tensorseed serve` answers on its
-    health address, Desktop shows its status and refuses to start a second
-    seeder.
+    rules. One seeder per machine: the engine holds the same seeder lock
+    as `tensorseed serve` and `tensorseed seed` (`seeder.lock` next to the
+    job database) while it runs, so Desktop never starts next to them and
+    they refuse to start next to Desktop.
+- **Seeding.** What Desktop seeds, with listen address, speed, peers,
+  and upload, and Pause, Resume, and Stop (files stay) for each copy;
+  stopping the last copy stops the engine and frees the lock. When a
+  `tensorseed serve` with the same config runs, Desktop attaches to it
+  through its local control endpoint (127.0.0.1 only; the address and
+  token are in its owner only `seeder.json`) and shows each revision's
+  state, size, upload, and peers, with Pause and Resume per revision and
+  for all. A serve under another state folder (a service account) shows
+  read only through `serve.health_listen`. Pause all and Resume all in
+  the tray and status bar cover an attached serve too.
 - **Settings.** Every `[torrent]` option: speed caps, per torrent caps,
   peer and connection limits, DHT, LSD, uTP, SOCKS5 proxy, bind interface,
   ratio and time stop rules and their action, the scheduled
