@@ -72,8 +72,9 @@
     <section>
       <h2>Status</h2>
       <p>
-        The software is under active development. Version 0.2.0 is an
-        early release; see <a href="#download">Download</a> for binaries.
+        The software is under active development. Version 0.3.0 is an
+        early release and the first with Tensorseed Desktop, an app for
+        Linux and Windows; see <a href="#download">Download</a>.
         The signed catalog is live
         at <a href="https://catalog.tensorseed.dev/">catalog.tensorseed.dev</a>.
         The catalog is at revision 4, with nine official entries
@@ -128,31 +129,66 @@ coin_api_urls = ["https://api.coinset.org"]</code></pre>
     <section>
       <h2 id="download">Download</h2>
       <p>
-        Tensorseed 0.2.0 is an early release for volunteer seeders and
+        Tensorseed 0.3.0 is an early release for volunteer seeders and
         anyone who wants to pull and verify a published model. Formats
         and commands may still change before 1.0.
       </p>
+      <h3 id="desktop">Tensorseed Desktop</h3>
+      <p>
+        Browse the catalog, check each entry&rsquo;s signature and Chia
+        anchor, pull with progress, pause and resume, and seed what you
+        pulled, without a terminal. Desktop shares its config, downloads,
+        and seeder with the CLI on the same machine, and it sends no
+        telemetry. The installers are on the
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/tag/v0.3.0">v0.3.0 GitHub release</a>:
+      </p>
+      <ul>
+        <li>Windows x86_64: the NSIS installer (<code>x64-setup.exe</code>,
+          installs for you, no administrator rights) or the MSI
+          (<code>x64_en-US.msi</code>, installs for all users)</li>
+        <li>Linux x86_64: the AppImage, a Debian and Ubuntu package
+          (.deb), or a Fedora and RHEL package (.rpm)</li>
+      </ul>
+      <p>
+        The AppImage and the Windows installers update themselves after
+        you confirm, and only with an update signed by the Tensorseed
+        Desktop update key. The .deb and .rpm update through your package
+        manager.
+      </p>
+      <p class="note">
+        <strong>Windows SmartScreen.</strong> The Windows installers are
+        not code signed yet, so Microsoft Defender SmartScreen may show
+        &ldquo;Windows protected your PC&rdquo; when you start one. Check the
+        download against <code>SHA256SUMS</code> first (see
+        <a href="#verify-release">Verify a release</a>), then choose
+        <strong>More info</strong> and <strong>Run anyway</strong>. Your
+        browser may also call the file uncommon. Both installers offer an
+        optional Windows Firewall rule (off by default) so other peers can
+        connect while you seed; without it, Windows asks the first time
+        Desktop seeds.
+      </p>
+      <h3 id="cli">Command line</h3>
       <p>
         Binaries, checksums, the signature, and the release public key
         are on the
-        <a href="https://github.com/TunedChaos/TensorSeed/releases/tag/v0.2.0">v0.2.0 GitHub release</a>.
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/tag/v0.3.0">v0.3.0 GitHub release</a>.
       </p>
       <ul>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-x86_64-unknown-linux-musl.tar.gz">Linux x86_64, static (musl)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-aarch64-unknown-linux-musl.tar.gz">Linux ARM64, static (musl)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-x86_64-unknown-linux-gnu.tar.gz">Linux x86_64, glibc 2.17</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-x86_64-pc-windows-gnu.zip">Windows x86_64</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-aarch64-pc-windows-gnullvm.zip">Windows ARM64</a> (file format confirmed; not yet run on ARM Windows hardware)</li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed_0.2.0-1_amd64.deb">Debian and Ubuntu package, x86_64 (.deb)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed_0.2.0-1_arm64.deb">Debian and Ubuntu package, ARM64 (.deb)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-1.x86_64.rpm">Fedora and RHEL package, x86_64 (.rpm)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-1.aarch64.rpm">Fedora and RHEL package, ARM64 (.rpm)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-src.tar.gz">Source (tar.gz)</a></li>
-        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-0.2.0-src.zip">Source (zip)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-x86_64-unknown-linux-musl.tar.gz">Linux x86_64, static (musl)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-aarch64-unknown-linux-musl.tar.gz">Linux ARM64, static (musl)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-x86_64-unknown-linux-gnu.tar.gz">Linux x86_64, glibc 2.17</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-x86_64-pc-windows-gnu.zip">Windows x86_64</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-aarch64-pc-windows-gnullvm.zip">Windows ARM64</a> (file format confirmed; not yet run on ARM Windows hardware)</li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed_0.3.0-1_amd64.deb">Debian and Ubuntu package, x86_64 (.deb)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed_0.3.0-1_arm64.deb">Debian and Ubuntu package, ARM64 (.deb)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-1.x86_64.rpm">Fedora and RHEL package, x86_64 (.rpm)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-1.aarch64.rpm">Fedora and RHEL package, ARM64 (.rpm)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-src.tar.gz">Source (tar.gz)</a></li>
+        <li><a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-0.3.0-src.zip">Source (zip)</a></li>
       </ul>
       <p>
         There is no macOS build. The source archives are the tracked files
-        from tag v0.2.0 and are listed in <code>SHA256SUMS</code>. You can
+        from tag v0.3.0 and are listed in <code>SHA256SUMS</code>. You can
         also build from a checkout with
         <code>cargo build --release</code> or
         <code>cargo install --locked --path crates/tensorseed-cli</code>
@@ -161,10 +197,10 @@ coin_api_urls = ["https://api.coinset.org"]</code></pre>
       </p>
       <p>
         Also download
-        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/SHA256SUMS">SHA256SUMS</a>,
-        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/SHA256SUMS.minisig">SHA256SUMS.minisig</a>,
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/SHA256SUMS">SHA256SUMS</a>,
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/SHA256SUMS.minisig">SHA256SUMS.minisig</a>,
         and
-        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.2.0/tensorseed-release.pub">tensorseed-release.pub</a>,
+        <a href="https://github.com/TunedChaos/TensorSeed/releases/download/v0.3.0/tensorseed-release.pub">tensorseed-release.pub</a>,
         then verify as below.
       </p>
     </section>
@@ -209,7 +245,7 @@ vllm = "~/vllm-env/bin/vllm"                      # "" = vllm on PATH</code></pr
     </section>
 
     <section>
-      <h2>Verify a release</h2>
+      <h2 id="verify-release">Verify a release</h2>
       <p>
         Release archives ship with <code>SHA256SUMS</code> and
         <code>SHA256SUMS.minisig</code>, signed by the

@@ -251,9 +251,20 @@ SmartScreen warns on first run.
 - **MSI** installs for the machine into `%ProgramFiles%\Tensorseed
   Desktop` and needs elevation. MSI versions must be numeric, so
   `bundle.windows.wix.version` in `tauri.conf.json` holds the numeric form
-  of the app version (`0.3.0.0` for `0.3.0-dev`); keep it in step when the
+  of the app version (`0.3.0.0` for `0.3.0`); keep it in step when the
   version changes. The WiX upgrade code is pinned there too and must
   never change.
+- **Windows Firewall (opt in, off by default).** The NSIS welcome page
+  has a checkbox and the MSI has a "Windows Firewall" page after the
+  folder page. Ticked, the installer adds an inbound allow rule for the
+  installed `tensorseed-desktop.exe` on all network types ("Tensorseed
+  Desktop incoming peers" for the MSI, "Tensorseed Desktop incoming
+  peers (per user)" for NSIS, which runs netsh elevated, so Windows asks
+  for approval). Uninstalling removes it; updates keep it (the MSI keeps
+  the choice in `HKLM\Software\Tuned Chaos\Tensorseed Desktop`,
+  `FirewallRule`). Silent installs add no rule unless the MSI gets
+  `FIREWALLRULE=1`. Without the rule, Windows asks the first time Desktop
+  seeds.
 - Both installers write to the
   `HKCU\Software\Tuned Chaos\Tensorseed Desktop` key. The NSIS
   uninstaller (`src-tauri/windows/nsis-hooks.nsh`) removes its own values

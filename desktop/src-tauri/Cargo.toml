@@ -5,7 +5,7 @@
 [package]
 name = "tensorseed-desktop"
 description = "Tensorseed Desktop: browse, verify, pull, and seed Tensorseed catalogs."
-version = "0.3.0-dev"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90" # Tauri 2.12 needs 1.90; the CLI crates keep 1.87
 license = "AGPL-3.0-or-later"

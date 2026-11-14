@@ -1,6 +1,77 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+0.3.0 adds Tensorseed Desktop, an app for Linux and Windows that browses
+the followed catalogs, checks every entry signature and the Chia anchor
+natively, pulls models and datasets with visible progress, and seeds them
+back. It shares one config, one job database, one library, and one seeder
+with the `tensorseed` CLI on the same machine. The CLI is 0.3.0 too.
+Formats and commands may still change before 1.0.
+
+### Highlights
+
+- Tensorseed Desktop: catalogs and entry pages with signature and anchor
+  status, pull with progress, pause, resume, and cancel, a Downloads view
+  shared with the CLI, a Library with verify, open, and delete, a
+  Seeding view, a tray icon, settings for every `[torrent]` option, and
+  Hugging Face sign in.
+- One seeder per machine: `serve`, `tensorseed seed`, and Desktop share a
+  lock, and Desktop attaches to a running `serve` to pause and resume its
+  revisions.
+- In app updates for the AppImage, MSI, and NSIS builds, signed with a
+  separate updater key and installed only after you confirm.
+- Default `download_dir` is a `tensorseed` folder in your Downloads
+  folder.
+
+### Download targets
+
+The CLI archives and packages as in 0.2.0, plus Tensorseed Desktop as a
+Linux .deb, .rpm, and AppImage and a Windows MSI and NSIS installer. All
+are listed in `SHA256SUMS`, signed with the release key (minisign, key id
+F5D2D3C4C27D459D). The Windows installers are not Authenticode signed
+yet, so Microsoft Defender SmartScreen shows "Windows protected your PC"
+on first run: choose **More info**, then **Run anyway**, after checking
+the download against `SHA256SUMS`. There is no macOS build.
+
+### Added and changed
+
+- Tensorseed Desktop pull (M3.3): pulls run in process through the
+  pipeline the CLI now shares (`tensorseed_app::pull_job`), with a
+  progress bar (files, bytes, rate, the files in flight, and during the
+  swarm step its bytes, peers, and rate), Pause, Resume, and Cancel
+  (deletes partial downloads, keeps finished files), and file selection
+  on the entry page. Each pull holds `.tensorseed/pull.lock` and keeps
+  `.tensorseed/pull-pending.json` until it completes, so the CLI and
+  Desktop never write one folder at once and either can resume the
+  other's job. A Downloads view lists every job in the shared database,
+  including ones running elsewhere and interrupted ones, with Resume and
+  Discard. The local copies view is now the Library, with Verify, Open
+  folder, and Delete (confirmed; refused while seeding or pulling). A
+  pull stopped during the swarm step is recorded as paused, and cancel
+  removes the swarm's unverified files.
+- One seeder per machine (M3.4): `serve`, `tensorseed seed`, and Desktop
+  take one lock next to the job database and refuse to start next to
+  another seeder, naming it. `serve` has a control endpoint on
+  `127.0.0.1` (random port, a random token in an owner only file) with
+  status and per revision pause and resume; a pause from it survives
+  restarts and shows as `paused: by the user` in `serve` status. Desktop
+  has a Seeding view (its own copies with Pause, Resume, and Stop, or the
+  attached `serve`'s revisions with Pause and Resume each and for all),
+  and Pause all and Resume all in the tray and status bar include the
+  attached `serve`. See "One seeder per machine, and Desktop" in
+  `docs/RUN-A-MIRROR.md`.
+- Hugging Face sign in for Desktop (M3.5): Settings shows the Hub user and
+  where the token comes from, and Sign in checks a pasted token with the
+  Hub before saving it in the same owner only file as `tensorseed hf
+  login` (a rejected token leaves the saved login alone). Sign out
+  removes that file only. The token is never logged or shown again.
+- Windows Firewall rule for seeding, opt in and off by default: a checkbox
+  in the NSIS installer's welcome page and a "Windows Firewall" page in
+  the MSI add an inbound allow rule for the installed Tensorseed Desktop
+  program, so peers can connect while it seeds. Uninstalling removes it;
+  updates keep it. Without it, Windows asks the first time Desktop
+  seeds.
 
 - Tensorseed Desktop Flatpak (`desktop/flatpak/`): a manifest for
   `dev.tensorseed.desktop` on the GNOME 51 runtime that builds Desktop and
