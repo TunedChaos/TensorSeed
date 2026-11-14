@@ -1,6 +1,6 @@
 [package]
 name = "tensorseed-wasm"
-description = "WebAssembly bindings for Tensorseed catalog verification."
+description = "WebAssembly bindings for Tensorseed verification: catalogs, served-weights claims, revocations, and signed responses."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,7 +21,10 @@ tensorseed-verify = { workspace = true, default-features = false }
 wasm-bindgen = "0.2"
 
 [dev-dependencies]
-# Key generation is only used by native unit tests.
+# Key generation and test signatures are only used by native tests.
+ed25519-dalek.workspace = true
+k256.workspace = true
+sha3.workspace = true
 tensorseed-verify = { workspace = true, features = ["keygen"] }
 
 [lints]

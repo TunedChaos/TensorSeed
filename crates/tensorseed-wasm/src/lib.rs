@@ -5,26 +5,36 @@
 //!
 //! The browser explorer fetches catalog files and coin records over HTTPS,
 //! then asks this crate to check signatures, walk the file catalog chain,
-//! verify a DataLayer inclusion proof, and check a coin record. No
-//! verification logic is reimplemented in TypeScript. Methods that return
-//! structured data return canonical JSON strings; the page parses them.
+//! verify a DataLayer inclusion proof, and check a coin record. The
+//! `@tensorseed/verify` npm package (in `npm/verify`) uses the same build
+//! to check served-weights claims, revocations, and signed responses in a
+//! browser or Node ([`serving`]). No verification logic is reimplemented
+//! in JavaScript. Methods that return structured data return JSON strings;
+//! the caller parses them.
 
 #![warn(missing_docs)]
 
 use serde::Serialize;
+use tensorseed_core::keys::RepoRef;
 use tensorseed_core::manifest::Manifest;
+use tensorseed_core::manifest::Tombstone;
 use tensorseed_verify::anchor::{
     ChainProof, CoinRecord, VerifiedProof, check_coin_record, coin_id, h32,
 };
+use tensorseed_verify::claim_check::{CatalogMatch, CatalogResult, Freshness, Status, check};
 use tensorseed_verify::file::{ChainState, Head, HeadStatus, SignedFile};
+use tensorseed_verify::manifest::{merge_file_pages, verify_manifest_entry};
 use tensorseed_verify::minisign::PublicKey;
 use wasm_bindgen::prelude::*;
 
-fn js_err(err: impl std::fmt::Display) -> JsError {
+pub mod serving;
+pub use serving::*;
+
+pub(crate) fn js_err(err: impl std::fmt::Display) -> JsError {
     JsError::new(&err.to_string())
 }
 
-fn to_json<T: Serialize>(v: &T) -> Result<String, JsError> {
+pub(crate) fn to_json<T: Serialize>(v: &T) -> Result<String, JsError> {
     serde_json::to_string(v).map_err(js_err)
 }
 
@@ -41,6 +51,9 @@ fn signed(body: &[u8], sig: &str) -> SignedFile {
 pub struct CatalogVerifier {
     state: ChainState,
     pk: PublicKey,
+    /// A signed head said this state is current, and the state has not
+    /// changed since.
+    fresh: std::cell::Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -54,7 +67,11 @@ impl CatalogVerifier {
     pub fn new(catalog: &str, pubkey: &str) -> Result<CatalogVerifier, JsError> {
         let pk = PublicKey::parse(pubkey).map_err(js_err)?;
         let state = ChainState::empty(catalog).map_err(js_err)?;
-        Ok(Self { state, pk })
+        Ok(Self {
+            state,
+            pk,
+            fresh: std::cell::Cell::new(false),
+        })
     }
 
     /// Catalog name this verifier was created for.
@@ -100,6 +117,7 @@ impl CatalogVerifier {
             .check_head(&self.pk, &signed(body, sig), now)
             .map_err(js_err)?;
         let head: Head = serde_json::from_slice(body).map_err(js_err)?;
+        self.fresh.set(matches!(status, HeadStatus::UpToDate));
         let (kind, target) = match status {
             HeadStatus::UpToDate => ("up_to_date", head.revision),
             HeadStatus::Behind { target } => ("behind", target),
@@ -121,6 +139,7 @@ impl CatalogVerifier {
     ///
     /// Signature or chain failures.
     pub fn apply_delta(&mut self, body: &[u8], sig: &str) -> Result<(), JsError> {
+        self.fresh.set(false);
         self.state
             .apply_delta(&self.pk, &signed(body, sig))
             .map_err(js_err)
@@ -132,6 +151,7 @@ impl CatalogVerifier {
     ///
     /// Signature, rollback, or chain failures.
     pub fn load_snapshot(&mut self, body: &[u8], sig: &str) -> Result<(), JsError> {
+        self.fresh.set(false);
         self.state
             .load_snapshot(&self.pk, &signed(body, sig))
             .map_err(js_err)
@@ -174,6 +194,21 @@ impl CatalogVerifier {
             .unwrap_or_default()
     }
 
+    /// Check a `ts.served-weights/1` claim against this verified catalog
+    /// state: everything [`check_claim`] checks, plus the claimed manifest
+    /// (signature, key, revision, files), takedowns, freshness (a signed
+    /// head said this state is current), and the license mark recomputed
+    /// from the catalog. Returns a `ts.claim-check/1` report as JSON.
+    /// `options_json` is the same as for [`check_claim`].
+    ///
+    /// # Errors
+    ///
+    /// Malformed options or revocation list.
+    pub fn check_claim(&self, claim_json: &str, options_json: &str) -> Result<String, JsError> {
+        let opts = serving::parse_options(options_json)?;
+        serving::report(claim_json, &opts, |c| self.catalog_match(c))
+    }
+
     /// Every catalog key in this state, optionally filtered by prefix.
     pub fn list_keys(&self, prefix: &str) -> Vec<String> {
         self.state
@@ -182,6 +217,79 @@ impl CatalogVerifier {
             .filter(|k| prefix.is_empty() || k.starts_with(prefix))
             .cloned()
             .collect()
+    }
+}
+
+impl CatalogVerifier {
+    fn catalog_match(&self, c: &tensorseed_verify::claim::ServedClaim) -> CatalogResult {
+        let name = &self.state.catalog;
+        if c.catalog.name != *name {
+            return CatalogResult::Failed(check(
+                "catalog",
+                Status::Fail,
+                format!(
+                    "the claim names catalog {}, but this verifier holds {name}",
+                    c.catalog.name
+                ),
+            ));
+        }
+        let fail = |n: &str, d: String| CatalogResult::Failed(check(n, Status::Fail, d));
+        let repo = match RepoRef::new(c.repo_type, c.repo.clone()) {
+            Ok(r) => r,
+            Err(e) => return fail("manifest", format!("bad repo id {:?}: {e}", c.repo)),
+        };
+        let key = match repo.manifest_key(&c.revision) {
+            Ok(k) => k,
+            Err(_) => {
+                return fail(
+                    "manifest",
+                    format!("revision {:?} is not a 40 hex commit", c.revision),
+                );
+            }
+        };
+        let Some(entry) = self.state.entries.get(&key) else {
+            return fail(
+                "manifest",
+                format!("{}@{} is not in catalog {name}", c.repo, c.revision),
+            );
+        };
+        let mut manifest = match verify_manifest_entry(entry, &self.pk, name) {
+            Ok(m) => m,
+            Err(e) => return fail("manifest", format!("the {name} entry does not verify: {e}")),
+        };
+        if manifest.file_pages > 0 {
+            let mut pages = Vec::new();
+            for i in 0..manifest.file_pages {
+                let k = repo.file_page_key(&c.revision, i).unwrap_or_default();
+                match self.state.entries.get(&k) {
+                    Some(e) if e.verify(&self.pk, name).is_ok() => pages.push(e.value.clone()),
+                    _ => return fail("manifest", format!("file page {k} is missing or invalid")),
+                }
+            }
+            if let Err(e) = merge_file_pages(&mut manifest, &pages) {
+                return fail("manifest", e.to_string());
+            }
+        }
+        let tombstone = self
+            .state
+            .entries
+            .get(&repo.tombstone_key())
+            .filter(|e| e.verify(&self.pk, name).is_ok())
+            .and_then(|e| serde_json::from_str::<Tombstone>(&e.value).ok());
+        CatalogResult::Matched(Box::new(CatalogMatch {
+            name: name.clone(),
+            publisher_key_id: self.pk.key_id_hex(),
+            manifest_sha256: tensorseed_core::hash::sha256_bytes(entry.value.as_bytes()),
+            manifest_key: key,
+            manifest,
+            tombstone,
+            freshness: Freshness {
+                synced: self.fresh.get(),
+                revision: Some(self.state.revision),
+                chain_check: "off".into(),
+                chain: None,
+            },
+        }))
     }
 }
 

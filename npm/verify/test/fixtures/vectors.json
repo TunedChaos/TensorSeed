@@ -1,0 +1,55 @@
+{
+  "catalog": {
+    "head": {
+      "body": "{\"catalog\":\"main\",\"expires_unix\":1798675200,\"prev_root\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"revision\":1,\"root\":\"c382f51a29bab0211600fe9964eea43572c7b2901c86699e47f7d2fe2554966e\",\"schema\":\"ts.filehead/1\",\"snapshot\":null}",
+      "sig": "untrusted comment: signature from tensorseed key F101256C422955F6\nRUT2VSlCbCUB8UK0GnyoO5vBd1p0aTYXvAuu2PxR8BM35ALMaJ69IBLbzZdOdv+qpYbiWpLu1Wq1rMEWxPSLD8nBaD+low3upgQ=\ntrusted comment: ts.file/1 kind=head catalog=main rev=1 root=c382f51a29bab0211600fe9964eea43572c7b2901c86699e47f7d2fe2554966e\nDn4ydQbEp00uI6qeR6VSwOf3mgLkbXjmKTZ+6nbg0vjPxOZaljmkyPV/XKNfQP6ApiKXU8Q/YGd+7N9jWvbaAw==\n"
+    },
+    "name": "main",
+    "now_unix": 1795132800,
+    "pubkey": "RWT2VSlCbCUB8f0XJDhaoMdbZPt4zWAvodmR/ev3axPFjtcC6sg16fYY",
+    "snapshot": {
+      "body": "{\"catalog\":\"main\",\"entries\":[{\"key\":\"ts/v1/repo/model/org/tiny/rev/0123456789abcdef0123456789abcdef01234567\",\"schema\":\"ts.signed/1\",\"sig\":\"untrusted comment: signature from tensorseed key F101256C422955F6\\nRUT2VSlCbCUB8flalvrk6j/mzQ3GpNuRQiRTfmGmBMblY50e9XXy5gfLPgXFWtxagkWln1Tqgf6rGZcLYQOZ+LLcMpoxQKSS0Qs=\\ntrusted comment: ts.entry/1 catalog=main key=ts/v1/repo/model/org/tiny/rev/0123456789abcdef0123456789abcdef01234567 sha256=c9f527528f0d0e7a315ed85c472c631af2b972528943b20ade640eefa3d5c2dd\\nAEMDXj1TFrn/u1XMBewzpOy/DLUR3ZadFGrDwMasvhaxCW/8PsLZ2lEQTWG0s7HY3NPDNaeJfnJvJUWIbzNIAg==\\n\",\"value\":\"{\\\"backups\\\":[],\\\"file_pages\\\":0,\\\"files\\\":[{\\\"bt_v2_pieces_root\\\":null,\\\"format\\\":null,\\\"hf_lfs_oid\\\":null,\\\"path\\\":\\\"tiny-q4.gguf\\\",\\\"pickle_risk\\\":false,\\\"sha256\\\":\\\"5b2d6ec5a5f3a7e3c3b39f5fbd4b9c8b0d6b0a2a9e1c4f7d3e2a1b0c9d8e7f60\\\",\\\"size\\\":10}],\\\"hf_commit\\\":\\\"0123456789abcdef0123456789abcdef01234567\\\",\\\"hf_last_modified\\\":null,\\\"license\\\":{\\\"attribution\\\":null,\\\"class\\\":\\\"open\\\",\\\"gated_upstream\\\":false,\\\"hf_tag\\\":\\\"apache-2.0\\\",\\\"license_files\\\":[],\\\"spdx\\\":\\\"apache-2.0\\\"},\\\"published_at\\\":\\\"2026-11-13T00:00:00Z\\\",\\\"publisher_tool\\\":\\\"test\\\",\\\"repo\\\":{\\\"hf_url\\\":\\\"https://huggingface.co/org/tiny\\\",\\\"id\\\":\\\"org/tiny\\\",\\\"type\\\":\\\"model\\\"},\\\"schema\\\":\\\"ts.manifest/1\\\",\\\"torrent\\\":null,\\\"totals\\\":{\\\"bytes\\\":10,\\\"files\\\":1},\\\"webseeds\\\":[]}\"}],\"prev_root\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"revision\":1,\"root\":\"c382f51a29bab0211600fe9964eea43572c7b2901c86699e47f7d2fe2554966e\",\"schema\":\"ts.filesnapshot/1\",\"state_hash\":\"b97329f6a9b03260d1670a4a878d7db8c861269686c48297a3bbf3d121647dcd\"}",
+      "sig": "untrusted comment: signature from tensorseed key F101256C422955F6\nRUT2VSlCbCUB8ZDUYb2z1421nS1mq6floe1iPs/GuZK7nrzhNsOJBQzCEAahOYjsGMJ94hU7oLN29h1bRMqletBRHujpg5+RUgs=\ntrusted comment: ts.file/1 kind=snapshot catalog=main rev=1 root=c382f51a29bab0211600fe9964eea43572c7b2901c86699e47f7d2fe2554966e\nKBB6hDj0exPIUOEFcM8ehEbeB8Am9veTAhuH7yPJrPlV+sRTxuwR7bjnwOuMHmCPDul1zcPfzvzGQ/XwQbk+Bw==\n"
+    }
+  },
+  "claim": "{\n  \"schema\": \"ts.served-weights/1\",\n  \"signed\": true,\n  \"catalog\": {\n    \"name\": \"main\",\n    \"publisher_key_id\": \"F101256C422955F6\",\n    \"manifest_key\": \"ts/v1/repo/model/org/tiny/rev/0123456789abcdef0123456789abcdef01234567\",\n    \"manifest_sha256\": \"c9f527528f0d0e7a315ed85c472c631af2b972528943b20ade640eefa3d5c2dd\"\n  },\n  \"type\": \"model\",\n  \"repo\": \"org/tiny\",\n  \"revision\": \"0123456789abcdef0123456789abcdef01234567\",\n  \"license\": {\n    \"id\": \"apache-2.0\",\n    \"class\": \"open\",\n    \"commercial_serving\": \"allowed\",\n    \"rights_asserted\": false\n  },\n  \"runtime\": \"llama-cpp\",\n  \"engine_version\": \"llama.cpp b1-test\",\n  \"entrypoint\": {\n    \"kind\": \"gguf\",\n    \"path\": \"tiny-q4.gguf\"\n  },\n  \"served_model_id\": \"org/tiny\",\n  \"base_url\": \"http://127.0.0.1:8090/v1\",\n  \"public_base_url\": \"https://llm.example.com/v1\",\n  \"files\": [\n    {\n      \"path\": \"tiny-q4.gguf\",\n      \"size\": 10,\n      \"sha256\": \"5b2d6ec5a5f3a7e3c3b39f5fbd4b9c8b0d6b0a2a9e1c4f7d3e2a1b0c9d8e7f60\"\n    }\n  ],\n  \"seller_wallet\": \"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\",\n  \"response_key\": {\n    \"alg\": \"ed25519\",\n    \"pubkey\": \"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\"\n  },\n  \"logprobs\": \"required\",\n  \"started_at\": \"2026-11-13T00:00:00Z\",\n  \"created_at\": \"2026-11-13T00:00:00Z\",\n  \"expires_at\": \"2026-12-13T00:00:00Z\",\n  \"claim_sha256\": \"30cccd9c2f95f74b5148cafdff17fa53d7adec5278f01f7d87a07dbb80ea14f9\",\n  \"sig\": {\n    \"alg\": \"eip191\",\n    \"value\": \"0xd84e818500f6380f4c1b0206990a3bd099c7a1217e82f95378e9a68fd26d92b6414d9dc642f050eb62224b1198d51ac56fde6e082c655c38d9f0d6fed034ee5b1b\"\n  }\n}",
+  "claim_url": "https://llm.example.com/.well-known/tensorseed/served-weights.json",
+  "note": "Test vectors for @tensorseed/verify. Every key is a throwaway test value. Regenerate with TS_WRITE_NPM_FIXTURES=1 cargo test -p tensorseed-wasm --test npm_fixtures.",
+  "response": {
+    "body": "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"choices\":[]}",
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ],
+      [
+        "X-Tensorseed-Claim-SHA256",
+        "30cccd9c2f95f74b5148cafdff17fa53d7adec5278f01f7d87a07dbb80ea14f9"
+      ],
+      [
+        "X-Tensorseed-Request-Id",
+        "req-1"
+      ],
+      [
+        "X-Tensorseed-Served-Model",
+        "org/tiny"
+      ],
+      [
+        "X-Tensorseed-Timestamp",
+        "2026-11-20T00:00:00Z"
+      ],
+      [
+        "X-Tensorseed-Body-SHA256",
+        "a2d3400e9584d4f699003277e939b322d40469e030f0ea6bac2694a5e7bdc086"
+      ],
+      [
+        "X-Tensorseed-Signature",
+        "745ca84c9a5e1b44d3aa302c2026e3db528109e97348286147ea69ab2eadc147c9aa67295cc02aa71bcb3c652f2c31bc99fe8d10351d496a14e06353d411220f"
+      ]
+    ],
+    "now_unix": 1795132800,
+    "request_id": "req-1"
+  },
+  "revocations": "{\n  \"schema\": \"ts.claim-revocations/1\",\n  \"revocations\": [\n    {\n      \"claim_sha256\": \"30cccd9c2f95f74b5148cafdff17fa53d7adec5278f01f7d87a07dbb80ea14f9\",\n      \"revoked_at\": \"2026-11-25T00:00:00Z\",\n      \"reason\": \"superseded\",\n      \"response_sig\": \"cb50f5cb5bbec079d23a595cb296d6e4343aea35935c29f2c812c642050361eca616b41dca34914a728f4a695b9f2b09be1d7a083bc554bd7885119f96631405\"\n    }\n  ]\n}",
+  "seller_wallet": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+}

@@ -1,0 +1,5 @@
+# Built by scripts/build.sh from crates/tensorseed-wasm.
+/pkg/
+/node_modules/
+# Copied from the repository root by scripts/build.sh.
+/LICENSE

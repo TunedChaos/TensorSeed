@@ -42,7 +42,7 @@ jobs:
           command: check licenses bans sources
 
   explorer:
-    name: explorer (wasm + static build)
+    name: explorer and npm verify (wasm)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,8 +53,15 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Install wasm-bindgen-cli
         run: cargo install wasm-bindgen-cli --locked --version 0.2.130
+      - name: Verify crate builds for wasm on its own
+        run: cargo check -p tensorseed-verify --no-default-features --target wasm32-unknown-unknown
+      - name: Test the npm verify package in Node
+        run: pnpm --dir npm/verify test
       - name: Build explorer
         run: pnpm --dir explorer install --frozen-lockfile && pnpm --dir explorer build
 

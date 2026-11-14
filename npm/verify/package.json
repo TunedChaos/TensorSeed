@@ -1,0 +1,49 @@
+{
+  "name": "@tensorseed/verify",
+  "version": "0.3.1",
+  "description": "Verify Tensorseed served-weights claims, revocations, signed responses, and catalogs in a browser or Node (WebAssembly, no network access of its own).",
+  "license": "AGPL-3.0-or-later",
+  "author": "Tuned Chaos",
+  "homepage": "https://tensorseed.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TunedChaos/TensorSeed.git",
+    "directory": "npm/verify"
+  },
+  "keywords": [
+    "tensorseed",
+    "verification",
+    "inference",
+    "webassembly"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "node": "./node.js",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./index.d.ts",
+  "files": [
+    "api.js",
+    "index.js",
+    "node.js",
+    "index.d.ts",
+    "pkg/tensorseed_wasm.js",
+    "pkg/tensorseed_wasm_bg.wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "test": "bash scripts/build.sh && node --test test/verify.test.js",
+    "test:only": "node --test test/verify.test.js"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  }
+}
