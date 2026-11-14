@@ -1258,4 +1258,141 @@ mod tests {
         assert_eq!(v["index"]["latest_commit"], "0".repeat(40));
         assert_eq!(v["signature"]["ok"], true);
     }
+
+    #[test]
+    fn hf_view_shape_and_sources() {
+        use std::path::PathBuf;
+        let p = PathBuf::from("/x");
+        assert_eq!(
+            source_kind(&config::TokenSource::Env("HF_TOKEN".into())),
+            "env"
+        );
+        assert_eq!(
+            source_kind(&config::TokenSource::TokenFile(p.clone())),
+            "token_file"
+        );
+        assert_eq!(
+            source_kind(&config::TokenSource::LoginFile(p.clone())),
+            "login_file"
+        );
+        assert_eq!(source_kind(&config::TokenSource::HfCli(p)), "hf_cli");
+        let v = HfView {
+            source: "login_file",
+            source_label: Some("tensorseed login file /x".into()),
+            user: Some("someone".into()),
+            error: None,
+            login_saved: true,
+            login_path: "/x".into(),
+        };
+        let j = serde_json::to_value(&v).unwrap();
+        let mut keys: Vec<_> = j.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "error",
+                "loginPath",
+                "loginSaved",
+                "source",
+                "sourceLabel",
+                "user"
+            ]
+        );
+    }
+}
+
+/// Hugging Face login state for Settings. Never carries the token.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HfView {
+    /// Where the token in use comes from: `none`, `env`, `token_file`,
+    /// `login_file`, or `hf_cli`.
+    pub source: &'static str,
+    /// Human readable origin (a variable name or a path), if any.
+    pub source_label: Option<String>,
+    /// Hub user the token belongs to, when the check succeeded.
+    pub user: Option<String>,
+    /// Why the check failed, if it did.
+    pub error: Option<String>,
+    /// A login saved by Desktop or `tensorseed hf login` exists.
+    pub login_saved: bool,
+    /// Where that login is (or would be) saved.
+    pub login_path: String,
+}
+
+fn source_kind(s: &config::TokenSource) -> &'static str {
+    match s {
+        config::TokenSource::Env(_) => "env",
+        config::TokenSource::TokenFile(_) => "token_file",
+        config::TokenSource::LoginFile(_) => "login_file",
+        config::TokenSource::HfCli(_) => "hf_cli",
+    }
+}
+
+async fn hf_view(cfg: &Config) -> HfView {
+    let path = config::login_token_path();
+    let mut v = HfView {
+        source: "none",
+        source_label: None,
+        user: None,
+        error: None,
+        login_saved: path.is_file(),
+        login_path: path.display().to_string(),
+    };
+    match cfg.huggingface.resolve_token_source() {
+        Ok(None) => {}
+        Ok(Some((token, source))) => {
+            v.source = source_kind(&source);
+            v.source_label = Some(source.label());
+            match tensorseed_app::hf::check(cfg, &token).await {
+                Ok(user) => v.user = Some(user),
+                Err(e) => v.error = Some(e.to_string()),
+            }
+        }
+        Err(e) => v.error = Some(format!("{e:#}")),
+    }
+    v
+}
+
+/// Who Hub reads run as: the token source and the user it belongs to.
+///
+/// # Errors
+///
+/// Fails when the config cannot be loaded.
+#[tauri::command]
+pub async fn hf_status() -> Result<HfView, String> {
+    let (_, cfg) = load_config()?;
+    Ok(hf_view(&cfg).await)
+}
+
+/// Check a pasted token with the Hub and, only if it is accepted, save it
+/// where `tensorseed hf login` saves it (owner only). A failed check
+/// leaves any saved login unchanged. The token is never logged or returned.
+///
+/// # Errors
+///
+/// Fails when the token is empty or rejected, the Hub cannot be reached,
+/// or the file cannot be written.
+#[tauri::command]
+pub async fn hf_login(token: String) -> Result<HfView, String> {
+    let (_, cfg) = load_config()?;
+    tensorseed_app::hf::check(&cfg, &token)
+        .await
+        .map_err(|e| e.to_string())?;
+    tensorseed_app::hf::login(&token).map_err(err)?;
+    drop(token);
+    Ok(hf_view(&cfg).await)
+}
+
+/// Remove the saved login. Environment variables, `huggingface.token_file`
+/// and the Hugging Face CLI token are left unchanged.
+///
+/// # Errors
+///
+/// Fails when the file exists but cannot be removed.
+#[tauri::command]
+pub async fn hf_logout() -> Result<HfView, String> {
+    let (_, cfg) = load_config()?;
+    tensorseed_app::hf::logout().map_err(err)?;
+    Ok(hf_view(&cfg).await)
 }

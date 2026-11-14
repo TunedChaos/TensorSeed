@@ -430,3 +430,27 @@ export function onUpdateAvailable(handler: (u: UpdateAvailable) => void): Promis
 export function onUpdateProgress(handler: (p: UpdateProgress) => void): Promise<UnlistenFn> {
   return listen<UpdateProgress>("update://progress", (e) => handler(e.payload));
 }
+
+/** Hugging Face login state. Never carries the token. */
+export interface HfView {
+  source: "none" | "env" | "token_file" | "login_file" | "hf_cli";
+  sourceLabel: string | null;
+  user: string | null;
+  error: string | null;
+  loginSaved: boolean;
+  loginPath: string;
+}
+
+export function hfStatus(): Promise<HfView> {
+  return invoke<HfView>("hf_status");
+}
+
+/** Check a token with the Hub and save it only if accepted. */
+export function hfLogin(token: string): Promise<HfView> {
+  return invoke<HfView>("hf_login", { token });
+}
+
+/** Remove the saved login (env and Hugging Face CLI tokens are untouched). */
+export function hfLogout(): Promise<HfView> {
+  return invoke<HfView>("hf_logout");
+}

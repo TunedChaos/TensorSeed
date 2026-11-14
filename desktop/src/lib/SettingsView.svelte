@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import { settingsCheck, settingsGet, settingsSet, type SettingsView, type TorrentSettings } from "./native";
   import { DAYS, expandDays, lines, validate } from "./settings";
+  import HfCard from "./HfCard.svelte";
   import UpdatesCard from "./UpdatesCard.svelte";
 
   type NumKey = {
@@ -171,6 +172,7 @@
   </label>
 {/snippet}
 
+<HfCard />
 <UpdatesCard />
 
 <section class="flex min-w-0 flex-col gap-4" aria-labelledby="settings-title">

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hf-logout"
+description = "Enables the hf_logout command without any pre-configured scope."
+commands.allow = ["hf_logout"]
+
+[[permission]]
+identifier = "deny-hf-logout"
+description = "Denies the hf_logout command without any pre-configured scope."
+commands.deny = ["hf_logout"]

@@ -5,9 +5,9 @@ Tensorseed catalogs natively, and (in later 0.3.0 milestones) pull and seed
 with the same config, job state, and seeder as the `tensorseed` CLI. See
 `docs/plans/0.3.0-desktop.md`.
 
-Status: M3.4. The window has six views: the followed catalogs and their
+Status: M3.5. The window has six views: the followed catalogs and their
 entries, an entry page, downloads, seeding, the library of local copies,
-and the torrent settings. A tray icon shows what is running. Pull, verify, and
+and settings (Hugging Face login, updates, and the torrent options). A tray icon shows what is running. Pull, verify, and
 seed run in process. The AppImage, MSI, and NSIS
 builds update themselves (see Updates).
 
@@ -79,6 +79,14 @@ builds update themselves (see Updates).
   for all. A serve under another state folder (a service account) shows
   read only through `serve.health_listen`. Pause all and Resume all in
   the tray and status bar cover an attached serve too.
+- **Hugging Face login.** Settings shows who Hub reads run as and where
+  the token comes from (the `HF_TOKEN` variable, `huggingface.token_file`,
+  the login file, or the Hugging Face CLI token). Sign in checks a pasted
+  token with the Hub first and saves it only if accepted, owner only, in
+  the file `tensorseed hf login` writes; a rejected token leaves the saved
+  login alone. The field is cleared on submit and the token is never
+  logged, returned to the window, or shown again. Sign out removes that
+  file only, and the card says when a variable or token file still wins.
 - **Settings.** Every `[torrent]` option: speed caps, per torrent caps,
   peer and connection limits, DHT, LSD, uTP, SOCKS5 proxy, bind interface,
   ratio and time stop rules and their action, the scheduled
@@ -539,8 +547,9 @@ What a Flathub submission would still need (nothing has been submitted):
 ## Not done yet
 
 - Dataset verify goes through the CLI.
-- Desktop does not attach to a running `serve`: it only reads its health
-  endpoint. Controlling it needs the local control endpoint from M3.4.
+- Settings edits only `[torrent]`; the data folder, catalogs, chain check
+  mode, and disk budget are still edited in the config file or with the
+  CLI.
 - Packaging: the local `.deb` and AppImage `tauri build` makes by
   default, the Windows MSI and NSIS installers, and the Flatpak (built by
   hand, not published). Signing, the MSI build method, and bundling the
