@@ -495,6 +495,14 @@ you. Tensorseed never holds your wallet key or any marketplace key.
    signed claim. Changing the file, model id, endpoint, engine version,
    wallet, or key writes a new claim that needs a new signature.
 
+   To give the claim a lifetime, add `--expires-in 30d` (1 hour to 400
+   days) to `serve-inference --sign` or `claim-serving`. Buyers reject an
+   expired claim and any response signed after it, so renew before then:
+   a restart with the same settings keeps the claim while more than half
+   its lifetime remains, and otherwise writes a fresh one to sign. Leave
+   it out if buyers may still run Tensorseed 0.3.0, which cannot read a
+   claim with `expires_at`.
+
 4. Before you list, check the claim the way a buyer will. From
    anywhere, once the reverse proxy forwards the well-known path (see
    below):
@@ -509,6 +517,26 @@ you. Tensorseed never holds your wallet key or any marketplace key.
    trust, and the license mark recomputed from the catalog. Exit status
    is 0 when every check passes. Details:
    [INTEGRATE-A-MARKETPLACE.md](INTEGRATE-A-MARKETPLACE.md#45-match-the-claim-to-a-catalog-you-trust).
+
+5. When you stop serving, or replace the claim, revoke the old one so
+   buyers stop trusting it:
+
+   ```sh
+   tensorseed revoke-claim <path to served-weights.json> --reason superseded
+   ```
+
+   This signs a revocation with your response key and adds it to
+   `revocations.json` next to the claim. Reasons are `superseded`,
+   `stopped`, `key_compromised` (your response key leaked: every response
+   under that claim stops verifying, so create a new key with
+   `response-key create --force` and write a new claim), and `other`.
+   Responses signed before the revocation time (`--at`, default now)
+   stay valid unless the reason is `key_compromised`. To add your
+   wallet's signature, run it with `--print-message`, sign the printed
+   message in your wallet, and run it again with the same `--at` and
+   `--wallet-sig 0x...`. If the response key is lost, the wallet alone
+   can revoke: `--no-response-key --wallet-sig 0x...`. A revocation
+   cannot be undone.
 
 What the proxy does:
 
@@ -528,6 +556,11 @@ What the proxy does:
   once your reverse proxy forwards that path too (the Caddy example
   above needs a `handle /.well-known/tensorseed/*` block without the key
   check; the claim holds no secrets).
+- Serves your revocations at
+  `/.well-known/tensorseed/revocations.json` (read from disk on each
+  request; 404 until you revoke something), next to the claim.
+- Refuses to start with a claim that has expired or that your own list
+  revokes.
 
 Do not let the reverse proxy compress or rewrite these responses (no
 Caddy `encode`, no nginx `gzip` for JSON or event streams on these

@@ -7,8 +7,10 @@ This guide is for the other side of
 [SELL-INFERENCE.md](SELL-INFERENCE.md): an inference marketplace, a
 router, or an API gateway that lists sellers and wants to check what they
 claim to serve. It covers what ships in Tensorseed 0.3.0, plus the
-0.3.1 additions marked **0.3.1** (`check-claim`, and the calibrated
-`check-endpoint` set decision; not released yet, build from `main`).
+0.3.1 additions marked **0.3.1** (`check-claim`, the calibrated
+`check-endpoint` set decision, claim expiry and revocation, the
+verify-only `tensorseed-verify` crate, and the `@tensorseed/verify` npm
+package; not released yet, build from `main`).
 Every command, field, header, and path below was checked against the
 code, and the example outputs come from real runs against the official
 catalog and a llama.cpp seller behind `serve-inference --sign`. Formats
@@ -72,12 +74,20 @@ do not make it impossible.
 | `ts.reference-logprobs-commitment/1` | The public part of a reference set: `set_hash` and bindings, no prompts | You | Anyone, after you reveal the set |
 | `ts.check-endpoint/1` | JSON report of a challenge run, without prompts or keys | `tensorseed check-endpoint --json` | You |
 | `ts.claim-check/1` | **0.3.1.** JSON report of every check on a claim | `tensorseed check-claim --json` | You |
+| `ts.claim-revocations/1` | **0.3.1.** Signed revocations of claims, one entry per claim ([4.8](#48-expiry-and-revocation)) | The seller (`revoke-claim`); you may keep your own list | You |
+| `/.well-known/tensorseed/revocations.json` | **0.3.1.** Where the signing proxy serves the seller's revocation list | The seller's proxy | You |
 
 The `tensorseed` CLI does all of this. Rust code can call the same
-functions in the `tensorseed-app` crate. The `tensorseed-wasm` crate
-(used by the browser explorer) verifies catalogs and chain anchors from
-JavaScript. Every format is also specified below precisely enough to
-reimplement in another language.
+functions in the `tensorseed-app` crate. **0.3.1:** every check on a
+claim, a revocation, a signed response, a catalog head, or a manifest
+entry lives in the verify-only `tensorseed-verify` crate (no networking,
+no torrent, no serving code, no key files), which the CLI, the desktop
+app, and the WebAssembly build share. The `tensorseed-wasm` crate (used
+by the browser explorer) verifies catalogs and chain anchors from
+JavaScript, and in 0.3.1 also claims and signed responses, packaged as
+`@tensorseed/verify` ([5.6](#56-verify-in-javascript)). Every format is
+also specified below precisely enough to reimplement in another
+language.
 
 ## 3. Trust catalogs
 
@@ -310,7 +320,9 @@ are specified in [SPEC.md](SPEC.md) section 6.8, key names in section
 ### 3.5 Check catalogs from JavaScript (`tensorseed-wasm`)
 
 `crates/tensorseed-wasm` wraps the same Rust verifier for JavaScript.
-It is not published to npm; build it from a tagged checkout:
+0.3.0 is not published to npm; build it from a tagged checkout (in
+0.3.1, `npm/verify` packages the same build as `@tensorseed/verify`,
+with a typed wrapper; see [5.6](#56-verify-in-javascript)):
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -325,8 +337,11 @@ It exports `CatalogVerifier` (`verify_head`, `load_snapshot`,
 `catalog`, `revision`, `root`, and `entry_count` getters),
 `check_coin_rpc`, `coin_id_hex`, `parse_manifest`, `commercial_serving`,
 and `commercial_disclaimer`. It does **not** verify served-weights
-claims or signed responses in 0.3.0 (see [5.6](#56-verify-in-javascript)
-for those). A Node example that verifies the official catalog and its
+claims or signed responses in 0.3.0. **0.3.1** adds
+`CatalogVerifier.check_claim`, which does the whole match below and the
+claim's own checks in one call, and the free functions `check_claim`,
+`verify_response`, `claim_signing_message`, `revocation_signing_message`,
+and `recover_wallet` ([5.6](#56-verify-in-javascript)). A Node example that verifies the official catalog and its
 Chia anchor, then matches a claim against it
 ([4.5](#45-match-the-claim-to-a-catalog-you-trust)):
 
@@ -444,7 +459,7 @@ secrets, so sellers expose this path without the API key
 ([SELL-INFERENCE.md](SELL-INFERENCE.md) section 6). A seller can also
 hand you the file directly when listing.
 
-Fetch it with a size cap. The CLI caps claims at 1 MiB, follows at most
+Fetch it with a size cap. The CLI caps claims at 4 MiB, follows at most
 3 redirects, refuses URLs with credentials in them, and times out after
 10 seconds.
 
@@ -539,6 +554,7 @@ signed with a throwaway wallet:
 | `response_key` | `{"alg":"ed25519","pubkey":"<64 lowercase hex>"}` | yes |
 | `logprobs` | `required` (the endpoint returns logprobs) or `none` | yes |
 | `started_at`, `created_at` | RFC 3339 UTC | yes |
+| `expires_at` | **0.3.1.** RFC 3339 UTC; the claim is not valid after it, and must be later than `created_at` ([4.8](#48-expiry-and-revocation)) | no |
 | `claim_sha256` | See [4.3](#43-the-canonical-hash-claim_sha256) | yes |
 | `sig` | `{"alg":"eip191","value":"0x<65 bytes as hex>"}` | no |
 
@@ -550,10 +566,12 @@ that is not in this table.
 Exactly as Tensorseed computes it (`ServedClaim::compute_hash`):
 
 1. Parse the claim. An explicit `null` for `public_base_url`,
-   `seller_wallet`, or `sig` means the same as the field being absent.
+   `seller_wallet`, `expires_at`, or `sig` means the same as the field
+   being absent.
 2. Remove the top-level fields `claim_sha256`, `sig`, and `signed`.
-3. Remove `public_base_url` and `seller_wallet` if they are absent or
-   `null`. They are never hashed as `null`.
+3. Remove `public_base_url`, `seller_wallet`, and `expires_at` if they
+   are absent or `null`. They are never hashed as `null`, so a claim
+   without `expires_at` hashes exactly as it did in 0.3.0.
 4. Keep `catalog.publisher_key_id` and `license.id` even when they are
    `null`. They are always serialized, as `null` when unknown.
 5. Serialize the rest as canonical JSON
@@ -588,7 +606,7 @@ import hashlib, json
 c = json.load(open("served-weights.json"))
 for k in ("claim_sha256", "sig", "signed"):
     c.pop(k, None)
-for k in ("public_base_url", "seller_wallet"):
+for k in ("public_base_url", "seller_wallet", "expires_at"):
     if k in c and c[k] is None:
         del c[k]
 body = json.dumps(c, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -601,8 +619,10 @@ every command that takes one), it also requires: `claim_sha256` and
 `catalog.manifest_sha256` are 64 lowercase hex; `response_key` is
 `ed25519` with a valid 32 byte public key; `served_model_id` is valid;
 `seller_wallet`, if present, is already lowercase; `signed` agrees with
-`sig`; and the wallet signature, if present, recovers to
-`seller_wallet`. A missing or non `https` `public_base_url` is only a
+`sig`; `expires_at`, if present (0.3.1), is RFC 3339 and later than
+`created_at`; and the wallet signature, if present, recovers to
+`seller_wallet`. Reading a claim does not look at the clock; expiry is
+checked by `check-claim` and `verify-response`. A missing or non `https` `public_base_url` is only a
 warning, so check it yourself ([4.6](#46-listing-checks)).
 
 ### 4.4 The wallet signature
@@ -659,9 +679,11 @@ claim      served-weights.json
   license  apache-2.0 -> allowed (from the catalog; the claim says allowed)
 
   ok   claim_sha256     0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185 is the SHA-256 of the canonical JSON without claim_sha256, sig, and signed
-  ok   claim_fields     schema, response key, model id, and wallet format are valid
+  ok   claim_fields     schema, response key, model id, wallet, and expires_at formats are valid
+  warn expiry           no expires_at; the claim stays valid until it is revoked or replaced
   ok   wallet_signature EIP-191 signature over claim_sha256 recovers to 0x6c72521c15d87eedebe623c63e5ae10dc05da50d
   ok   public_url       https://llm.example.com/v1 is the expected URL
+  skip revocation       read from a file; pass --revocations, or check the URL, to check revocations
   ok   catalog          catalog tensorseed is one you trust
   ok   publisher_key    publisher key CE1E0E3D543DFFB8 is the key pinned for tensorseed
   ok   manifest         Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 is in tensorseed with manifest sha256 7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2
@@ -670,7 +692,7 @@ claim      served-weights.json
   ok   freshness        catalog synced during this check at revision 4 (an expired head is refused); chain check (strict) anchored revision 4, coin current, 0s ago
   ok   license          apache-2.0: allowed (recomputed from the catalog)
 
-verdict: pass (11 pass, 0 fail, 0 warn, 0 skip)
+verdict: pass (11 pass, 0 fail, 1 warn, 1 skip)
 note: a valid claim says what the seller serves; logprob challenges (check-endpoint) test that the endpoint really serves it
 ```
 
@@ -683,6 +705,16 @@ note: a valid claim says what the seller serves; logprob challenges (check-endpo
   ([4.4](#44-the-wallet-signature)) is checked when present; a claim
   without one is a `warn`, or a `fail` with `--require-wallet-sig`.
   `--expect-wallet 0x...` fails a claim that names another wallet.
+- `expiry` (0.3.1): a claim past its `expires_at` fails. A claim
+  without one is a `warn` (every 0.3.0 claim), or a `fail` with
+  `--require-expiry`. See [4.8](#48-expiry-and-revocation).
+- `revocation` (0.3.1): for a claim read from its well-known path, the
+  seller's `/.well-known/tensorseed/revocations.json` next to it is
+  fetched (404 means the seller publishes none, a `pass`; a read error is
+  a `warn`). `--revocations <file|URL>` (repeatable) adds your own lists.
+  A verified revocation in effect fails the claim; one dated in the
+  future is a `warn`. For a file without `--revocations` the check is
+  skipped.
 - `public_url`: the claim must have been fetched from
   `public_base_url`'s well-known path. The same valid claim served by
   another host fails. For a file, pass `--expect-url`, or the check is
@@ -706,7 +738,8 @@ note: a valid claim says what the seller serves; logprob challenges (check-endpo
 - Exit status 0 pass, 1 fail (any failed check), 2 inconclusive (the
   claim or the catalog could not be read). `--json` prints
   `ts.claim-check/1` with the claim fields, `wallet_verified`,
-  `catalog`, `freshness`, the recomputed `license`, every check with its
+  `catalog`, `freshness`, the recomputed `license`, `expires_at` and
+  `revoked` (0.3.1), every check with its
   `status` (`pass`, `fail`, `warn`, `skip`) and `detail`, `verdict`, and
   `counts`.
 
@@ -720,7 +753,7 @@ $ tensorseed check-claim edited-claim.json --no-wait
   skip claim_fields     not checked: claim_sha256 does not match
   skip wallet_signature not checked: a signature over claim_sha256 says nothing about contents that hash differently
 ...
-verdict: fail (6 pass, 1 fail, 1 warn, 3 skip)
+verdict: fail (6 pass, 1 fail, 1 warn, 5 skip)
 ```
 
 Without Tensorseed (or on 0.3.0), do the catalog match yourself. With a
@@ -797,7 +830,9 @@ listed base URL. The rest are yours:
   checked like a new listing. A seller restarting with the same settings
   keeps the same claim, wallet signature included.
 - A 0.3.0 claim has no expiry and no revocation. `started_at` only says
-  when this serving period began. Revocation is planned.
+  when this serving period began. **0.3.1** adds both
+  ([4.8](#48-expiry-and-revocation)); decide whether you require
+  `expires_at` for new listings.
 
 ### 4.7 License marks a marketplace should act on
 
@@ -818,6 +853,79 @@ differs, `tensorseed list --json` gives `commercial_serving` and
 | `unknown` | Missing, `other`, or custom | Hold for manual review |
 
 These marks come from the license id only and are not legal advice.
+
+### 4.8 Expiry and revocation
+
+**0.3.1.** A claim can carry `expires_at`, and a seller can revoke a
+claim with a signed entry in a `ts.claim-revocations/1` list. Both are
+optional and 0.3.0 claims keep working. The full design is in
+[verified-serving.md](plans/verified-serving.md) section 3.4.
+
+**Expiry.** `expires_at` is inside the hashed body, so a seller cannot
+extend it without a new `claim_sha256` (and a new wallet signature). A
+claim is valid until that instant and fails `check-claim` after it. A
+response is checked against it by its signed `timestamp`, not by when
+you check: a response signed after `expires_at` fails with
+`claim_expired`, while one signed before it stays verifiable later.
+Sellers set it with `claim-serving --expires-in 30d` or
+`serve-inference --sign --expires-in 30d` and renew by writing a new
+claim. A claim with `expires_at` is rejected by 0.3.0 binaries, which do
+not know the field.
+
+**Revocation lists.** The seller's signing proxy serves its list at
+`/.well-known/tensorseed/revocations.json`, next to the claim (404 when
+it has none):
+
+```json
+{
+  "schema": "ts.claim-revocations/1",
+  "revocations": [
+    {
+      "claim_sha256": "0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185",
+      "revoked_at": "2026-11-25T00:00:00Z",
+      "reason": "superseded",
+      "response_sig": "<128 lowercase hex>"
+    }
+  ]
+}
+```
+
+An entry is checked against the claim it names, so you need not trust
+whoever hosts the list, and you can merge lists or keep your own. Each
+entry carries `response_sig` (Ed25519 by the claim's `response_key`),
+`wallet_sig` (`{"alg":"eip191","value":"0x..."}` by the claim's
+`seller_wallet`), or both, over this message (a newline after every
+line, including the last):
+
+```text
+ts.claim-revocation/1
+claim_sha256=<claim_sha256>
+revoked_at=<revoked_at, exactly as in the entry>
+reason=<reason>
+```
+
+Every signature present must verify, or the entry is ignored and the
+check reports it. Either key alone can revoke; nothing undoes a
+revocation. `reason` is `[a-z0-9_]{1,32}`; Tensorseed writes
+`superseded`, `stopped`, `key_compromised`, and `other`. What it means
+for you:
+
+| Situation | `check-claim` | Responses (`verify-response`) |
+|---|---|---|
+| `revoked_at` in the past | `revocation` fails | Signed at or after `revoked_at`: `claim_revoked`. Signed before: still valid |
+| `revoked_at` in the future | `revocation` warns | Same rule, so they verify until then |
+| `reason` `key_compromised` | `revocation` fails | Every response under the claim fails with `claim_revoked`, whenever it was signed |
+| An entry whose signature does not verify | Ignored, reported as a `warn` | Ignored |
+| No list (404) | `revocation` passes | Nothing to apply |
+| The list cannot be read | `revocation` warns | `verify-response` stops with an error |
+
+Policy suggestions: re-fetch the list on your health check schedule
+with the claim; stop routing to a claim as soon as a revocation is in
+effect; keep a `key_compromised` revocation on file and treat responses
+under that claim as unattributable in disputes; require `expires_at` for
+new listings once your sellers run 0.3.1 (`check-claim
+--require-expiry`). A list holds at most 10,000 entries; the CLI and the
+npm package read at most 4 MiB.
 
 ## 5. Verify signed responses
 
@@ -919,7 +1027,14 @@ valid: signed by the response key of claim 0a00a5079b7176d65a5c0a33b5ee43c2daab4
 ```
 
 `--claim` takes a file, a URL ending in `.json`, or a base URL (which
-fetches the well-known path). `--json` prints a result object:
+fetches the well-known path). **0.3.1:** when the claim comes from its
+well-known path, the seller's revocation list next to it is fetched too
+(404 means none), and `--revocations <file|URL>` (repeatable) adds
+lists you keep. The claim's `expires_at` and any verified revocation are
+applied by the response's signed timestamp
+([4.8](#48-expiry-and-revocation)), and the JSON gains
+`claim_expires_at` and `revocation_lists`. `--json` prints a result
+object:
 
 ```json
 {
@@ -949,7 +1064,8 @@ one body byte changed:
 
 Error labels: `absent`, `missing_header`, `malformed_header`,
 `claim_mismatch`, `request_id_mismatch`, `model_mismatch`,
-`timestamp_skew`, `body_hash_mismatch`, `bad_signature`. Exit status is
+`timestamp_skew`, `body_hash_mismatch`, `bad_signature`, and in 0.3.1
+`claim_expired` and `claim_revoked`. Exit status is
 0 valid, 1 invalid or unsigned, and 2 for an error (for example a claim
 that does not verify). For a stream, pass the raw saved stream as
 `--body`. The skew check compares the signing time with the current
@@ -1021,10 +1137,111 @@ a stream, and returns the bytes the signature covers. `tensorseed-app`
 is the library the CLI and Desktop share, so it brings their full
 dependency tree.
 
+**0.3.1: depend on `tensorseed-verify` instead.** It is the verify-only
+crate (no networking, no torrent, no serving, no async runtime; with
+`default-features = false` it builds for `wasm32-unknown-unknown`).
+The same check, with expiry and
+revocations:
+
+```toml
+[dependencies]
+anyhow = "1"
+tensorseed-verify = { git = "https://github.com/TunedChaos/TensorSeed", tag = "v0.3.1" }
+```
+
+```rust
+use tensorseed_verify::claim::{WalletStatus, parse_claim};
+use tensorseed_verify::response::{Expect, extract_signed, verify_fields};
+use tensorseed_verify::revocation::Revocations;
+
+/// Check one response against a claim and the revocation lists you hold.
+fn check(
+    claim_json: &[u8],
+    revocations_json: Option<&[u8]>,
+    headers: &[(String, String)],
+    body: &[u8],
+    sent_request_id: &str,
+    requested_model: &str,
+) -> anyhow::Result<()> {
+    let claim = parse_claim(claim_json)?;
+    // Schema, claim_sha256, field formats, and the wallet signature if present.
+    match claim.verify()?.wallet {
+        WalletStatus::Verified(addr) => println!("claim signed by wallet {addr}"),
+        WalletStatus::NotSigned => println!("claim is not wallet-signed"),
+    }
+    let revoked = match revocations_json {
+        Some(raw) => Revocations::parse(raw)?.revoked_from(&claim),
+        None => None,
+    };
+    let (fields, signed_bytes) = extract_signed(headers, body)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    verify_fields(
+        &fields,
+        signed_bytes,
+        &Expect {
+            pubkey: claim.response_pubkey()?,
+            claim_sha256: &claim.claim_sha256,
+            served_model_id: &claim.served_model_id,
+            request_id: Some(sent_request_id),
+            requested_model: Some(requested_model),
+            now_unix: now,
+            max_skew_secs: 300,
+            claim_expires_unix: claim.expires_unix()?,
+            claim_revoked_unix: revoked,
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("{} ({})", e, e.label()))?;
+    println!("valid response {} at {}", fields.request_id, fields.timestamp);
+    Ok(())
+}
+```
+
+`tensorseed_verify::claim_check` has the full `check-claim` logic as pure
+functions (`check_document`, `check_origin`, `check_revocation`,
+`build_report`) for callers that fetch the claim and the catalog
+themselves. The `tensorseed_app::signing` paths above still work in
+0.3.1; they re-export these types.
+
 ### 5.6 Verify in JavaScript
 
-The WASM package does not cover signed responses in 0.3.0, so this is a
-direct implementation of the format above with `node:crypto` (Node 18
+**0.3.1: `@tensorseed/verify`.** `npm/verify` packages the WebAssembly
+build of `tensorseed-verify` for Node and browsers (ES module, typed),
+so a JavaScript service runs the same code as the CLI. Build it from a
+checkout with `pnpm --dir npm/verify test` (it builds `pkg/` and runs the
+Node tests); the package name is reserved for a release.
+
+```js
+import { init, openCatalog, checkEndpoint, verifyResponse } from "@tensorseed/verify";
+
+await init(); // a no-op in Node; fetches the .wasm next to the module in a browser
+
+// Listing: verify your pinned catalog (signed snapshot or deltas, then the
+// signed head), then check the seller's claim and revocation list.
+const { verifier } = openCatalog({ name: "tensorseed", pubkey: PIN.pubkey, snapshot, deltas, head });
+const report = await checkEndpoint("https://llm.example.com/v1", {
+  catalog: verifier,
+  requireWalletSig: true,
+  requireExpiry: false, // true once your sellers run 0.3.1
+});
+// report is ts.claim-check/1, exactly as `check-claim --json` prints it.
+if (report.verdict !== "pass") throw new Error(JSON.stringify(report.checks));
+
+// Per response: the exact bytes, the headers, and the request id you sent.
+const result = verifyResponse({ claim, headers: res.headers, body, requestId, requestedModel, revocations });
+if (!result.valid) console.warn(result.error); // body_hash_mismatch, claim_revoked, ...
+```
+
+`checkClaim(claim, options)` runs the checks that need no catalog (best
+verdict `inconclusive`), `checkClaimWithCatalog(verifier, claim,
+options)` runs all of them, and `claimSigningMessage`,
+`revocationSigningMessage`, and `recoverWallet` give the raw pieces.
+`checkEndpoint` is the only function that touches the network, through
+the `fetch` you pass (or the global one). The package README has the
+details.
+
+Without the package (or on 0.3.0), here is a direct implementation of the format above with `node:crypto` (Node 18
 or newer, no dependencies). It verified the same responses as the CLI,
 streams included, matched Tensorseed's `claim_sha256` (including the
 `null` rule in [4.3](#43-the-canonical-hash-claim_sha256)), and rejected
@@ -1049,7 +1266,7 @@ export function claimSha256(claim) {
   delete body.claim_sha256;
   delete body.sig;
   delete body.signed;
-  for (const k of ["public_base_url", "seller_wallet"]) if (body[k] === null) delete body[k];
+  for (const k of ["public_base_url", "seller_wallet", "expires_at"]) if (body[k] === null) delete body[k];
   return sha256(Buffer.from(canonical(body), "utf8"));
 }
 
@@ -1101,7 +1318,8 @@ export function verifyResponse(claim, headers, body, { requestId, model, maxSkew
 ```
 
 This sketch skips the header format checks of step 1 in
-[5.2](#52-the-signed-message); add them if you accept responses at
+[5.2](#52-the-signed-message), and the expiry and revocation rules of
+[4.8](#48-expiry-and-revocation); add them if you accept responses at
 scale. Check the wallet signature as in [4.4](#44-the-wallet-signature).
 
 ### 5.7 Rules for a gateway on the request path
@@ -1615,6 +1833,11 @@ weights. That needs hardware attestation, which 0.3.0 does not have
   `--api-key-env` keys out of logs and shell history.
 - **Replay and staleness are yours to handle.** Use fresh request ids
   and a skew window that fits your use.
+- **Revocations need no trusted host, but they need fetching.** An
+  entry is only as current as your last fetch of the seller's list
+  (0.3.1). Fetch it with the claim, keep your own copy, and never treat
+  an unreadable list as "not revoked" for disputes. A leaked response key
+  can revoke the seller's claim but cannot un-revoke one.
 
 ## 11. Integration checklist
 
@@ -1624,13 +1847,16 @@ weights. That needs hardware attestation, which 0.3.0 does not have
    on a schedule.
 3. On listing, run `tensorseed check-claim <listed base URL>` (0.3.1):
    it fetches the claim from the well-known path and checks the hash,
-   fields, wallet signature, URL, catalog match, takedowns, freshness,
-   and the recomputed license mark. On 0.3.0, load the claim and match
+   fields, wallet signature, expiry, the seller's revocation list, URL,
+   catalog match, takedowns, freshness, and the recomputed license mark.
+   From JavaScript, `checkEndpoint` in `@tensorseed/verify` does the
+   same ([5.6](#56-verify-in-javascript)). On 0.3.0, load the claim and match
    it to your catalog copy yourself ([4.5](#45-match-the-claim-to-a-catalog-you-trust)).
 4. Check `served_model_id` and `logprobs` against the listing. Decide
    on wallet policy (`--require-wallet-sig`, `--expect-wallet`).
-5. Health check `/v1/models` and the claim; re-check on any new
-   `claim_sha256`.
+5. Health check `/v1/models`, the claim, and its revocation list;
+   re-check on any new `claim_sha256`, and stop routing to an expired or
+   revoked claim ([4.8](#48-expiry-and-revocation)).
 6. Send `X-Tensorseed-Request-Id` on every call; verify signatures on
    the seller's exact bytes before changing anything.
 7. Make secret reference sets from your own verified copies, calibrate
@@ -1647,6 +1873,7 @@ weights. That needs hardware attestation, which 0.3.0 does not have
 | `check-endpoint` | pass | fail | inconclusive, unsupported, or an error that prevents a verdict |
 | `check-claim` (0.3.1) | every check passed (warnings allowed) | any check failed | the claim or the catalog could not be read |
 | `calibrate-reference` (0.3.1) | calibrated copy written | error | |
+| `revoke-claim` (0.3.1) | revocation written (or message printed) | error | |
 
 | Limit | Value |
 |---|---|
@@ -1657,6 +1884,8 @@ weights. That needs hardware attestation, which 0.3.0 does not have
 | Signature timestamp skew | 300 s by default (`--max-skew`) |
 | Signed body | 64 MiB |
 | Coin anchor grace | 192 blocks (`[chia] chain_grace_blocks`) |
+| Revocation list | 4 MiB when fetched, at most 10,000 entries (0.3.1) |
+| Claim lifetime (`--expires-in`) | 1 hour to 400 days (0.3.1) |
 
 ## 13. Planned (not in 0.3.0)
 
@@ -1668,7 +1897,9 @@ release date.
   so a claim can be tied to a bonded identity.
 - **Evidence bundles and dispute tooling** (`ts.challenge-evidence/1`
   and a full generation dispute mode for `check-endpoint`).
-- **Claim expiry and revocation.**
+- **Revocations in `check-endpoint`.** In 0.3.1 it honours the claim's
+  `expires_at` but does not fetch revocation lists; run `check-claim`
+  first.
 - **Tolerance data from GPUs and vLLM.** The 0.3.1 calibration numbers
   come from one CPU host running llama.cpp. `calibrate-reference` works
   against any engine, but no published per-quantization defaults exist

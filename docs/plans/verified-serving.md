@@ -131,6 +131,7 @@ version 0 record:
   "logprobs": "required",
   "started_at": "2026-11-13T21:01:42Z",
   "created_at": "2026-11-13T21:01:42Z",
+  "expires_at": "2026-12-13T21:01:42Z",
   "claim_sha256": "<sha256 of the canonical unsigned body, 64 lowercase hex>",
   "sig": { "alg": "eip191", "value": "0x<65-byte signature, hex>" }
 }
@@ -164,6 +165,8 @@ Notes on names, so this stays aligned with 19.1:
   tier (section 5.6).
 - `started_at` is when this serving period began. `created_at` is when
   this document was written. They are often the same instant.
+- `expires_at` (added in 0.3.1, optional) is when the claim stops being
+  valid. It must be later than `created_at`. Section 3.4 has the rules.
 - The catalog publisher key does not sign this document. The seller's
   wallet does, so the claim binds to the same address the marketplace
   already uses as the seller identity.
@@ -219,7 +222,108 @@ proves that the process listening on the endpoint loaded those bytes,
 that it still does so an hour later, or that every request is served
 by the same weights. Changing the weights, the file, the endpoint,
 the served model id, or the response key requires a new claim. The
-previous claim should be revoked on chain (section 4.3).
+previous claim should be revoked in the seller's revocation list
+(section 3.4) and, when it was attested, on chain (section 4.3).
+
+### 3.4 Expiry and revocation (built in 0.3.1)
+
+Code: `tensorseed_verify::claim` (`expires_at`),
+`tensorseed_verify::revocation`, and the `expiry` and `revocation` checks
+in `tensorseed_verify::claim_check`.
+
+**Expiry.** `expires_at` is an optional RFC 3339 UTC time inside the
+signed body, so it is covered by `claim_sha256` and the wallet
+signature. It is written only when set: a claim without it hashes
+exactly as it did in 0.3.0, and every 0.3.0 claim still loads and
+verifies. A claim that has it cannot be read by a 0.3.0 binary (the
+claim reader rejects unknown fields), so sellers who must stay readable
+by 0.3.0 tools leave it out. Rules:
+
+- A claim whose `expires_at` is malformed, or not later than
+  `created_at`, does not verify.
+- Verifying the claim itself never reads the clock. Callers compare
+  `expires_at` with their own time: `check-claim` fails a claim when
+  `now > expires_at`, and warns when the claim has no `expires_at`
+  (`--require-expiry` makes that a fail).
+- A signed response is checked against the claim's expiry only after its
+  signature verifies: a response whose signed `timestamp` is later than
+  `expires_at` fails with `claim_expired`. A response signed before the
+  expiry stays verifiable afterwards, so saved evidence does not rot.
+- `claim-serving --expires-in 30d` and `serve-inference --sign
+  --expires-in 30d` set it (1 hour to 400 days; default: no expiry).
+  When an existing claim says the same thing, it is kept only while more
+  than half of the requested lifetime remains; otherwise a fresh claim is
+  written and needs a fresh wallet signature. An expired or revoked
+  claim is never reused, and the signing proxy refuses to start with
+  one.
+
+**Revocation.** A revocation names one claim and is signed by a key that
+the claim itself names, so it needs no trusted host:
+
+```json
+{
+  "schema": "ts.claim-revocations/1",
+  "revocations": [
+    {
+      "claim_sha256": "<64 lowercase hex>",
+      "revoked_at": "2026-11-25T00:00:00Z",
+      "reason": "superseded",
+      "response_sig": "<Ed25519 signature by the claim's response key, 128 lowercase hex>",
+      "wallet_sig": { "alg": "eip191", "value": "0x<65-byte signature, hex>" }
+    }
+  ]
+}
+```
+
+Both signatures cover the same message, with a newline after every line
+including the last:
+
+```
+ts.claim-revocation/1
+claim_sha256=<claim_sha256>
+revoked_at=<revoked_at, exactly as written in the entry>
+reason=<reason>
+```
+
+`response_sig` is a plain Ed25519 signature over those bytes with the
+claim's `response_key`. `wallet_sig` is EIP-191 (`personal_sign`) over
+the same bytes by the claim's `seller_wallet`. An entry needs at least
+one of them, and every signature present must verify, or the entry is
+ignored (and reported). Either key alone can revoke; nothing can undo a
+revocation. The worst a leaked response key can do with this format is
+revoke the seller's own claim.
+
+`reason` is 1 to 32 characters of `a-z`, `0-9`, `_`. Tensorseed writes
+`superseded`, `stopped`, `key_compromised`, and `other`, and reads any
+value in that alphabet. A revocation takes effect at `revoked_at`:
+responses signed at or after that time fail with `claim_revoked`, and
+`check-claim` fails the claim once the time has passed (a future time is
+a warning). `key_compromised` is different: it makes every response under
+the claim untrusted, whenever it was signed, because the signer may not
+have been the seller.
+
+The list itself is not signed. Each entry is checked against the claim
+it names, so a list can be merged, copied, and mirrored by anyone, and a
+marketplace can keep its own list next to the seller's. A list holds at
+most 10,000 entries, and the CLI and the npm package fetch at most 4 MiB.
+
+**Publishing.** `tensorseed revoke-claim <claim>` signs an entry with the
+local response key and adds it to `revocations.json` next to the claim
+(`--out` for another file; an entry for the same claim signed by the
+same keys replaces the earlier one). `--print-message` prints the exact wallet
+message; `--wallet-sig 0x...` attaches the wallet signature, and
+`--no-response-key --wallet-sig 0x...` revokes with the wallet alone
+when the response key is lost. Pass the same `--at` to both steps. The
+signing proxy serves the file at
+`/.well-known/tensorseed/revocations.json`, re-reading it on every
+request (404 when the seller has none, 503 when it does not parse).
+`check-claim` and `verify-response` fetch that path next to a claim read
+from a URL, and take more lists with `--revocations <file|URL>`.
+`check-endpoint` honours expiry but does not fetch revocations; run
+`check-claim` before listing.
+
+This is the off-chain counterpart of section 4.3, and needs no chain. A
+seller who also attested the claim should revoke both.
 
 ---
 
@@ -988,6 +1092,27 @@ through the proxy passed all 32 challenges with 32 signatures verified,
 and straight at the runtime with the claim it failed every challenge as
 unsigned. A restart kept the wallet-signed claim unchanged.
 
+### 5.9 Verifier library and npm package (0.3.1)
+
+Everything a buyer or marketplace needs to check a claim, a revocation,
+a signed response, a catalog head, or a manifest entry now lives in the
+verify-only crate `tensorseed-verify`: no networking, no torrent, no
+serving, and no key files. The CLI, the desktop app, and the WebAssembly
+build reuse it, so all three give the same answer. With
+`default-features = false` (which drops minisign key generation) it
+builds for `wasm32-unknown-unknown` on its own.
+
+`crates/tensorseed-wasm` wraps it for JavaScript, and `npm/verify` is the
+`@tensorseed/verify` package (ES module, Node and browsers):
+`checkClaim`, `checkClaimWithCatalog` (with a `CatalogVerifier` that has
+verified a snapshot and head), `checkEndpoint` (fetches the claim and the
+seller's revocation list with the caller's `fetch`), `verifyResponse`,
+and the signing messages. The claim report is the same
+`ts.claim-check/1` JSON that `check-claim --json` prints. Node tests run
+against vectors generated by the Rust crate
+(`crates/tensorseed-wasm/tests/npm_fixtures.rs`), so the two cannot drift
+apart unnoticed.
+
 ---
 
 ## 6. Secondary tool: full-generation checks for disputes
@@ -1233,7 +1358,9 @@ stay on the seller's machine.
 | `tensorseed reference-logprobs <dir>` | **Built in 0.3.0** (section 5.7). From a verified local copy, generate `ts.reference-logprobs/1` for that entrypoint: the secret (or later revealed) challenge expectations. Prints `set_hash` so a marketplace can commit to the set without publishing the prompts yet. |
 | `tensorseed reference-answers <dir>` | Generate the longer `ts.reference-answers/1` file used for disputes and calibration, also offline and amortized. |
 | `tensorseed check-endpoint` | **Built in 0.3.0** for logprob challenges (section 5.7) with signed response checks (section 5.8); the dispute mode and evidence bundles are not built. Default: verify signed responses and run logprob challenges against a claim and a `ts.reference-logprobs/1` file (or a revealed set). A flag runs the full-generation dispute mode instead. Writes an optional `ts.challenge-evidence/1` bundle. No stake is moved. |
-| `tensorseed verify-response` | **Built in 0.3.0** (section 5.8). Verify one saved response (headers and body, or a stream with its trailer) against a claim. |
+| `tensorseed verify-response` | **Built in 0.3.0** (section 5.8). Verify one saved response (headers and body, or a stream with its trailer) against a claim. Honours expiry and revocations since 0.3.1 (section 3.4). |
+| `tensorseed revoke-claim <claim.json>` | **Built in 0.3.1** (section 3.4). Sign a `ts.claim-revocations/1` entry with the response key or the seller wallet and add it to the list the signing proxy serves. |
+| `tensorseed check-claim` | **Built in 0.3.0**; expiry and revocation checks in 0.3.1 (section 3.4). Also in JavaScript as `@tensorseed/verify` (section 5.9). |
 | `tensorseed serve-inference --sign` or `tensorseed sign-responses` | **Built in 0.3.0** (section 5.8). Start (or run standalone) the loopback signing proxy in front of the runtime, using the local response key. The secret key never leaves the seller host and is never sent to Tensorseed developers or to a marketplace. |
 
 `serve-inference --sign` writes a version 1 claim and prints the wallet
@@ -1289,7 +1416,8 @@ developers.
 | False failure from GPU or batch nondeterminism | Fixed sampling, median of several reference samples, calibrated tolerances, and a decision over the set (5.7.1) | Tolerances that are too loose miss cheats; too tight punish honest sellers |
 | Different quantization served than claimed | Per-entrypoint reference files; logprob distance | None, if the set is present and logprobs are required |
 | Engine cannot return logprobs | Offer is claim-only / unverifiable tier, not logprob-verified | Buyers must see the weaker mark |
-| Stolen response key or stolen seller wallet | Key lives only on the seller host; rotation is a new claim; marketplace binds offers to the signed-in wallet | A stolen key is still a stolen identity; wallet and host hygiene are out of band |
+| Stolen response key or stolen seller wallet | Key lives only on the seller host; rotation is a new claim; a `key_compromised` revocation (section 3.4) voids every response under the old claim; marketplace binds offers to the signed-in wallet | A stolen key is still a stolen identity until buyers see the revocation; wallet and host hygiene are out of band |
+| A claim outlives the serving period it describes | `expires_at` and signed revocations (section 3.4), checked by `check-claim` and `verify-response` | Claims without `expires_at` stay valid until revoked; buyers must fetch revocation lists |
 | Replay of a signed good response on a later request | Unique `X-Tensorseed-Request-Id` bound in the digest; verifiers reject reuse | Callers must actually send unique ids and check the echo |
 | Marketplace annotates the response and breaks the signature | Verify and hash the seller body before adding fields | Implementations that hash too late will false-fail |
 | Replay of an old attestation after the seller moved | `public_base_url` is inside the signed claim and the EAS payload; revoke on move | A forgotten unrevoked attestation can linger until noticed |

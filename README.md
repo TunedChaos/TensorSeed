@@ -124,6 +124,7 @@ tensorseed serve-inference org/name --sign  # runtime behind the signing proxy, 
 tensorseed claim-serving org/name --wallet 0x...  # claim for your own engine; prints the EIP-191 message
 tensorseed sign-responses --upstream http://127.0.0.1:8081 --claim served-weights.json  # standalone proxy
 tensorseed verify-response --claim https://llm.example.com/v1 --headers h.txt --body b.json
+tensorseed revoke-claim served-weights.json --reason superseded  # signed revocation, served next to the claim
 
 # Publisher side:
 tensorseed catalog keygen           # minisign compatible, password protected
@@ -257,7 +258,12 @@ headers tied to a `ts.served-weights/1` claim, streams end with a signed
 SSE comment, and the claim is served at
 `/.well-known/tensorseed/served-weights.json`. Your wallet can sign the
 claim outside Tensorseed; Tensorseed holds no wallet keys.
-`verify-response` and `check-endpoint` verify the signatures. See the
+`verify-response` and `check-endpoint` verify the signatures. A claim
+can carry an expiry (`--expires-in`), and `revoke-claim` publishes a
+signed revocation at `/.well-known/tensorseed/revocations.json`, which
+`check-claim` and `verify-response` honour. The same checks run in a
+browser or Node through the `@tensorseed/verify` package in
+[npm/verify](npm/verify/README.md). See the
 guide and [docs/plans/verified-serving.md](docs/plans/verified-serving.md);
 the checking side is in
 [docs/INTEGRATE-A-MARKETPLACE.md](docs/INTEGRATE-A-MARKETPLACE.md).
@@ -357,9 +363,9 @@ tensorseed completions fish | source   # fish, until the package is installed
 | `crates/tensorseed-core` | Manifest and catalog JSON types, `ts/v1/` keys, canonical JSON, SHA-256 and git blob hashing, directory verification |
 | `crates/tensorseed-hf` | Hugging Face Hub API client (repo info, tree, listings, backoff) and license policy |
 | `crates/tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback |
-| `crates/tensorseed-verify` | Pure catalog verification: minisign, signed-file hash chain, and chain proofs (no network) |
+| `crates/tensorseed-verify` | Verify-only crate (no network, no torrent, no serving): minisign, signed-file hash chain, chain proofs, manifests, served-weights claims, revocations, and signed responses |
 | `crates/tensorseed-catalog` | `CatalogBackend` trait, HTTPS and Chia I/O on top of `tensorseed-verify` |
-| `crates/tensorseed-wasm` | WebAssembly bindings for the explorer |
+| `crates/tensorseed-wasm` | WebAssembly bindings for the explorer and the `@tensorseed/verify` npm package (`npm/verify`) |
 | `crates/tensorseed-torrent` | BEP 52 v2 and hybrid torrent builder and parser (pure Rust), Merkle checks, librqbit seeding and swarm downloads |
 | `crates/tensorseed-serve` | Building blocks of `serve`: webseed HTTP server, health endpoint, NAT-PMP and UPnP port mapping, selection rules |
 | `crates/tensorseed-app` | Application library shared by the CLI and Desktop: config, catalog access, mirrors, torrent helpers (no argument parsing, no printing) |
