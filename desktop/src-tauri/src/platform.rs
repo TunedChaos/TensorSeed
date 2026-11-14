@@ -174,3 +174,31 @@ mod flatpak_tests {
         );
     }
 }
+
+/// Open `dir` in the system file manager (`xdg-open`, Explorer, or
+/// Finder). Returns once it has started.
+///
+/// # Errors
+///
+/// Fails when the file manager cannot be started.
+pub fn open_folder(dir: &std::path::Path) -> anyhow::Result<()> {
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let mut child = std::process::Command::new(program)
+        .arg(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("starting {program}: {e}"))?;
+    // Reap it; Explorer's exit code means nothing, so it is not checked.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}

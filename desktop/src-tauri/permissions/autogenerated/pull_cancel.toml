@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pull-cancel"
+description = "Enables the pull_cancel command without any pre-configured scope."
+commands.allow = ["pull_cancel"]
+
+[[permission]]
+identifier = "deny-pull-cancel"
+description = "Denies the pull_cancel command without any pre-configured scope."
+commands.deny = ["pull_cancel"]

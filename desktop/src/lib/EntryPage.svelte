@@ -3,16 +3,21 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import CommercialBadge from "@tensorseed/ui/components/CommercialBadge.svelte";
+  import JobProgress from "./JobProgress.svelte";
   import { formatBytes, shortHex } from "@tensorseed/ui/format";
   import {
     entryShow,
+    jobResume,
     onJob,
+    pullCancel,
+    pullPause,
     pullStart,
     seedStart,
     verifyStart,
     type EntryArgs,
     type EntryPage,
     type JobEvent,
+    type PullProgress,
     type VerifyMode,
   } from "./native";
   import { copyBadge, fileCount } from "./copy";
@@ -27,6 +32,11 @@
   let result = $state<{ ok: boolean; text: string } | null>(null);
   let seeding = $state(false);
   let fileQuery = $state("");
+  let progress = $state<PullProgress | null>(null);
+  /** Database id of a pull this page paused, for Resume. */
+  let pausedDb = $state<string | null>(null);
+  /** Files picked for "Pull selected". */
+  let picked = $state<Record<string, boolean>>({});
 
   const key = $derived(`${entry.repoType}/${entry.id}/${entry.revision ?? ""}/${entry.catalog ?? ""}`);
 
@@ -51,6 +61,9 @@
     log = [];
     result = null;
     job = null;
+    progress = null;
+    pausedDb = null;
+    picked = {};
     load(false);
   });
 
@@ -60,15 +73,18 @@
 
   function apply(e: JobEvent) {
     if (e.line !== null) log = [...log.slice(-499), e.line];
+    if (e.progress) progress = e.progress;
     if (e.state !== "running") {
+      pausedDb = e.state === "paused" ? e.dbJob : null;
       let text = e.message ?? e.state;
       // A catalog check of a partial or other revision copy fails by design;
       // say that it is about this copy, not the catalog entry.
       const st = page?.local.status;
       if (e.state !== "ok" && job?.kind === "verify-catalog" && st && st.kind !== "complete")
         text = `This local copy does not match the full catalog entry (${st.summary}). The catalog entry itself is not affected. ${text}`;
-      result = { ok: e.state === "ok", text };
+      result = { ok: e.state !== "failed", text };
       job = null;
+      progress = null;
       load(false);
     }
   }
@@ -82,18 +98,22 @@
     return () => unlisten?.();
   });
 
-  async function start(kind: "pull" | "verify" | "complete", mode: VerifyMode = "auto") {
+  async function start(kind: "pull" | "verify" | "complete" | "selected" | "resume", mode: VerifyMode = "auto") {
     result = null;
     log = [];
     early = [];
+    progress = null;
     try {
       let id: number;
       if (kind === "pull") id = await pullStart(entry);
+      else if (kind === "selected") id = await pullStart(entry, { include: pickedPaths });
+      else if (kind === "resume" && pausedDb) id = await jobResume(pausedDb);
       // Pull the catalog entry at this copy's commit into the same folder:
       // files already present are kept, only the missing ones download.
       else if (kind === "complete") id = await pullStart({ ...entry, revision: page?.local.status?.catalogCommit ?? entry.revision });
       else id = await verifyStart(entry, mode);
-      job = { id, kind: kind === "verify" && mode === "catalog" ? "verify-catalog" : kind };
+      if (kind === "resume") pausedDb = null;
+      job = { id, kind: kind === "verify" && mode === "catalog" ? "verify-catalog" : kind === "verify" ? "verify" : "pull" };
       const mine = early.filter((e) => e.job === id);
       early = [];
       for (const e of mine) if (job) apply(e);
@@ -125,6 +145,17 @@
   let copy = $derived(page?.local.status ?? null);
   let badge = $derived(copyBadge(copy));
   let busy = $derived(job !== null || seeding);
+  let pickedPaths = $derived(Object.keys(picked).filter((p) => picked[p]));
+  let pulling = $derived(job !== null && job.kind === "pull");
+
+  async function stopPull(cancel: boolean) {
+    if (!job) return;
+    try {
+      await (cancel ? pullCancel(job.id) : pullPause(job.id));
+    } catch (err) {
+      result = { ok: false, text: String(err) };
+    }
+  }
 
   function chainLabel(p: EntryPage): { cls: string; text: string; detail?: string } {
     const c = p.chain;
@@ -155,13 +186,20 @@
     {#if page?.catalogLabel}<span class="badge badge-outline">{page.catalogLabel}</span>{/if}
     <div class="flex-1"></div>
     <button type="button" class="btn btn-sm" disabled={loading} onclick={() => load(true)}>Sync</button>
-    <button
-      type="button"
-      class="btn btn-primary btn-sm"
-      disabled={busy || loading || !page?.cliFound || !m || page?.takenDown}
-      title={page && !page.cliFound ? "Install the tensorseed CLI (or set TENSORSEED_CLI): Desktop runs it for pulls" : "Download and verify every file"}
-      onclick={() => start("pull")}
-    >{page?.local.pulled ? "Pull again" : "Pull"}</button>
+    {#if pulling}
+      <button type="button" class="btn btn-sm" onclick={() => stopPull(false)} title="Stop and keep partial downloads">Pause</button>
+      <button type="button" class="btn btn-sm btn-error btn-outline" onclick={() => stopPull(true)} title="Stop and delete partial downloads; finished files stay">Cancel</button>
+    {:else if pausedDb}
+      <button type="button" class="btn btn-primary btn-sm" disabled={busy} onclick={() => start("resume")}>Resume</button>
+    {:else}
+      <button
+        type="button"
+        class="btn btn-primary btn-sm"
+        disabled={busy || loading || !m || page?.takenDown}
+        title="Download and verify every file"
+        onclick={() => start("pull")}
+      >{page?.local.pulled ? "Pull again" : "Pull"}</button>
+    {/if}
     <button
       type="button"
       class="btn btn-sm"
@@ -195,6 +233,7 @@
         {#if job}<span class="loading loading-spinner loading-xs" aria-hidden="true"></span>{/if}
         {job ? (job.kind === "verify" || job.kind === "verify-catalog" ? "Verifying" : "Pulling") : "Output"}
       </h3>
+      {#if pulling && progress}<div class="mb-2"><JobProgress {progress} /></div>{/if}
       <pre class="bg-base-200 rounded-box max-h-64 overflow-auto p-2 text-xs" data-testid="job-log">{log.join("\n")}</pre>
     </section>
   {/if}
@@ -287,7 +326,7 @@
                   <button
                     type="button"
                     class="btn btn-xs btn-primary"
-                    disabled={busy || !page.cliFound || page.takenDown}
+                    disabled={busy || page.takenDown}
                     title="Pull the {copy.missingFiles} missing files from the signed catalog into this folder; files already here are kept"
                     onclick={() => start("complete")}
                   >Complete this copy</button>
@@ -334,6 +373,17 @@
           <h3 id="files-h" class="font-semibold">Files</h3>
           <span class="badge badge-ghost">{m.files.length}</span>
           <div class="flex-1"></div>
+          {#if pickedPaths.length > 0}
+            <button type="button" class="btn btn-xs" onclick={() => (picked = {})}>Clear selection</button>
+            <button
+              type="button"
+              class="btn btn-xs btn-primary"
+              disabled={busy || page.takenDown}
+              title="Download and verify only the selected files"
+              data-testid="pull-selected"
+              onclick={() => start("selected")}>Pull {fileCount(pickedPaths.length)}</button
+            >
+          {/if}
           <label class="input input-sm">
             <span class="sr-only">Filter files</span>
             <input type="search" placeholder="Filter files" bind:value={fileQuery} />
@@ -341,10 +391,11 @@
         </div>
         <div class="overflow-x-auto">
           <table class="table table-sm">
-            <thead><tr><th>Path</th><th class="text-right">Size</th><th>Format</th><th>SHA-256</th></tr></thead>
+            <thead><tr><th><span class="sr-only">Select</span></th><th>Path</th><th class="text-right">Size</th><th>Format</th><th>SHA-256</th></tr></thead>
             <tbody>
               {#each files as f (f.path)}
                 <tr>
+                  <td class="w-0"><input type="checkbox" class="checkbox checkbox-xs" aria-label="Select {f.path}" bind:checked={picked[f.path]} /></td>
                   <td class="font-mono break-all">{f.path}
                     {#if f.pickle_risk}<span class="badge badge-warning badge-xs ms-1" title="Pickle based format, skipped by default">pickle</span>{/if}
                   </td>

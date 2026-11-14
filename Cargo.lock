@@ -3642,6 +3642,7 @@ dependencies = [
  "tensorseed-serve",
  "tensorseed-torrent",
  "tokio",
+ "tokio-util",
  "toml",
  "toml_edit",
  "tracing",
@@ -3731,6 +3732,7 @@ dependencies = [
  "tensorseed-core",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "wiremock",
 ]

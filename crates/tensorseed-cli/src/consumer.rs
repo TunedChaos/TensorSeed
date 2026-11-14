@@ -11,7 +11,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::{Context, bail};
 use tensorseed_core::commercial::{
@@ -19,18 +18,15 @@ use tensorseed_core::commercial::{
 };
 use tensorseed_core::keys::{RepoRef, RepoType, index_prefix};
 use tensorseed_core::manifest::{FileEntry, IndexEntry, SCHEMA_INDEX};
-use tensorseed_core::paths::{join_slash, native_path};
+use tensorseed_core::paths::native_path;
 use tensorseed_core::verify::{ExpectedFile, META_DIR, VerifyOptions, verify_dir};
-use tensorseed_fetch::{
-    FetchOptions, Fetcher, FileJob, JobSpec, Outcome, Source, SourceKind, job_id,
-};
-use tensorseed_hf::policy::Policy as HfPolicy;
 
 pub use tensorseed_app::pull::*;
+use tensorseed_app::pull_job::{PullControl, PullEvent, PullOptions};
 
 use crate::backend::{open_reader, pinned_key, read_verified};
 use crate::cli::{PullArgs, VerifyArgs};
-use crate::config::{Config, FetchSource};
+use crate::config::Config;
 
 /// Exit code for a failed verification or download.
 pub const EXIT_VERIFY_FAILED: u8 = 3;
@@ -52,52 +48,46 @@ pub async fn catalog_manifest(
     Ok(r)
 }
 
-fn hf_policy(cfg: &Config, args: &PullArgs) -> HfPolicy {
-    HfPolicy {
-        license_allowlist: cfg.policy.license_allowlist.clone(),
-        attribution_licenses: cfg.policy.attribution_licenses.clone(),
-        allow_gated: cfg.policy.allow_gated || args.allow_gated,
-        allow_pickle_formats: cfg.policy.allow_pickle_formats || args.allow_pickle,
-        license_overrides: args.allow_license.clone(),
+/// The shared pull options for `tensorseed pull` flags.
+fn pull_options(args: &PullArgs) -> PullOptions {
+    PullOptions {
+        repo: args.repo.clone(),
+        repo_type: args.repo_type.into(),
+        revision: args.revision.clone(),
+        out: args.out.clone(),
+        from_hf: args.from_hf,
+        manifest_file: args.manifest_file.clone(),
+        manifest_url: args.manifest_url.clone(),
+        no_hf_fallback: args.no_hf_fallback,
+        retry_dead_mirrors: args.retry_dead_mirrors,
+        jobs: args.jobs,
+        allow_pickle: args.allow_pickle,
+        include: args.include.clone(),
+        exclude: args.exclude.clone(),
+        allow_gated: args.allow_gated,
+        allow_license: args.allow_license.clone(),
+        no_wait: args.no_wait,
+        catalog: args.catalog.clone(),
+        ignore_tombstone: args.ignore_tombstone,
+        swarm: args.swarm,
+        no_swarm: args.no_swarm,
+        swarm_only: args.swarm_only,
+        peer: args.peer.clone(),
+        need_torrent: args.seed_after.is_some(),
     }
 }
 
-/// Skip reason for a file, or `None` to download it.
-///
-/// `--exclude` wins over `--include`. Unselected paths are skipped before
-/// the pickle policy, so a path that is both unselected and a pickle file
-/// is recorded as unselected.
-fn skip_reason(ef: &ExpectedFile, args: &PullArgs, allow_pickle: bool) -> Option<&'static str> {
-    if !tensorseed_serve::select::path_selected(&ef.path, &args.include, &args.exclude) {
-        return Some("unselected");
+/// Print one pull event the way `tensorseed pull` always has.
+fn print_pull_event(ev: PullEvent) {
+    match ev.line() {
+        Some((line, true)) => eprintln!("{line}"),
+        Some((line, false)) => println!("{line}"),
+        None => {}
     }
-    if ef.pickle_risk && !allow_pickle {
-        return Some("pickle");
-    }
-    None
-}
-
-/// Fail when `--include` / `--exclude` matched no files in the revision.
-fn reject_empty_selection(
-    expected: &[ExpectedFile],
-    args: &PullArgs,
-    repo_id: &str,
-) -> anyhow::Result<()> {
-    if args.include.is_empty() && args.exclude.is_empty() {
-        return Ok(());
-    }
-    if expected
-        .iter()
-        .all(|f| !tensorseed_serve::select::path_selected(&f.path, &args.include, &args.exclude))
-    {
-        bail!("no files matched --include/--exclude for {repo_id}");
-    }
-    Ok(())
 }
 
 /// `tensorseed pull`.
 pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
-    let use_swarm = swarm_wanted(cfg, args);
     if args.seed_after.is_some() && args.from_hf {
         bail!("--seed-after needs a Tensorseed manifest with a torrent, not --from-hf");
     }
@@ -106,499 +96,41 @@ pub async fn pull(cfg: &Config, args: &PullArgs) -> anyhow::Result<ExitCode> {
         .as_deref()
         .map(crate::torrents::parse_duration)
         .transpose()?;
-    let mut torrent: Option<tensorseed_torrent::Metainfo> = None;
-    let (repo, revision) = parse_repo(&args.repo, args.repo_type.into(), args.revision.as_deref())?;
-    let hf = hf_client(cfg)?;
-    let jobs = args
-        .jobs
-        .unwrap_or(cfg.general.max_concurrent_downloads as usize)
-        .max(1);
-
-    let mut expected: Vec<ExpectedFile> = Vec::new();
-    let mut files: Vec<FileJob> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-    let mut unselected: Vec<String> = Vec::new();
-    let commit: String;
-    let source: &str;
-    let mut signed = false;
-    let mut manifest_raw: Option<Vec<u8>> = None;
-    let mut notice: Option<String> = None;
-    let hf_source = |commit: &str, path: &str| Source {
-        url: hf.resolve_url(&repo, commit, path),
-        kind: SourceKind::HuggingFace,
-        bearer: hf.token().map(str::to_owned),
-    };
-
-    if args.from_hf {
-        source = "huggingface";
-        let info = hf.repo_info(&repo, revision.as_deref()).await?;
-        if info.disabled {
-            bail!("{} is disabled on the Hub", repo.id);
-        }
-        let tree = hf.files(&repo, &info.sha).await?;
-        let policy = hf_policy(cfg, args);
-        let report = policy.evaluate(&info, &tree);
-        if report.gated && !policy.allow_gated {
-            bail!(
-                "{} is gated on the Hub; pass --allow-gated (with HF_TOKEN set and the terms accepted) to download it",
-                repo.id
-            );
-        }
-        for r in &report.refusals {
-            if !r.contains("gated") {
-                tracing::warn!("{r} (allowed for a personal download, would not be published)");
-            }
-        }
-        if let Some(l) = &report.license {
-            notice = Some(format!(
-                "{} {} at {}\nLicense: {l} ({:?})\nSource: https://huggingface.co/{}{}\n",
-                repo.repo_type,
-                repo.id,
-                info.sha,
-                report.class,
-                if repo.repo_type == RepoType::Dataset {
-                    "datasets/"
-                } else {
-                    ""
-                },
-                repo.id
-            ));
-        }
-        commit = info.sha.clone();
-        for e in &tree {
-            let ef = ExpectedFile {
-                path: e.path.clone(),
-                size: e.content_size(),
-                digest: e.expected_digest()?,
-                pickle_risk: FileEntry::path_has_pickle_risk(&e.path),
-            };
-            if let Some(reason) = skip_reason(&ef, args, policy.allow_pickle_formats) {
-                skipped.push(ef.path.clone());
-                if reason == "unselected" {
-                    unselected.push(ef.path.clone());
-                }
-            } else {
-                files.push(FileJob {
-                    path: ef.path.clone(),
-                    size: ef.size,
-                    digest: ef.digest.clone(),
-                    sources: vec![hf_source(&commit, &ef.path)],
-                });
-            }
-            expected.push(ef);
-        }
-        reject_empty_selection(&expected, args, &repo.id)?;
-    } else {
-        let resolved = if let Some(p) = &args.manifest_file {
-            source = "manifest-file";
-            parse_manifest_bytes(
-                cfg,
-                &std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
-                &p.display().to_string(),
-            )?
-        } else if let Some(u) = &args.manifest_url {
-            source = "manifest-url";
-            parse_manifest_bytes(cfg, &fetch_bytes(u).await?, u)?
-        } else {
-            source = "catalog";
-            catalog_manifest(
-                cfg,
-                &repo,
-                revision.as_deref(),
-                args.no_wait,
-                args.catalog.as_deref(),
-            )
-            .await?
-        };
-        let m = &resolved.manifest;
-        if args.manifest_file.is_some() || args.manifest_url.is_some() {
-            check_manifest_identity(m, &repo, revision.as_deref().unwrap_or(&m.hf_commit))?;
-        }
-        if let Some(t) = &resolved.tombstone
-            && tombstone_covers(t, &m.hf_commit)
-        {
-            if args.ignore_tombstone {
-                tracing::warn!(
-                    "{} is taken down ({:?}: {}); downloading anyway",
-                    repo.id,
-                    t.reason,
-                    t.detail
-                );
-            } else {
-                bail!(
-                    "{} is taken down ({:?}: {}). Use --ignore-tombstone to download anyway.",
-                    repo.id,
-                    t.reason,
-                    t.detail
-                );
-            }
-        }
-        commit = m.hf_commit.clone();
-        signed = resolved.signed;
-        if let Some(a) = &m.license.attribution {
-            notice = Some(format!("{} {} at {commit}\n{a}\n", repo.repo_type, repo.id));
-        }
-        // Publisher webseeds plus configured and published mirrors, by
-        // priority. HTTP source order follows `[fetch] source_order`.
-        let mut seeds = m.clone();
-        seeds.webseeds = crate::mirrors::webseed_bases(cfg, &m.webseeds);
-        if use_swarm || args.seed_after.is_some() {
-            if m.torrent.is_some() {
-                torrent = Some(crate::torrents::fetch_for_manifest(m, &seeds.webseeds).await?);
-            } else if args.seed_after.is_some() {
-                bail!("--seed-after needs a Tensorseed manifest with a torrent");
-            }
-            // No torrent on the revision: skip the swarm silently and use HTTP.
-        }
-        for f in &m.files {
-            let ef = ExpectedFile::from_manifest(f);
-            if let Some(reason) = skip_reason(&ef, args, args.allow_pickle) {
-                skipped.push(ef.path.clone());
-                if reason == "unselected" {
-                    unselected.push(ef.path.clone());
-                }
-            } else {
-                let sources =
-                    http_sources(cfg, args, &seeds, &f.path, hf_source(&commit, &f.path))?;
-                files.push(FileJob {
-                    path: f.path.clone(),
-                    size: f.size,
-                    digest: ef.digest.clone(),
-                    sources,
-                });
-            }
-            expected.push(ef);
-        }
-        reject_empty_selection(&expected, args, &repo.id)?;
-        manifest_raw = Some(resolved.raw);
-    }
-
-    let out = args
-        .out
-        .as_deref()
-        .map(native_path)
-        .unwrap_or_else(|| default_out(cfg, &repo));
-    std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
-    let label = format!("{} {}@{}", repo.repo_type, repo.id, commit);
-    let spec = JobSpec {
-        id: job_id(&label, &out),
-        label: label.clone(),
-        out_dir: out.clone(),
-    };
-    let total: u64 = files.iter().map(|f| f.size).sum();
-    println!(
-        "pulling {label} ({} files, {} bytes) into {} from {source}",
-        files.len(),
-        total,
-        out.display()
-    );
-    for s in &unselected {
-        println!("skip   {s} (unselected)");
-    }
-    for s in &skipped {
-        if unselected.iter().any(|u| u == s) {
-            continue;
-        }
-        println!("skip   {s} (pickle format; --allow-pickle to include)");
-    }
-    // Files complete on disk before the swarm ran; anything else the HTTP
-    // pass finds already present was written by the swarm (and is verified
-    // by that pass like everything else).
-    let mut before_swarm: Option<std::collections::HashSet<String>> = None;
-    if use_swarm && let Some(t) = &torrent {
-        before_swarm = Some(
-            files
-                .iter()
-                .filter(|f| {
-                    std::fs::metadata(join_slash(&out, &f.path)).is_ok_and(|m| m.len() == f.size)
-                })
-                .map(|f| f.path.clone())
-                .collect(),
-        );
-        // The engine creates every file of the torrent, even unselected
-        // ones; remember which existed so its empty placeholders can go.
-        let existed: std::collections::HashSet<String> = expected
-            .iter()
-            .filter(|e| join_slash(&out, &e.path).exists())
-            .map(|e| e.path.clone())
-            .collect();
-        let r = swarm_download(cfg, args, t, &out, &files).await;
-        remove_swarm_placeholders(&out, &expected, &files, &existed);
-        if let Err(e) = r {
-            if args.swarm_only {
-                return Err(e);
-            }
-            println!("swarm  unavailable ({e}); using HTTP sources");
-        }
-    }
-    let fetcher = Fetcher::new(Some(state_db(cfg)?))?;
-    let report = fetcher
-        .run(
-            &spec,
-            files,
-            FetchOptions {
-                concurrency: jobs,
-                retry_dead_mirrors: args.retry_dead_mirrors,
-                dead_mirror_cooldown: Duration::from_secs(cfg.fetch.dead_mirror_cooldown_secs),
-                ..FetchOptions::default()
-            },
-        )
-        .await?;
-    for n in &report.skipped_dead {
-        println!("{}", n.line);
-    }
-    let (mut swarm_files, mut swarm_bytes, mut http_bytes) = (0usize, 0u64, 0u64);
-    for f in &report.files {
-        match &f.outcome {
-            Outcome::Downloaded {
-                kind, resumed_from, ..
-            } => {
-                http_bytes += f.size.saturating_sub(*resumed_from);
-                let resumed = if *resumed_from > 0 {
-                    format!(", resumed at {resumed_from}")
-                } else {
-                    String::new()
-                };
-                println!("ok     {} ({}{resumed})", f.path, kind.label());
-            }
-            Outcome::AlreadyPresent
-                if before_swarm
-                    .as_ref()
-                    .is_some_and(|pre| !pre.contains(&f.path)) =>
-            {
-                swarm_files += 1;
-                swarm_bytes += f.size;
-                println!("ok     {} (swarm)", f.path);
-            }
-            Outcome::AlreadyPresent => println!("ok     {} (already present)", f.path),
-            Outcome::Failed if args.swarm_only => {
-                println!(
-                    "FAILED {} (the swarm did not deliver it; --swarm-only)",
-                    f.path
-                );
-            }
-            Outcome::Failed => {
-                println!("FAILED {}", f.path);
-                for e in &f.errors {
-                    println!("         {e}");
-                }
-            }
-        }
-    }
-    let (down, present, failed) = report.counts();
-    if let Some(raw) = &manifest_raw {
-        write_meta(&out, "manifest.json", raw)?;
-    }
-    if let Some(n) = &notice {
-        write_meta(&out, "NOTICE", n.as_bytes())?;
-    }
-    let record = PullRecord {
-        schema: PULL_SCHEMA.into(),
-        repo_type: repo.repo_type,
-        repo: repo.id.clone(),
-        commit: commit.clone(),
-        source: source.into(),
-        signed,
-        pulled_at: tensorseed_core::time::now_rfc3339(),
-        files: expected.iter().map(PullFile::from_expected).collect(),
-        skipped,
-        unselected,
-    };
-    if let Some(t) = &torrent {
-        write_meta(&out, crate::torrents::PULLED_TORRENT, &t.bytes)?;
-    }
-    write_meta(&out, "pull.json", &serde_json::to_vec_pretty(&record)?)?;
-    let present = present - swarm_files;
-    if before_swarm.is_some() {
+    let ctl = PullControl::new(print_pull_event);
+    let done = tensorseed_app::pull_job::run(cfg, &pull_options(args), &ctl).await?;
+    if done.swarm_ran {
         println!(
-            "{swarm_files} from the swarm ({swarm_bytes} bytes), {down} downloaded over HTTP \
-             ({http_bytes} bytes), {present} already present, {failed} failed"
+            "{} from the swarm ({} bytes), {} downloaded over HTTP \
+             ({} bytes), {} already present, {} failed",
+            done.swarm_files,
+            done.swarm_bytes,
+            done.downloaded,
+            done.http_bytes,
+            done.present,
+            done.failed
         );
     } else {
         println!(
-            "{down} downloaded ({http_bytes} bytes), {present} already present, {failed} failed"
+            "{} downloaded ({} bytes), {} already present, {} failed",
+            done.downloaded, done.http_bytes, done.present, done.failed
         );
     }
-    if !report.ok() {
+    if !done.ok {
         eprintln!("pull incomplete; run the same command again to resume");
         return Ok(ExitCode::from(EXIT_VERIFY_FAILED));
     }
-    if !signed {
-        println!("note: hashes came from an unsigned source ({source}), not the signed catalog");
+    if !done.signed {
+        println!(
+            "note: hashes came from an unsigned source ({}), not the signed catalog",
+            done.source
+        );
     }
-    if let (Some(dur), Some(t)) = (seed_after, torrent) {
-        let item = crate::torrents::pulled_dir(&out)?;
+    if let (Some(dur), Some(t)) = (seed_after, done.torrent) {
+        let item = crate::torrents::pulled_dir(&done.out)?;
         debug_assert_eq!(item.torrent.info_hash_v2, t.info_hash_v2);
         return crate::torrents::run_seeder(cfg, vec![item], dur).await;
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// Whether this pull should try the swarm. `--from-hf` and `--no-swarm`
-/// skip it; `--swarm-only` and `--swarm` force it on; otherwise
-/// `torrent.pull_swarm` (on by default) is used. A missing torrent is
-/// skipped later, silently.
-fn swarm_wanted(cfg: &Config, args: &PullArgs) -> bool {
-    if args.from_hf || args.no_swarm {
-        false
-    } else if args.swarm_only || args.swarm {
-        true
-    } else {
-        cfg.torrent.pull_swarm && cfg.fetch.wants(FetchSource::Swarm)
-    }
-}
-
-/// HTTP sources for one file, in `[fetch] source_order`.
-///
-/// `--swarm-only` returns no HTTP sources. `--no-hf-fallback` omits the
-/// Hub. A gated or missing file on the Hub is a 401/403/404 that the
-/// fetcher treats as "try the next source" without marking the host dead.
-fn http_sources(
-    cfg: &Config,
-    args: &PullArgs,
-    seeds: &tensorseed_core::manifest::Manifest,
-    path: &str,
-    hub: Source,
-) -> anyhow::Result<Vec<Source>> {
-    if args.swarm_only {
-        return Ok(Vec::new());
-    }
-    let mut sources = Vec::new();
-    for kind in cfg.fetch.sources()? {
-        match kind {
-            FetchSource::Swarm => {}
-            FetchSource::Hub => {
-                if !args.no_hf_fallback {
-                    sources.push(hub.clone());
-                }
-            }
-            FetchSource::Mirrors => {
-                sources.extend(seeds.webseed_file_urls(path).into_iter().map(|url| Source {
-                    url,
-                    kind: SourceKind::Webseed,
-                    bearer: None,
-                }));
-            }
-        }
-    }
-    if sources.is_empty() && !swarm_wanted(cfg, args) {
-        bail!("{path} has no HTTP sources (check fetch.source_order and --no-hf-fallback)");
-    }
-    Ok(sources)
-}
-
-/// Delete the empty files the torrent engine created for paths that were
-/// not selected and did not exist before the swarm ran, so a partial pull
-/// leaves only what was asked for (and `verify` reports them as skipped).
-fn remove_swarm_placeholders(
-    out: &Path,
-    expected: &[ExpectedFile],
-    selected: &[FileJob],
-    existed: &std::collections::HashSet<String>,
-) {
-    let wanted: std::collections::HashSet<&str> =
-        selected.iter().map(|f| f.path.as_str()).collect();
-    for e in expected {
-        if wanted.contains(e.path.as_str()) || existed.contains(&e.path) || e.size == 0 {
-            continue;
-        }
-        let p = join_slash(out, &e.path);
-        if std::fs::metadata(&p).is_ok_and(|m| m.is_file() && m.len() == 0) {
-            let _ = std::fs::remove_file(&p);
-        }
-    }
-}
-
-/// Swarm first: let librqbit fetch what peers have, in place. The session
-/// is outbound only (no listen port). Nothing it writes is trusted: the
-/// HTTP fetcher that runs next hashes every file against the manifest,
-/// keeps the ones that match, and downloads the rest. `--seed-after` is
-/// the only path that starts a listening seeder after a verified pull.
-async fn swarm_download(
-    cfg: &Config,
-    args: &PullArgs,
-    t: &tensorseed_torrent::Metainfo,
-    out: &Path,
-    files: &[FileJob],
-) -> anyhow::Result<()> {
-    use tensorseed_torrent::engine::{DownloadOptions, DownloadStop, Engine};
-    let mut peers = cfg.torrent.peer_addrs()?;
-    for p in &args.peer {
-        use std::net::ToSocketAddrs;
-        peers.extend(
-            p.to_socket_addrs()
-                .with_context(|| format!("--peer {p:?}"))?,
-        );
-    }
-    let timeout = Duration::from_secs(cfg.torrent.swarm_timeout_secs.max(1));
-    // --swarm-only has no HTTP fallback, so wait the full timeout.
-    let (no_peer, stall) = if args.swarm_only {
-        (None, None)
-    } else {
-        (
-            (cfg.torrent.swarm_no_peer_secs > 0)
-                .then_some(Duration::from_secs(cfg.torrent.swarm_no_peer_secs)),
-            (cfg.torrent.swarm_stall_secs > 0)
-                .then_some(Duration::from_secs(cfg.torrent.swarm_stall_secs)),
-        )
-    };
-    // listen = false: outbound connections only; pull does not open a port.
-    let engine = Engine::start(crate::torrents::engine_options(cfg, false, out)?)
-        .await
-        .context("starting the BitTorrent engine")?;
-    let _speed = tensorseed_app::swarm::apply_plan(engine.rate_handle(), cfg.torrent.speed_plan()?);
-    let t0 = std::time::Instant::now();
-    let r = engine
-        .download(
-            t,
-            out,
-            DownloadOptions {
-                peers,
-                only: Some(files.iter().map(|f| f.path.clone()).collect()),
-                no_peer,
-                stall,
-            },
-            timeout,
-        )
-        .await;
-    match r {
-        Ok((h, p, stop)) => {
-            let line = match (stop, args.swarm_only) {
-                (DownloadStop::Finished, _) => format!(
-                    "swarm  {} of {} bytes in {:.1}s",
-                    p.have,
-                    p.total,
-                    t0.elapsed().as_secs_f64()
-                ),
-                (DownloadStop::NoPeers, _) => format!(
-                    "swarm  no peers after {}s; using HTTP sources",
-                    cfg.torrent.swarm_no_peer_secs
-                ),
-                (DownloadStop::Stall, _) => format!(
-                    "swarm  no progress for {}s; using HTTP sources",
-                    cfg.torrent.swarm_stall_secs
-                ),
-                (DownloadStop::Timeout, true) => format!(
-                    "swarm  {} of {} bytes in {:.1}s (--swarm-only: the rest fails)",
-                    p.have,
-                    p.total,
-                    t0.elapsed().as_secs_f64()
-                ),
-                (DownloadStop::Timeout, false) => format!(
-                    "swarm  {} of {} bytes in {:.1}s (HTTP sources fill the rest)",
-                    p.have,
-                    p.total,
-                    t0.elapsed().as_secs_f64()
-                ),
-            };
-            println!("{line}");
-            let _ = engine.remove(&h).await;
-        }
-        Err(e) if args.swarm_only => println!("swarm  unavailable ({e})"),
-        Err(e) => println!("swarm  unavailable ({e}); using HTTP sources"),
-    }
-    engine.stop().await;
-    Ok(())
 }
 
 async fn hf_expected(

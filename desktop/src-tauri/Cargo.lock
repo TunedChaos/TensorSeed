@@ -6036,6 +6036,7 @@ dependencies = [
  "tensorseed-serve",
  "tensorseed-torrent",
  "tokio",
+ "tokio-util",
  "toml 0.8.2",
  "toml_edit 0.22.27",
  "tracing",
@@ -6095,9 +6096,11 @@ dependencies = [
  "tensorseed-app",
  "tensorseed-catalog",
  "tensorseed-core",
+ "tensorseed-fetch",
  "tensorseed-serve",
  "tensorseed-torrent",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "windows-registry",
@@ -6114,6 +6117,7 @@ dependencies = [
  "tensorseed-core",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

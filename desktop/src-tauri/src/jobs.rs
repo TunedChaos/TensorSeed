@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026 Tuned Chaos
 
-//! Pull and verify jobs started from an entry page.
+//! Pull and verify jobs started from the window.
 //!
-//! Verify runs natively through `tensorseed_app::inference::verify_copy`
-//! for models. The pull pipeline still lives in the CLI (its extraction
-//! into `tensorseed-app` is M3.3), so a pull runs the installed
-//! `tensorseed pull` with the same config file and streams its output
-//! lines to the window. The result is the same copy, `pull.json`, and state
-//! the CLI writes, because it is the CLI.
+//! Pulls run in process ([`crate::pulls`], on `tensorseed_app::pull_job`),
+//! so they write the same copy, `pull.json`, and job database the CLI
+//! does. Model verify runs natively through
+//! `tensorseed_app::inference::verify_copy`; dataset verify still runs the
+//! installed `tensorseed verify` and streams its output lines.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,6 +49,10 @@ pub enum JobState {
     Ok,
     /// Failed.
     Failed,
+    /// Pull paused; partial downloads kept, resumable.
+    Paused,
+    /// Pull cancelled; partial downloads deleted.
+    Cancelled,
 }
 
 /// One job update (`JobEvent` in `src/lib/native.ts`).
@@ -70,6 +73,12 @@ pub struct JobEvent {
     pub line: Option<String>,
     /// Summary when the job ends.
     pub message: Option<String>,
+    /// Live pull progress.
+    pub progress: Option<crate::pulls::Progress>,
+    /// Output folder of a pull, once known.
+    pub out: Option<String>,
+    /// Id in the shared job database (`tensorseed jobs`), once known.
+    pub db_job: Option<String>,
 }
 
 /// Running jobs, for the tray and status.
@@ -77,6 +86,9 @@ pub struct JobEvent {
 pub struct Jobs {
     next: Arc<AtomicU64>,
     running: Arc<Mutex<BTreeMap<u64, JobEvent>>>,
+    pub(crate) controls: Arc<Mutex<BTreeMap<u64, crate::pulls::Control>>>,
+    /// Database ids of pulls paused by "Pause all", for "Resume all".
+    pub(crate) paused: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Jobs {
@@ -96,7 +108,15 @@ impl Jobs {
             .unwrap_or_default()
     }
 
-    fn begin(&self, kind: JobKind, repo_type: &str, id: &str) -> JobEvent {
+    /// Change running job `job` and return a copy.
+    pub(crate) fn update(&self, job: u64, f: impl FnOnce(&mut JobEvent)) -> Option<JobEvent> {
+        let mut m = self.running.lock().ok()?;
+        let ev = m.get_mut(&job)?;
+        f(ev);
+        Some(ev.clone())
+    }
+
+    pub(crate) fn begin(&self, kind: JobKind, repo_type: &str, id: &str) -> JobEvent {
         let job = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let ev = JobEvent {
             job,
@@ -106,6 +126,9 @@ impl Jobs {
             state: JobState::Running,
             line: None,
             message: None,
+            progress: None,
+            out: None,
+            db_job: None,
         };
         if let Ok(mut m) = self.running.lock() {
             m.insert(job, ev.clone());
@@ -113,7 +136,7 @@ impl Jobs {
         ev
     }
 
-    fn end(&self, job: u64) {
+    pub(crate) fn end(&self, job: u64) {
         if let Ok(mut m) = self.running.lock() {
             m.remove(&job);
         }
@@ -163,27 +186,8 @@ pub fn cli_path() -> Option<PathBuf> {
     dirs.iter().find_map(|d| exe_in(d))
 }
 
-fn emit(app: &AppHandle, ev: &JobEvent) {
+pub(crate) fn emit(app: &AppHandle, ev: &JobEvent) {
     let _ = app.emit(JOB_EVENT, ev);
-}
-
-/// Arguments for `tensorseed pull`.
-fn pull_args(
-    repo_type: &str,
-    id: &str,
-    revision: Option<&str>,
-    catalog: Option<&str>,
-) -> Vec<String> {
-    let spec = match revision {
-        Some(r) => format!("{id}@{r}"),
-        None => id.to_string(),
-    };
-    let mut v = vec!["pull".into(), spec, "--type".into(), repo_type.into()];
-    if let Some(c) = catalog {
-        v.push("--catalog".into());
-        v.push(c.into());
-    }
-    v
 }
 
 /// Run the CLI with `args` as job `ev`, streaming output lines.
@@ -198,7 +202,7 @@ fn spawn_cli(
     let Some(cli) = cli_path() else {
         jobs.end(ev.job);
         anyhow::bail!(
-            "the tensorseed CLI was not found (set TENSORSEED_CLI or put tensorseed on PATH); Desktop runs it for pulls until the pull pipeline moves into the app"
+            "the tensorseed CLI was not found (set TENSORSEED_CLI or put tensorseed on PATH); Desktop runs it to verify datasets"
         );
     };
     let mut cmd = tokio::process::Command::new(&cli);
@@ -272,49 +276,6 @@ fn spawn_cli(
         emit(&app, &ev);
     });
     Ok(())
-}
-
-/// What to pull.
-#[derive(Debug, Clone)]
-pub struct PullRequest {
-    /// `model` or `dataset`.
-    pub repo_type: String,
-    /// Repo id.
-    pub id: String,
-    /// Commit, or the latest.
-    pub revision: Option<String>,
-    /// Catalog to resolve through.
-    pub catalog: Option<String>,
-    /// Where the copy lands (`general.download_dir`), for the summary.
-    pub out: PathBuf,
-}
-
-/// Start `tensorseed pull` for an entry. Returns the job id.
-///
-/// # Errors
-///
-/// Fails when the CLI cannot be found or started.
-pub fn start_pull(
-    app: AppHandle,
-    jobs: Jobs,
-    config: PathBuf,
-    p: &PullRequest,
-) -> anyhow::Result<u64> {
-    let ev = jobs.begin(JobKind::Pull, &p.repo_type, &p.id);
-    let job = ev.job;
-    let done = format!(
-        "pulled {} into {} and verified every file",
-        p.id,
-        p.out.display()
-    );
-    let args = pull_args(
-        &p.repo_type,
-        &p.id,
-        p.revision.as_deref(),
-        p.catalog.as_deref(),
-    );
-    spawn_cli(app, jobs, ev, config, args, done)?;
-    Ok(job)
 }
 
 /// Re-hash a copy against its own pull record (`copies::verify_record`).
@@ -483,25 +444,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pull_arguments() {
-        assert_eq!(
-            pull_args("model", "org/name", None, None),
-            ["pull", "org/name", "--type", "model"]
-        );
-        assert_eq!(
-            pull_args("dataset", "org/d", Some(&"a".repeat(40)), Some("main")),
-            [
-                "pull".to_string(),
-                format!("org/d@{}", "a".repeat(40)),
-                "--type".into(),
-                "dataset".into(),
-                "--catalog".into(),
-                "main".into()
-            ]
-        );
-    }
-
-    #[test]
     fn record_messages_name_what_was_compared() {
         let rec: tensorseed_app::pull::PullRecord = serde_json::from_value(serde_json::json!({
             "schema": "ts.pull/1", "type": "model", "repo": "org/name",
@@ -541,10 +483,14 @@ mod tests {
             state: JobState::Running,
             line: Some("x".into()),
             message: None,
+            progress: None,
+            out: None,
+            db_job: Some("j".into()),
         })
         .unwrap();
         assert_eq!(v["repoType"], "model");
         assert_eq!(v["kind"], "pull");
         assert_eq!(v["state"], "running");
+        assert_eq!(v["dbJob"], "j");
     }
 }

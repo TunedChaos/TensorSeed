@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-all-pause"
+description = "Enables the all_pause command without any pre-configured scope."
+commands.allow = ["all_pause"]
+
+[[permission]]
+identifier = "deny-all-pause"
+description = "Denies the all_pause command without any pre-configured scope."
+commands.deny = ["all_pause"]

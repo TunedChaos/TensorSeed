@@ -729,3 +729,99 @@ async fn connect_failure_marks_origin_dead() {
     assert_eq!(report.skipped_dead[0].origin, origin);
     assert!(db.dead_mirror(&origin).unwrap().is_some());
 }
+
+#[tokio::test]
+async fn observer_sees_progress_and_results() {
+    let server = MockServer::start().await;
+    let a = data(200_000, 3);
+    serve(&server, "/a.bin", &a).await;
+    let dir = tempfile::tempdir().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    let f = Fetcher::new(None)
+        .unwrap()
+        .observe(Observer::new(move |e| s2.lock().unwrap().push(e.clone())));
+    let report = f
+        .run(
+            &job(dir.path()),
+            vec![fj("a.bin", &a, vec![src(&server, "/a.bin")])],
+            fast(),
+        )
+        .await
+        .unwrap();
+    assert!(report.ok());
+    let seen = seen.lock().unwrap();
+    assert!(
+        matches!(&seen[0], FetchEvent::Checking { path, size } if path == "a.bin" && *size == 200_000)
+    );
+    let last_progress = seen
+        .iter()
+        .filter_map(|e| match e {
+            FetchEvent::Progress { have, .. } => Some(*have),
+            _ => None,
+        })
+        .max();
+    assert_eq!(last_progress, Some(200_000));
+    assert!(
+        matches!(seen.last(), Some(FetchEvent::File(r)) if r.path == "a.bin" && matches!(r.outcome, Outcome::Downloaded { .. }))
+    );
+}
+
+#[tokio::test]
+async fn stop_keeps_partials_marks_paused_and_resumes() {
+    let server = MockServer::start().await;
+    let a = data(500_000, 9);
+    // The first response stalls, so the stop lands mid download.
+    Mock::given(method("GET"))
+        .and(path("/a.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(a.clone())
+                .set_delay(Duration::from_secs(30)),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(StateDb::open_in_memory().unwrap());
+    let token = CancellationToken::new();
+    let f = Fetcher::new(Some(db.clone()))
+        .unwrap()
+        .stop_on(token.clone());
+    let j = job(dir.path());
+    let t2 = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        t2.cancel();
+    });
+    let started = std::time::Instant::now();
+    let r = f
+        .run(
+            &j,
+            vec![fj("a.bin", &a, vec![src(&server, "/a.bin")])],
+            fast(),
+        )
+        .await;
+    assert!(matches!(r, Err(FetchError::Stopped)), "{r:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "stop is prompt"
+    );
+    assert_eq!(db.jobs().unwrap()[0].status, state::status::PAUSED);
+    assert!(!dir.path().join("a.bin").exists());
+
+    // A new run (no stop) resumes and finishes.
+    serve(&server, "/a.bin", &a).await;
+    let f = Fetcher::new(Some(db.clone())).unwrap();
+    let report = f
+        .run(
+            &j,
+            vec![fj("a.bin", &a, vec![src(&server, "/a.bin")])],
+            fast(),
+        )
+        .await
+        .unwrap();
+    assert!(report.ok(), "{report:?}");
+    assert_eq!(std::fs::read(dir.path().join("a.bin")).unwrap(), a);
+    assert_eq!(db.jobs().unwrap()[0].status, state::status::DONE);
+}

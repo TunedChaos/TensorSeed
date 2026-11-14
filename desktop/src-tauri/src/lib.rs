@@ -8,7 +8,9 @@
 //!
 //! No telemetry: the only network requests are the catalog, mirror, and
 //! chain check requests `tensorseed-app` makes when the user syncs, the
-//! BitTorrent swarm when the user seeds, and a probe of the local
+//! downloads of a pull the user starts or resumes (catalog, mirrors, the
+//! Hub, and the swarm, as in `tensorseed pull`), the BitTorrent swarm when
+//! the user seeds, and a probe of the local
 //! `tensorseed serve` health endpoint (`serve.health_listen`), and the
 //! update check in [`updater`] (one GET of `latest.json`, at start when
 //! enabled and when the user asks, then the installer once they confirm).
@@ -17,6 +19,7 @@ pub mod commands;
 pub mod copies;
 pub mod jobs;
 mod platform;
+pub mod pulls;
 pub mod seeder;
 pub mod status;
 mod tray;
@@ -84,6 +87,16 @@ pub fn run() {
 
     let initial = links::find_in_args(std::env::args()).map(|u| DeepLink::from_url(&u));
 
+    // Pulls and the seeder run deep futures; give the runtime threads a
+    // large stack rather than the platform default (1 MiB on Windows).
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("tensorseed")
+        .thread_stack_size(8 * 1024 * 1024)
+        .build()
+        .expect("error while starting the async runtime");
+    tauri::async_runtime::set(rt.handle().clone());
+
     let builder = platform::single_instance(tauri::Builder::default());
     let app = builder
         .plugin(tauri_plugin_deep_link::init())
@@ -101,6 +114,15 @@ pub fn run() {
             commands::settings_check,
             commands::settings_set,
             commands::pull_start,
+            commands::pull_pause,
+            commands::pull_cancel,
+            commands::jobs_list,
+            commands::job_resume,
+            commands::job_discard,
+            commands::copy_open,
+            commands::copy_delete,
+            commands::all_pause,
+            commands::all_resume,
             commands::verify_start,
             commands::seed_start,
             commands::seeds_pause,
@@ -139,7 +161,8 @@ pub fn run() {
             // While seeding, closing the window keeps the app in the tray.
             if let WindowEvent::CloseRequested { api, .. } = event
                 && window.label() == "main"
-                && window.state::<seeder::Seeder>().active_hint()
+                && (window.state::<seeder::Seeder>().active_hint()
+                    || pulls::running(&window.state::<jobs::Jobs>()) > 0)
             {
                 api.prevent_close();
                 let _ = window.hide();
@@ -149,9 +172,22 @@ pub fn run() {
         .expect("error while building Tensorseed Desktop");
     app.run(|app, event| {
         if let RunEvent::Exit = event {
-            tauri::async_runtime::block_on(app.state::<seeder::Seeder>().stop());
+            // Pause running pulls so they resume where they stopped, and
+            // give them a moment to record that.
+            let jobs = app.state::<jobs::Jobs>();
+            pulls::pause(&jobs, None);
+            tauri::async_runtime::block_on(async {
+                for _ in 0..30 {
+                    if pulls::running(&jobs) == 0 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                app.state::<seeder::Seeder>().stop().await;
+            });
         }
     });
+    drop(rt);
 }
 
 /// Pass a `tensorseed://` link to the window and bring it forward.

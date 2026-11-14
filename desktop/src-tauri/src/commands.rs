@@ -26,6 +26,7 @@ use crate::jobs::Jobs;
 use crate::seeder::Seeder;
 use tensorseed_app::backend::{Backend, file_catalog, open_reader, pinned_key};
 use tensorseed_app::config::{self, ChainCheck, Config, Subscription};
+use tensorseed_app::pull_job::PullOptions;
 use tensorseed_catalog::CatalogId;
 use tensorseed_core::keys::index_prefix;
 use tensorseed_core::manifest::{IndexEntry, SCHEMA_INDEX};
@@ -565,7 +566,7 @@ pub struct EntryPage {
     synced: bool,
     sync_error: Option<String>,
     local: LocalCopy,
-    /// The `tensorseed` CLI that runs pulls was found.
+    /// The `tensorseed` CLI that verifies datasets was found.
     cli_found: bool,
 }
 
@@ -776,12 +777,14 @@ pub async fn settings_set(
     })
 }
 
-/// Start `tensorseed pull` for an entry; progress arrives as job events.
+/// Pull an entry in process; progress arrives as job events. `include`
+/// and `exclude` select files by path (`*` and `?` globs, as in the CLI).
 ///
 /// # Errors
 ///
-/// Fails when the inputs are invalid or the CLI cannot be started.
+/// Fails when the inputs are invalid.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn pull_start(
     app: AppHandle,
     jobs: State<'_, Jobs>,
@@ -789,8 +792,10 @@ pub async fn pull_start(
     id: String,
     revision: Option<String>,
     catalog: Option<String>,
+    include: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
 ) -> Result<u64, String> {
-    let (path, cfg) = load_config()?;
+    let (_, cfg) = load_config()?;
     let ty = parse_type(&repo_type)?;
     let route = Route::entry(ty, &id, revision.as_deref(), catalog.as_deref()).map_err(err)?;
     let Route::Entry {
@@ -799,18 +804,175 @@ pub async fn pull_start(
     else {
         return Err("internal error: not an entry route".into());
     };
-    let out = default_out(
-        &cfg,
-        &RepoRef::new(ty, id.clone()).map_err(|e| e.to_string())?,
-    );
-    let req = crate::jobs::PullRequest {
-        repo_type: ty.as_str().to_string(),
-        id,
+    let opts = PullOptions {
+        repo: id,
+        repo_type: ty,
         revision,
         catalog,
-        out,
+        include: include.unwrap_or_default(),
+        exclude: exclude.unwrap_or_default(),
+        ..PullOptions::default()
     };
-    crate::jobs::start_pull(app, jobs.inner().clone(), path, &req).map_err(err)
+    crate::pulls::start(app, jobs.inner().clone(), cfg, opts).map_err(err)
+}
+
+/// Pause a running pull (partial downloads are kept).
+///
+/// # Errors
+///
+/// Fails when no such pull is running.
+#[tauri::command]
+pub async fn pull_pause(jobs: State<'_, Jobs>, job: u64) -> Result<(), String> {
+    if crate::pulls::pause(&jobs, Some(job)) == 0 {
+        return Err(format!("no running pull {job}"));
+    }
+    Ok(())
+}
+
+/// Cancel a running pull (partial downloads are deleted, finished files
+/// kept).
+///
+/// # Errors
+///
+/// Fails when no such pull is running.
+#[tauri::command]
+pub async fn pull_cancel(jobs: State<'_, Jobs>, job: u64) -> Result<(), String> {
+    if !crate::pulls::cancel(&jobs, job) {
+        return Err(format!("no running pull {job}"));
+    }
+    Ok(())
+}
+
+/// `jobs_list` result (`JobsList` in `src/lib/native.ts`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobsList {
+    /// Jobs running in this window.
+    active: Vec<crate::jobs::JobEvent>,
+    /// Pull jobs in the database shared with the CLI.
+    history: Vec<crate::pulls::JobRow>,
+    /// Why the database could not be read.
+    error: Option<String>,
+}
+
+/// Running jobs and the pull history shared with `tensorseed jobs`.
+///
+/// # Errors
+///
+/// Fails when the config cannot be loaded.
+#[tauri::command]
+pub async fn jobs_list(jobs: State<'_, Jobs>) -> Result<JobsList, String> {
+    let (_, cfg) = load_config()?;
+    let (history, error) = match crate::pulls::history(&cfg, &jobs) {
+        Ok(h) => (h, None),
+        Err(e) => (Vec::new(), Some(err(e))),
+    };
+    Ok(JobsList {
+        active: jobs.list(),
+        history,
+        error,
+    })
+}
+
+/// Resume an unfinished pull from the shared job database, whichever app
+/// started it.
+///
+/// # Errors
+///
+/// Fails when the job is unknown, finished, running, or cannot be resumed.
+#[tauri::command]
+pub async fn job_resume(app: AppHandle, jobs: State<'_, Jobs>, id: String) -> Result<u64, String> {
+    let (_, cfg) = load_config()?;
+    crate::pulls::resume(app, jobs.inner().clone(), cfg, &id).map_err(err)
+}
+
+/// Cancel an unfinished pull that is not running: delete its partial
+/// downloads and forget it (finished files are kept).
+///
+/// # Errors
+///
+/// Fails when the job is unknown or a pull is writing to its folder.
+#[tauri::command]
+pub async fn job_discard(jobs: State<'_, Jobs>, id: String) -> Result<(), String> {
+    let (_, cfg) = load_config()?;
+    crate::pulls::discard(&cfg, &jobs, &id).map_err(err)
+}
+
+/// The folder of a pulled copy, checked to be a copy under
+/// `general.download_dir`.
+fn copy_dir(cfg: &Config, repo_type: &str, id: String) -> Result<PathBuf, String> {
+    let repo = RepoRef::new(parse_type(repo_type)?, id).map_err(|e| e.to_string())?;
+    let dir = default_out(cfg, &repo);
+    let base = config::expand(&cfg.general.download_dir);
+    let (Ok(cd), Ok(cb)) = (dir.canonicalize(), base.canonicalize()) else {
+        return Err(format!("{} does not exist", dir.display()));
+    };
+    if !cd.starts_with(&cb) || cd == cb {
+        return Err(format!(
+            "{} is not inside the download folder",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+/// Open the folder of a local copy in the file manager.
+///
+/// # Errors
+///
+/// Fails when the copy does not exist or the file manager cannot start.
+#[tauri::command]
+pub async fn copy_open(repo_type: String, id: String) -> Result<(), String> {
+    let (_, cfg) = load_config()?;
+    let dir = copy_dir(&cfg, &repo_type, id)?;
+    crate::platform::open_folder(&dir).map_err(err)
+}
+
+/// Delete a local copy from disk: its files and its `.tensorseed` folder.
+/// Refuses while it is seeding or a pull writes to it.
+///
+/// # Errors
+///
+/// Fails when the folder is not a pulled copy under the download folder,
+/// is seeding or being pulled, or cannot be removed.
+#[tauri::command]
+pub async fn copy_delete(
+    seeder: State<'_, Seeder>,
+    jobs: State<'_, Jobs>,
+    repo_type: String,
+    id: String,
+) -> Result<String, String> {
+    let (_, cfg) = load_config()?;
+    let dir = copy_dir(&cfg, &repo_type, id)?;
+    if !dir.join(META_DIR).join("pull.json").is_file() {
+        return Err(format!("{} is not a pulled copy", dir.display()));
+    }
+    if seeder.is_seeding(&dir).await {
+        return Err("stop seeding this copy before deleting it".into());
+    }
+    let shown = dir.display().to_string();
+    if tensorseed_app::pull_job::pull_running_in(&dir)
+        || jobs.list().iter().any(|j| j.out.as_deref() == Some(&shown))
+    {
+        return Err("a pull is writing to this copy; pause or cancel it first".into());
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("deleting {shown}: {e}"))?;
+    // The org folder goes too once empty (remove_dir refuses otherwise).
+    let base = config::expand(&cfg.general.download_dir);
+    if let Some(org) = dir.parent()
+        && org != base
+        && org != base.join("datasets")
+    {
+        let _ = std::fs::remove_dir(org);
+    }
+    if let Ok(db) = tensorseed_app::pull::state_db(&cfg)
+        && let Ok(all) = db.jobs()
+    {
+        for j in all.iter().filter(|j| Path::new(&j.out_dir) == dir) {
+            let _ = db.clear_job(&j.id);
+        }
+    }
+    Ok(format!("deleted {shown}"))
 }
 
 /// Verify the local copy of an entry.
@@ -897,6 +1059,36 @@ pub async fn seed_start(
 #[tauri::command]
 pub async fn seeds_pause(seeder: State<'_, Seeder>) -> Result<usize, String> {
     seeder.pause_all().await.map_err(err)
+}
+
+/// Pause every seed and every running pull (the tray's Pause all).
+///
+/// # Errors
+///
+/// Fails when the engine rejects a pause.
+#[tauri::command]
+pub async fn all_pause(seeder: State<'_, Seeder>, jobs: State<'_, Jobs>) -> Result<usize, String> {
+    let pulls = crate::pulls::pause(&jobs, None);
+    Ok(seeder.pause_all().await.map_err(err)? + pulls)
+}
+
+/// Resume what Pause all stopped.
+///
+/// # Errors
+///
+/// Fails when the engine rejects a resume.
+#[tauri::command]
+pub async fn all_resume(
+    app: AppHandle,
+    seeder: State<'_, Seeder>,
+    jobs: State<'_, Jobs>,
+) -> Result<usize, String> {
+    let n = seeder.resume_all().await.map_err(err)?;
+    let pulls = match load_config() {
+        Ok((_, cfg)) => crate::pulls::resume_all(&app, &jobs, &cfg),
+        Err(_) => 0,
+    };
+    Ok(n + pulls)
 }
 
 /// Resume every copy the user paused.

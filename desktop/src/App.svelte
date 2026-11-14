@@ -5,6 +5,7 @@
   import ThemeToggle from "@tensorseed/ui/components/ThemeToggle.svelte";
   import CatalogsView from "./lib/CatalogsView.svelte";
   import EntryPage from "./lib/EntryPage.svelte";
+  import DownloadsView from "./lib/DownloadsView.svelte";
   import LocalView from "./lib/LocalView.svelte";
   import SettingsView from "./lib/SettingsView.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
@@ -42,7 +43,8 @@
 
   const tabs = [
     { href: "#/", label: "Catalogs", kinds: ["catalogs", "entry"] },
-    { href: "#/local", label: "Local copies", kinds: ["local"] },
+    { href: "#/downloads", label: "Downloads", kinds: ["downloads"] },
+    { href: "#/local", label: "Library", kinds: ["local"] },
     { href: "#/settings", label: "Settings", kinds: ["settings"] },
   ];
 </script>
@@ -75,6 +77,8 @@
       <CatalogsView />
     {:else if view.kind === "local"}
       <LocalView />
+    {:else if view.kind === "downloads"}
+      <DownloadsView />
     {:else if view.kind === "settings"}
       <SettingsView />
     {:else if view.kind === "entry"}

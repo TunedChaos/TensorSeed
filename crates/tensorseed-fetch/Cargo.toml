@@ -17,6 +17,7 @@ serde_json.workspace = true
 tensorseed-core = { workspace = true, features = ["default"] }
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

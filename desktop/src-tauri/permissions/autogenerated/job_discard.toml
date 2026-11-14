@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-job-discard"
+description = "Enables the job_discard command without any pre-configured scope."
+commands.allow = ["job_discard"]
+
+[[permission]]
+identifier = "deny-job-discard"
+description = "Denies the job_discard command without any pre-configured scope."
+commands.deny = ["job_discard"]

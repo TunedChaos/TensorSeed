@@ -5,10 +5,10 @@ Tensorseed catalogs natively, and (in later 0.3.0 milestones) pull and seed
 with the same config, job state, and seeder as the `tensorseed` CLI. See
 `docs/plans/0.3.0-desktop.md`.
 
-Status: M3.2 shell. The window has four views: the followed catalogs and
-their entries, an entry page, the local copies on this machine, and the
-torrent settings. A tray icon shows what is running. Pull runs the CLI
-for now; verify and seed run in process. The AppImage, MSI, and NSIS
+Status: M3.3. The window has five views: the followed catalogs and their
+entries, an entry page, downloads, the library of local copies, and the
+torrent settings. A tray icon shows what is running. Pull, verify, and
+seed run in process. The AppImage, MSI, and NSIS
 builds update themselves (see Updates).
 
 ## What it does
@@ -24,17 +24,37 @@ builds update themselves (see Updates).
   (pulled revision, latest or not, signed pull, torrent). If the catalog
   cannot be reached the page falls back to the manifest stored with the
   local copy and says so. Actions:
-  - **Pull** runs `tensorseed pull` with the same config and streams its
-    output into the page and the status bar. The CLI is found through
-    `TENSORSEED_CLI`, next to the Desktop binary, `PATH`, `/usr/bin`,
-    `/usr/local/bin`, `~/.local/bin`, then `~/.cargo/bin`. An in process
-    pull with progress events is M3.3.
+  - **Pull** runs the same pull pipeline as `tensorseed pull`, in
+    process, with the same config: a progress bar (files, bytes, rate,
+    files in flight) and the CLI's output lines in the page. **Pause**
+    stops the transfers and keeps the partial downloads; **Resume**
+    continues from them. **Cancel** deletes the partial downloads; files
+    that finished and verified stay. Tick files in the file list and use
+    **Pull N files** to download only those.
   - **Verify** checks a local model copy natively (datasets go through
-    `tensorseed verify` for now). A complete signed copy is checked
+    `tensorseed verify` for now, found through `TENSORSEED_CLI`, next to
+    the Desktop binary, `PATH`, `/usr/bin`, `/usr/local/bin`,
+    `~/.local/bin`, then `~/.cargo/bin`). A complete signed copy is checked
     against the signed catalog manifest; any other copy is checked against
     its own pull record (`.tensorseed/pull.json`) by default, and
     **Verify against catalog** is offered next to it.
-- **Copy status.** The local copies view and the entry page label each
+- **Downloads.** Pulls running in the window, with their progress,
+  Pause, and Cancel, and every pull in the job database the CLI uses
+  (`tensorseed jobs`): a pull started in the CLI shows here and can be
+  resumed here, and one paused in Desktop resumes with the same
+  `tensorseed pull` command. A pull writes
+  `.tensorseed/pull-pending.json` (its options, pinned to the resolved
+  commit) until it completes, and holds `.tensorseed/pull.lock` while it
+  runs, so the CLI and Desktop never write the same folder at once. A job
+  recorded as running that no process holds (a crash or a closed
+  terminal) shows as interrupted and can be resumed. **Discard** deletes
+  an unfinished pull's partial downloads and forgets it. Quitting Desktop
+  pauses its running pulls; closing the window while a pull runs keeps
+  the app in the tray.
+- **Library.** Pulled copies under `general.download_dir`, with
+  **Verify**, **Open folder**, and **Delete** (after a confirmation;
+  refused while the copy seeds or a pull writes to it).
+- **Copy status.** The library and the entry page label each
   copy as complete, partial (a file selection or a subset manifest),
   unsigned (pulled from a manifest file or URL, or Hugging Face), or at a
   different revision than the catalog entry, with a one line reason
@@ -231,9 +251,9 @@ SmartScreen warns on first run.
   Neither uninstaller touches the config, the data, pulled copies, or
   mirrors.
 - Settings edits keep the file's CRLF line endings.
-- Pull runs `tensorseed.exe` with no console window. Desktop finds it
-  through `TENSORSEED_CLI`, next to `tensorseed-desktop.exe`, `PATH`, or
-  `%USERPROFILE%\.cargo\bin`.
+- Dataset verify runs `tensorseed.exe` with no console window. Desktop
+  finds it through `TENSORSEED_CLI`, next to `tensorseed-desktop.exe`,
+  `PATH`, or `%USERPROFILE%\.cargo\bin`. Pulls run in process.
 - The first time Desktop seeds, Windows asks whether to allow
   `tensorseed-desktop.exe` through the firewall, and blocks incoming
   connections until it is allowed, so Desktop only seeds to peers it
@@ -398,7 +418,8 @@ What the Flatpak contains:
 
 - `/app/bin/tensorseed-desktop` and the `tensorseed` CLI next to it.
   Desktop looks for the CLI next to its own binary before `PATH`, so
-  pulls use the bundled CLI and nothing has to be installed on the host.
+  dataset verify uses the bundled CLI and nothing has to be installed on
+  the host.
   `TENSORSEED_CLI` still overrides it. Run the bundled CLI with
   `flatpak run --command=tensorseed dev.tensorseed.desktop ...`.
 - `dev.tensorseed.desktop.desktop` (`Exec=tensorseed-desktop %u`,
@@ -506,9 +527,7 @@ What a Flathub submission would still need (nothing has been submitted):
 
 ## Not done yet
 
-- Pull runs the CLI as a subprocess, so there is no progress bar, pause,
-  or cancel yet, and the CLI has to be installed. The in process pull is
-  M3.3. Dataset verify also goes through the CLI.
+- Dataset verify goes through the CLI.
 - Desktop does not attach to a running `serve`: it only reads its health
   endpoint. Controlling it needs the local control endpoint from M3.4.
 - Packaging: the local `.deb` and AppImage `tauri build` makes by

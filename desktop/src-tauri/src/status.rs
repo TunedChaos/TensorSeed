@@ -45,6 +45,8 @@ pub struct Status {
     pub jobs: Vec<JobEvent>,
     /// Running pulls.
     pub downloading: usize,
+    /// Pulls stopped by Pause all.
+    pub paused_pulls: usize,
 }
 
 impl Status {
@@ -63,8 +65,11 @@ impl Status {
             self.seeding(),
             self.downloading
         )];
-        if self.desktop.paused > 0 {
-            parts.push(format!("{} paused", self.desktop.paused));
+        if self.desktop.paused + self.paused_pulls > 0 {
+            parts.push(format!(
+                "{} paused",
+                self.desktop.paused + self.paused_pulls
+            ));
         }
         if self.desktop.running || self.serve.is_some() {
             parts.push(format!("up {} down {}", rate(up), rate(down)));
@@ -147,6 +152,7 @@ pub async fn gather(seeder: &Seeder, jobs: &Jobs, cfg: Option<&Config>) -> Statu
         serve,
         jobs: jobs.list(),
         downloading: jobs.count(JobKind::Pull),
+        paused_pulls: crate::pulls::paused_count(jobs),
     }
 }
 

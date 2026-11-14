@@ -59,6 +59,7 @@ use tensorseed_core::hash::{ExpectedDigest, StreamHasher, sha256_bytes};
 use tensorseed_core::verify::{META_DIR, safe_join};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 pub use state::StateDb;
 
@@ -83,6 +84,51 @@ pub enum FetchError {
     /// Invalid input (for example an unsafe path).
     #[error("invalid: {0}")]
     Invalid(String),
+    /// The run was stopped through [`Fetcher::stop_on`]. Partial files and
+    /// the job record are kept, so a later run resumes.
+    #[error("stopped")]
+    Stopped,
+}
+
+/// Live progress from a run, for [`Fetcher::observe`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchEvent {
+    /// Hashing a file already on disk to see whether it can be kept.
+    Checking {
+        /// Relative path.
+        path: String,
+        /// Expected size.
+        size: u64,
+    },
+    /// Bytes of a file on disk so far (partial file included).
+    Progress {
+        /// Relative path.
+        path: String,
+        /// Bytes so far.
+        have: u64,
+        /// Expected size.
+        size: u64,
+    },
+    /// A file is finished (any outcome).
+    File(FileResult),
+}
+
+/// Callback for [`FetchEvent`]s. Called from download tasks, so keep it
+/// short (update a counter, send on a channel).
+#[derive(Clone)]
+pub struct Observer(Arc<dyn Fn(&FetchEvent) + Send + Sync>);
+
+impl Observer {
+    /// Wrap a callback.
+    pub fn new(f: impl Fn(&FetchEvent) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for Observer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Observer")
+    }
 }
 
 /// Result alias.
@@ -313,6 +359,8 @@ pub struct Fetcher {
     http: reqwest::Client,
     db: Option<Arc<StateDb>>,
     health: Arc<Mutex<MirrorHealth>>,
+    observer: Option<Observer>,
+    stop: Option<CancellationToken>,
 }
 
 /// In-run (and preloaded) dead-mirror state, shared across concurrent files.
@@ -360,7 +408,38 @@ impl Fetcher {
             http,
             db,
             health: Arc::new(Mutex::new(MirrorHealth::default())),
+            observer: None,
+            stop: None,
         })
+    }
+
+    /// Report live progress to `observer`.
+    #[must_use]
+    pub fn observe(mut self, observer: Observer) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// Stop the run when `token` is cancelled: downloads in flight end at
+    /// once, partial files stay for the next run, the job is marked
+    /// [`state::status::PAUSED`], and [`Fetcher::run`] returns
+    /// [`FetchError::Stopped`].
+    #[must_use]
+    pub fn stop_on(mut self, token: CancellationToken) -> Self {
+        self.stop = Some(token);
+        self
+    }
+
+    fn emit(&self, ev: FetchEvent) {
+        if let Some(o) = &self.observer {
+            (o.0)(&ev);
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
     }
 
     /// Download and verify every file of a job.
@@ -369,8 +448,9 @@ impl Fetcher {
     ///
     /// [`FetchError::Io`] when the output directory cannot be prepared,
     /// [`FetchError::Invalid`] for unsafe paths, and [`FetchError::State`] when
-    /// the job database fails. Per file download or hash failures are reported
-    /// in the [`FetchReport`].
+    /// the job database fails, and [`FetchError::Stopped`] when stopped
+    /// through [`Fetcher::stop_on`]. Per file download or hash failures are
+    /// reported in the [`FetchReport`].
     pub async fn run(
         &self,
         job: &JobSpec,
@@ -400,16 +480,39 @@ impl Fetcher {
             let this = self.clone();
             let job = job.clone();
             let sem = sem.clone();
+            let stop = self.stop.clone().unwrap_or_default();
             set.spawn(async move {
-                let _permit = sem.acquire_owned().await.ok();
-                this.fetch_one(&job, f, opts).await
+                let work = async {
+                    let _permit = sem.acquire_owned().await.ok();
+                    if this.stopped() {
+                        return Err(FetchError::Stopped);
+                    }
+                    let r = this.fetch_one(&job, f, opts).await?;
+                    this.emit(FetchEvent::File(r.clone()));
+                    Ok(r)
+                };
+                // Dropping a download mid stream is safe: the partial file
+                // keeps what was written, and the next run rehashes it.
+                tokio::select! {
+                    r = work => r,
+                    () = stop.cancelled() => Err(FetchError::Stopped),
+                }
             });
         }
         let mut results = Vec::new();
+        let mut stopped = false;
         while let Some(r) = set.join_next().await {
-            let r =
-                r.map_err(|e| FetchError::Invalid(format!("download task panicked: {e}")))??;
-            results.push(r);
+            match r.map_err(|e| FetchError::Invalid(format!("download task panicked: {e}")))? {
+                Ok(r) => results.push(r),
+                Err(FetchError::Stopped) => stopped = true,
+                Err(e) => return Err(e),
+            }
+        }
+        if stopped || self.stopped() {
+            if let Some(db) = &self.db {
+                db.set_job_status(&job.id, state::status::PAUSED, None)?;
+            }
+            return Err(FetchError::Stopped);
         }
         results.sort_by(|a, b| a.path.cmp(&b.path));
         let skipped_dead = self
@@ -451,6 +554,10 @@ impl Fetcher {
             outcome: Outcome::Failed,
             errors: Vec::new(),
         };
+        self.emit(FetchEvent::Checking {
+            path: f.path.clone(),
+            size: f.size,
+        });
         if self.already_present(job, &f, &final_path).await? {
             result.outcome = Outcome::AlreadyPresent;
             return Ok(result);
@@ -608,6 +715,11 @@ impl Fetcher {
         if have == f.size {
             return finish(hasher, &f.digest, part).await;
         }
+        self.emit(FetchEvent::Progress {
+            path: f.path.clone(),
+            have,
+            size: f.size,
+        });
         let mut req = self.http.get(&src.url);
         if have > 0 {
             req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
@@ -678,6 +790,11 @@ impl Fetcher {
             hasher.update(&chunk);
             file.write_all(&chunk).await.map_err(io)?;
             have += chunk.len() as u64;
+            self.emit(FetchEvent::Progress {
+                path: f.path.clone(),
+                have,
+                size: f.size,
+            });
             since_progress += chunk.len() as u64;
             if since_progress >= PROGRESS_EVERY {
                 since_progress = 0;

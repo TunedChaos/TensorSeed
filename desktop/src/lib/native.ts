@@ -182,27 +182,107 @@ export function settingsSet(torrent: TorrentSettings): Promise<SettingsSaved> {
   return invoke<SettingsSaved>("settings_set", { torrent });
 }
 
+/** `pulls::Progress` in src-tauri/src/pulls.rs. */
+export type PullProgress = {
+  phase: "resolving" | "swarm" | "downloading";
+  filesTotal: number;
+  filesDone: number;
+  bytesTotal: number;
+  bytesDone: number;
+  /** Network bytes per second. */
+  rate: number;
+  current: string[];
+};
+
+export type JobState = "running" | "ok" | "failed" | "paused" | "cancelled";
+
 export type JobEvent = {
   job: number;
   kind: "pull" | "verify";
   repoType: RepoType;
   id: string;
-  state: "running" | "ok" | "failed";
+  state: JobState;
   line: string | null;
   message: string | null;
+  progress: PullProgress | null;
+  out: string | null;
+  /** Id in the job database shared with `tensorseed jobs`. */
+  dbJob: string | null;
 };
 
 export function onJob(handler: (e: JobEvent) => void): Promise<UnlistenFn> {
   return listen<JobEvent>("job://event", (e) => handler(e.payload));
 }
 
-export function pullStart(a: EntryArgs): Promise<number> {
+/** `include` and `exclude` select files by path (`*` and `?` globs). */
+export function pullStart(a: EntryArgs, sel: { include?: string[]; exclude?: string[] } = {}): Promise<number> {
   return invoke<number>("pull_start", {
     repoType: a.repoType,
     id: a.id,
     revision: a.revision ?? null,
     catalog: a.catalog ?? null,
+    include: sel.include ?? null,
+    exclude: sel.exclude ?? null,
   });
+}
+
+/** Stop a running pull and keep its partial downloads. */
+export function pullPause(job: number): Promise<void> {
+  return invoke<void>("pull_pause", { job });
+}
+
+/** Stop a running pull and delete its partial downloads (finished files stay). */
+export function pullCancel(job: number): Promise<void> {
+  return invoke<void>("pull_cancel", { job });
+}
+
+/** `pulls::JobRow`: one job of the database shared with the CLI. */
+export type JobRow = {
+  id: string;
+  label: string;
+  outDir: string;
+  status: "pending" | "running" | "paused" | "done" | "failed" | "interrupted" | string;
+  filesTotal: number;
+  filesDone: number;
+  error: string | null;
+  updatedUnix: number;
+  busy: boolean;
+  windowJob: number | null;
+  resumable: boolean;
+};
+
+export type JobsList = { active: JobEvent[]; history: JobRow[]; error: string | null };
+
+export function jobsList(): Promise<JobsList> {
+  return invoke<JobsList>("jobs_list");
+}
+
+/** Resume an unfinished pull, started here or by `tensorseed pull`. */
+export function jobResume(id: string): Promise<number> {
+  return invoke<number>("job_resume", { id });
+}
+
+/** Delete an unfinished pull's partial downloads and forget it. */
+export function jobDiscard(id: string): Promise<void> {
+  return invoke<void>("job_discard", { id });
+}
+
+export function copyOpen(repoType: RepoType, id: string): Promise<void> {
+  return invoke<void>("copy_open", { repoType, id });
+}
+
+/** Delete a local copy from disk. Refused while it seeds or a pull writes to it. */
+export function copyDelete(repoType: RepoType, id: string): Promise<string> {
+  return invoke<string>("copy_delete", { repoType, id });
+}
+
+/** Pause every seed and pull (the tray's Pause all). */
+export function allPause(): Promise<number> {
+  return invoke<number>("all_pause");
+}
+
+export function allResume(): Promise<number> {
+  return invoke<number>("all_resume");
 }
 
 /** `auto` checks a complete signed copy against the catalog and any other copy against its own pull record. */
@@ -250,6 +330,7 @@ export type Status = {
   serve: { torrents: number; uploadMibps: number; downloadMibps: number; peers: number; status: string } | null;
   jobs: JobEvent[];
   downloading: number;
+  pausedPulls: number;
 };
 
 export function status(): Promise<Status> {

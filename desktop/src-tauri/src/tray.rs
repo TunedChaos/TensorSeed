@@ -60,7 +60,7 @@ pub fn quit<R: Runtime>(app: &AppHandle<R>) {
 /// # Errors
 ///
 /// Fails when the platform has no tray or the menu cannot be built.
-pub fn build<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+pub fn build(app: &tauri::App) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, "toggle", "Hide window", true, None::<&str>)?;
     let status = MenuItem::with_id(
         app,
@@ -94,6 +94,7 @@ pub fn build<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             "pause" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    crate::pulls::pause(&app.state::<Jobs>(), None);
                     if let Err(e) = app.state::<Seeder>().pause_all().await {
                         tracing::warn!("pause all: {e:#}");
                     }
@@ -102,6 +103,9 @@ pub fn build<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             "resume" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    if let Ok((_, cfg)) = crate::commands::load_config() {
+                        crate::pulls::resume_all(&app, &app.state::<Jobs>(), &cfg);
+                    }
                     if let Err(e) = app.state::<Seeder>().resume_all().await {
                         tracing::warn!("resume all: {e:#}");
                     }
@@ -135,8 +139,8 @@ pub fn build<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
                 let _ = tray.set_tooltip(Some(format!("Tensorseed Desktop: {line}")));
                 last = line;
             }
-            let _ = pause.set_enabled(st.desktop.seeding > 0);
-            let _ = resume.set_enabled(st.desktop.paused > 0);
+            let _ = pause.set_enabled(st.desktop.seeding > 0 || st.downloading > 0);
+            let _ = resume.set_enabled(st.desktop.paused > 0 || st.paused_pulls > 0);
             let _ = toggle.set_text(toggle_label(&handle));
             let _ = handle.emit(STATUS_EVENT, &st);
             tokio::time::sleep(TICK).await;

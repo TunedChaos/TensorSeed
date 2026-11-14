@@ -36,9 +36,11 @@ tauri-plugin-deep-link = "2"
 tensorseed-app = { path = "../../crates/tensorseed-app" }
 tensorseed-catalog = { path = "../../crates/tensorseed-catalog" }
 tensorseed-core = { path = "../../crates/tensorseed-core" }
+tensorseed-fetch = { path = "../../crates/tensorseed-fetch" }
 tensorseed-serve = { path = "../../crates/tensorseed-serve" }
 tensorseed-torrent = { path = "../../crates/tensorseed-torrent" }
-tokio = { version = "1", features = ["sync", "time", "process", "io-util", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "process", "io-util", "macros", "rt-multi-thread"] }
+tokio-util = "0.7"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

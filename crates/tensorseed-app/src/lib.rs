@@ -17,6 +17,7 @@ pub mod inference;
 pub mod links;
 pub mod mirrors;
 pub mod pull;
+pub mod pull_job;
 pub mod serve_config;
 pub mod settings;
 pub mod sign_proxy;

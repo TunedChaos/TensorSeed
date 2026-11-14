@@ -92,6 +92,8 @@ pub mod status {
     pub const DONE: &str = "done";
     /// All sources failed.
     pub const FAILED: &str = "failed";
+    /// Stopped by the user; partial files are kept for a later run.
+    pub const PAUSED: &str = "paused";
 }
 
 /// A job row.

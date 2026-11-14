@@ -5,7 +5,8 @@
 // natively and arrive as a Route, which maps onto one of these:
 //
 //   #/                                       catalogs
-//   #/local                                  local copies
+//   #/local                                  library (local copies)
+//   #/downloads                              running and unfinished pulls
 //   #/settings                               torrent settings
 //   #/entry/<model|dataset>/<org>/<name>?revision=<40 hex>&catalog=<name>
 
@@ -14,6 +15,7 @@ import type { RepoType, Route } from "./native";
 export type View =
   | { kind: "catalogs" }
   | { kind: "local" }
+  | { kind: "downloads" }
   | { kind: "settings" }
   | { kind: "entry"; repoType: RepoType; id: string; revision: string | null; catalog: string | null }
   | { kind: "notFound"; hash: string };
@@ -28,6 +30,7 @@ export function parseHash(hash: string): View {
   const parts = path.split("/").filter((p) => p.length > 0);
   if (parts.length === 0 || (parts.length === 1 && parts[0] === "catalogs")) return { kind: "catalogs" };
   if (parts.length === 1 && parts[0] === "local") return { kind: "local" };
+  if (parts.length === 1 && parts[0] === "downloads") return { kind: "downloads" };
   if (parts.length === 1 && parts[0] === "settings") return { kind: "settings" };
   if (parts[0] === "entry" && parts.length === 4 && (parts[1] === "model" || parts[1] === "dataset")) {
     const [, repoType, org, name] = parts;

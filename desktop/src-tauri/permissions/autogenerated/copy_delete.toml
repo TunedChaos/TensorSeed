@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-copy-delete"
+description = "Enables the copy_delete command without any pre-configured scope."
+commands.allow = ["copy_delete"]
+
+[[permission]]
+identifier = "deny-copy-delete"
+description = "Denies the copy_delete command without any pre-configured scope."
+commands.deny = ["copy_delete"]
