@@ -2229,10 +2229,11 @@ mod tests {
             assert_eq!(cfg.storage.upload_targets().count(), 0);
             // [serve] in the example matches the built-in defaults. The file
             // documents the Unix tilde form of data_dir, so on Windows (where
-            // the default is under %LOCALAPPDATA%) only that field differs.
+            // the default is under %LOCALAPPDATA%) only that field differs,
+            // and load() has rewritten it with native separators.
             let mut expected = crate::serve_config::ServeConfig::default();
             if cfg!(windows) {
-                expected.data_dir = "~/.local/share/tensorseed/serve".into();
+                expected.data_dir = native_string("~/.local/share/tensorseed/serve");
             }
             assert_eq!(cfg.serve, expected);
             assert!(cfg.storage.webseed_bases().is_empty());

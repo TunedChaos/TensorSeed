@@ -206,7 +206,10 @@ fn free_port() -> u16 {
 }
 
 fn write_config(dir: &Path, catalog: &str, extra: &str) -> PathBuf {
-    let d = dir.display();
+    // Forward slashes: a Windows path in a TOML basic string would read
+    // its backslashes as escapes. The loader turns them back into native
+    // separators.
+    let d = dir.to_string_lossy().replace('\\', "/");
     let pk = key().public_key().to_base64();
     let text = format!(
         r#"[general]

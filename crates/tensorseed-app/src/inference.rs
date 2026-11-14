@@ -298,7 +298,10 @@ pub fn search_path(name: &str, path_var: &std::ffi::OsStr) -> Option<PathBuf> {
             .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into())
             .split(';')
             .filter(|e| !e.is_empty())
-            .map(str::to_owned)
+            // PATHEXT is upper case (`.EXE`) but files are usually named
+            // `.exe`; the lookup is case insensitive either way, and the
+            // lower case form is what doctor and print-command show.
+            .map(str::to_ascii_lowercase)
             .collect()
     } else {
         vec![String::new()]
@@ -1364,6 +1367,15 @@ mod tests {
         }
         let path = std::env::join_paths([dir.path()]).unwrap();
         assert_eq!(search_path("llama-server", &path), Some(bin.clone()));
+        #[cfg(windows)]
+        {
+            // An upper case extension on disk is still found (Windows paths
+            // are case insensitive) and reported in the lower case form.
+            let upper = tempfile::tempdir().unwrap();
+            std::fs::write(upper.path().join("vllm.EXE"), b"").unwrap();
+            let p = std::env::join_paths([upper.path()]).unwrap();
+            assert_eq!(search_path("vllm", &p), Some(upper.path().join("vllm.exe")));
+        }
         assert_eq!(search_path("vllm", &path), None);
         let mut cfg = InferenceConfig {
             llama_server: bin.to_string_lossy().into_owned(),

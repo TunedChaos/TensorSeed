@@ -182,7 +182,10 @@ async fn mount_dir(server: &MockServer, dir: &Path) {
 }
 
 fn write_config(dir: &Path, server: &str, entries: &str) -> PathBuf {
-    let d = dir.display();
+    // Forward slashes: a Windows path in a TOML basic string would read
+    // its backslashes as escapes. The loader turns them back into native
+    // separators.
+    let d = dir.to_string_lossy().replace('\\', "/");
     let text = format!(
         r#"[general]
 state_db = "{d}/state.db"
