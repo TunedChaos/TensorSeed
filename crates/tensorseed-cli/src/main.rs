@@ -5,6 +5,7 @@
 
 mod catalog_cmd;
 mod chain;
+mod challenge;
 mod cli;
 mod consumer;
 mod doctor;
@@ -127,6 +128,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             consumer::list(&load()?, &opts, *no_wait, catalog.as_deref()).await
         }
         Command::ServeInference(args) => inference::run(&load()?, args).await,
+        Command::ReferenceLogprobs(args) => challenge::reference(&load()?, args).await,
+        Command::CheckEndpoint(args) => Ok(challenge::check(args).await),
         Command::Show {
             repo,
             repo_type,

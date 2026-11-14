@@ -1,10 +1,13 @@
 # Draft: verified serving
 
-Status: **draft for discussion**. Nothing in this document is implemented
-beyond the unsigned `ts.served-weights/0` placeholder already described in
-SPEC section 19.1 and [SELL-INFERENCE.md](../SELL-INFERENCE.md). Field
+Status: **draft for discussion**. Two pieces are built for 0.3.0:
+`tensorseed reference-logprobs` and `tensorseed check-endpoint` (section
+5.7). Everything else beyond the unsigned `ts.served-weights/0`
+placeholder already described in SPEC section 19.1 and
+[SELL-INFERENCE.md](../SELL-INFERENCE.md) is not implemented. Field
 names, command names, header names, and the EAS schema string below are
-proposals. They are not a released schema.
+proposals. They are not a released schema; the two built file formats
+are versioned `/1` and may still change before release.
 
 Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 Date: 2026-11-13. Revised the same day: the primary live check is signed
@@ -665,6 +668,109 @@ the marketplace already uses is the obvious choice if a bond is added.
 | Logprob-verified | The above, `logprobs: "required"`, signed responses, and passing rare challenges | In addition, the live endpoint has been matching precomputed logprobs of those weights, statistically. |
 | Hardware-attested | The above (or at least the claim), plus section 8 | A measured confidential guest reported loading those weights at handshake time. |
 
+### 5.7 As built in 0.3.0 (`reference-logprobs`, `check-endpoint`)
+
+Code: `tensorseed_app::challenge` (shared with Desktop) and
+`crates/tensorseed-cli/src/challenge.rs`. Choices made where the draft
+was open:
+
+**Reference file.** `ts.reference-logprobs/1` has the fields shown in
+5.2 plus: `manifest_key`; `entrypoint_sha256` (the GGUF file hash from
+the signed manifest, absent for a directory); `generator.tensorseed_version`;
+`generator.request_extra` (engine specific request fields, see below);
+`generation` (`method` is `ts.challenge-gen/1` or `file`, the generator
+`seed` when generated, and `count`); a random 32-byte `salt`; and
+`created_at`. A prompt has either `messages` (sent to
+`/chat/completions`) or `prompt` (sent to the legacy `/completions`), and
+`expected` holds one entry per generated position. Logprobs are rounded
+to 6 decimals. The copy is verified against the signed manifest before
+any request, with the same `verify_copy` that `serve-inference` uses,
+and the runtime is started with the same `LaunchPlan` on a private
+loopback port (or `--endpoint` names a running server).
+
+**`set_hash`.** SHA-256 of the canonical JSON (SPEC 6.4) of the whole
+reference object with the `set_hash` field removed. That covers the
+bindings, decoding, prompts, expected values, and the salt. The salt
+makes the hash a hiding commitment even for guessable prompts. A
+verifier re-serializes with the same canonical rule; float formatting is
+serde_json's shortest round trip, so a verifier in another language
+should parse and re-serialize the same way or use Tensorseed. No Merkle
+root is used yet (open question 16).
+
+**Secret and public parts.** `--out` writes the whole file, owner-only on
+Unix. `--commitment` writes `ts.reference-logprobs-commitment/1`:
+`set_hash`, manifest hash and key, repo, revision, entrypoint and its
+hash, decoding, generator, generation method, prompt count, and
+`created_at`. It has no prompts, expected values, salt, or generator
+seed. `check-endpoint --expect-set-hash` refuses a file whose hash does
+not match a published commitment, and every load rejects a file whose
+contents no longer match its own `set_hash`.
+
+**Prompt generator `ts.challenge-gen/1`.** For prompt `i` (0 based), the
+byte stream is `SHA-256("tensorseed challenge-gen/1\n" || seed || be32(i) || be32(block))`
+for `block = 0, 1, ...`. Byte 0 picks one of 8 templates, byte 1 adds a
+fixed system message when odd, byte 2 sets the word count (`3 + b % 18`),
+and one byte per word indexes a fixed 256-word list. Ids are `lp-0001`
+onward. The templates and word list are constants in
+`tensorseed_app::challenge`, pinned by a test vector. A secret set uses
+a random seed, stored only in the secret file.
+
+**llama.cpp prompt cache.** A live run showed that llama.cpp's prompt
+cache changes logprobs between identical requests (the first request
+and its repeats differ by tenths of a nat). Reference runs on llama.cpp
+therefore send `cache_prompt: false` and record it in
+`generator.request_extra`, so every value comes from a full prefill.
+`check-endpoint` does not send it by default, so challenges stay
+ordinary requests; `--no-prompt-cache` sends it for self-checks.
+
+**Tolerance math.** At each position, each reference token (the chosen
+token plus its top-k) is looked up in the endpoint's chosen token plus
+top-k. A present token contributes `|actual - expected|`. An absent
+token's logprob can be no higher than the smallest value the endpoint
+listed (the floor), so it contributes the lower bound
+`max(0, expected - floor)`. Comparison stops after the first position
+whose chosen token differs, because later positions follow different
+text. A challenge passes when the mean deviation is at most
+`--max-mean-abs` (default 0.5 nats) and no single deviation exceeds
+`--max-token-abs` (default 2 nats). Both are uncalibrated starting points.
+
+**Verdicts and repeats.** A challenge outside tolerance is re-sent up to
+`--repeats` attempts in total (default 3) and is `fail` only when every
+attempt fails. A pass after a failed or errored attempt is
+`inconclusive`. Transport errors, timeouts, and HTTP errors are
+`inconclusive`; a response without logprobs is `unsupported`. Overall:
+any `fail` is `fail`; all `pass` is `pass`; all `unsupported` is
+`unsupported`; anything else is `inconclusive`. Exit codes are 0, 1, and 2
+(2 also for setup errors such as a changed reference file). The model id
+defaults to the reference file's `repo`. `--sample N` picks challenges
+by `SHA-256(sample_seed || id)` order, so a run is reproducible from the
+printed seed.
+
+**Report.** `--json` prints `ts.check-endpoint/1`: the base URL, model
+id, the reference bindings and `set_hash` (no prompts or expected
+values), decoding, tolerances, repeats, concurrency, timeout, the
+sample request and seed, the overall verdict and counts, and per
+challenge the verdict, attempts, comparison (compared tokens, positions,
+mean and max deviation, missing tokens, whether the first token
+matched, divergence position), per-attempt means, reason, and elapsed
+time. API keys are read from the variable named by `--api-key-env` and
+never appear in arguments, output, or reports. This is not yet the
+`ts.challenge-evidence/1` bundle of 5.4.
+
+**First measurements (one CPU host, llama.cpp build 12366, not a
+calibration).** Reference: 32 generated prompts from
+`Qwen/Qwen2.5-1.5B-Instruct-GGUF` q2_k, one token, top 5. Against the
+same file served by `serve-inference`: all challenges passed, with
+per-challenge mean deviations up to about 0.36 nats from batching and
+KV layout, even with the prompt cache off. Against q3_k_m of the same
+revision: overall fail, 19 of 32 challenges failed, mean deviation about
+0.81 nats. Against Qwen2.5-0.5B-Instruct q4_k_m served under the 1.5B
+model id: overall fail, 23 of 32 failed, mean deviation about 0.83 nats.
+Individual challenges of a wrong model can still pass, which is why a
+verdict needs several challenges. The gap between honest noise and a
+different file is narrower for low-bit quantizations, so open question 7
+still stands.
+
 ---
 
 ## 6. Secondary tool: full-generation checks for disputes
@@ -900,15 +1006,15 @@ Tensorseed stays small, offline-verifiable, and token-neutral. It never
 holds a seller or marketplace private key. Response-signing secrets
 stay on the seller's machine.
 
-### 11.1 Tensorseed (proposed commands, not yet built)
+### 11.1 Tensorseed (proposed commands; two built in 0.3.0)
 
 | Command | Role |
 |---|---|
 | `tensorseed claim-serving <dir\|repo_id>` | After a verified copy exists, write the unsigned `ts.served-weights/1` body (including `response_key`), compute `claim_sha256`, and print the exact EIP-191 message. `--wallet` sets `seller_wallet`. `--sig 0x...` verifies the signature and writes the signed file. `--response-key` names a local public key; Tensorseed can also generate a key pair on the seller's machine and refuse to print or upload the secret. |
 | `tensorseed attest-serving <claim.json>` | Check the claim, then print EAS calldata for Base (contract `0x4200...0021`, encoded `attest` data, and a human summary). `--broadcast` is out of scope; an external wallet or the marketplace submits the transaction. |
-| `tensorseed reference-logprobs <dir>` | From a verified local copy, generate `ts.reference-logprobs/1` for that entrypoint: the secret (or later revealed) challenge expectations. Prints `set_hash` so a marketplace can commit to the set without publishing the prompts yet. |
+| `tensorseed reference-logprobs <dir>` | **Built in 0.3.0** (section 5.7). From a verified local copy, generate `ts.reference-logprobs/1` for that entrypoint: the secret (or later revealed) challenge expectations. Prints `set_hash` so a marketplace can commit to the set without publishing the prompts yet. |
 | `tensorseed reference-answers <dir>` | Generate the longer `ts.reference-answers/1` file used for disputes and calibration, also offline and amortized. |
-| `tensorseed check-endpoint` | Default: verify signed responses and run logprob challenges against a claim and a `ts.reference-logprobs/1` file (or a revealed set). A flag runs the full-generation dispute mode instead. Writes an optional `ts.challenge-evidence/1` bundle. No stake is moved. |
+| `tensorseed check-endpoint` | **Built in 0.3.0** for logprob challenges only (section 5.7); signed response checks, the dispute mode, and evidence bundles are not built. Default: verify signed responses and run logprob challenges against a claim and a `ts.reference-logprobs/1` file (or a revealed set). A flag runs the full-generation dispute mode instead. Writes an optional `ts.challenge-evidence/1` bundle. No stake is moved. |
 | `tensorseed serve-inference` (extension) or `tensorseed sign-responses` | Start (or run standalone) the loopback signing proxy in front of the runtime, using the local response key. The secret key never leaves the seller host and is never sent to Tensorseed developers or to a marketplace. |
 
 `serve-inference` can later gain a flag to write a version 1 body and
@@ -1013,6 +1119,19 @@ marketplace developers.
 15. For the hardware tier, is a digest-plus-off-chain-evidence URL
     enough, and which appraisers (NVIDIA NRAS, a local verifier, a
     third party) are acceptable?
+16. Should `set_hash` stay a hash of the whole canonical file, or become a
+    Merkle root of prompt records so single challenges can be revealed
+    in a dispute without revealing the rest of the set?
+17. Should generated sets vary `max_tokens` per prompt (the built
+    generator uses one value per set), and should the generator gain
+    more templates or a larger word list to make challenges harder to
+    filter?
+18. Should a mean deviation threshold depend on the quantization (low-bit
+    files are noisier), and should the overall verdict tolerate a small
+    fraction of failing challenges instead of failing on any one?
+19. Should a checker that knows the engine (llama.cpp) send
+    `cache_prompt: false` on challenges, given that it reduces honest
+    noise but is a field ordinary clients rarely send?
 
 ---
 

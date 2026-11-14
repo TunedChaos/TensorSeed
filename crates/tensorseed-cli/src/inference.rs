@@ -5,7 +5,7 @@
 //! and run it behind an OpenAI compatible server. The logic lives in
 //! [`tensorseed_app::inference`]; this module only prints.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -15,12 +15,31 @@ use tensorseed_app::inference::{
     choose_runtime, default_model_id, find_binary, license_gate, verify_copy, wait_ready,
 };
 use tensorseed_core::commercial::DISCLAIMER;
-use tensorseed_core::keys::RepoType;
+use tensorseed_core::keys::{RepoRef, RepoType};
 use tensorseed_core::paths::native_path;
 
 use crate::cli::{RuntimeArg, ServeInferenceArgs};
 use crate::config::Config;
 use crate::consumer::{default_out, parse_repo};
+
+/// A resolved target: the directory, and the repo and revision when named.
+pub type Target = (PathBuf, Option<(RepoRef, Option<String>)>);
+
+/// Resolve a `serve-inference` style target: a pulled directory, or a repo
+/// id `org/name[@rev]` read from `dir` or the pull default directory.
+///
+/// # Errors
+///
+/// Fails when the target is neither a directory nor a valid repo id.
+pub fn resolve_target(cfg: &Config, target: &str, dir: Option<&Path>) -> anyhow::Result<Target> {
+    let t = Path::new(target);
+    if t.is_dir() && dir.is_none() {
+        return Ok((native_path(t), None));
+    }
+    let (r, rev) = parse_repo(target, RepoType::Model, None)?;
+    let dir = dir.map(native_path).unwrap_or_else(|| default_out(cfg, &r));
+    Ok((dir, Some((r, rev))))
+}
 
 /// `tensorseed serve-inference`.
 pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<ExitCode> {
@@ -37,18 +56,7 @@ pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<Exit
     inf.validate()?;
     let listen = inf.listen()?;
 
-    let target = Path::new(&args.target);
-    let (dir, repo) = if target.is_dir() && args.dir.is_none() {
-        (native_path(target), None)
-    } else {
-        let (r, rev) = parse_repo(&args.target, RepoType::Model, None)?;
-        let dir = args
-            .dir
-            .as_deref()
-            .map(native_path)
-            .unwrap_or_else(|| default_out(cfg, &r));
-        (dir, Some((r, rev)))
-    };
+    let (dir, repo) = resolve_target(cfg, &args.target, args.dir.as_deref())?;
 
     println!("verifying {} against the signed manifest", dir.display());
     let copy = verify_copy(

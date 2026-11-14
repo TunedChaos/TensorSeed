@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- `tensorseed reference-logprobs <dir|org/name>` generates a
+  `ts.reference-logprobs/1` file for logprob challenges (the first two
+  commands of `docs/plans/verified-serving.md`). It verifies the copy
+  against the signed manifest first, then runs the same llama.cpp or vLLM
+  launch as `serve-inference` on a private loopback port (or uses
+  `--endpoint` for a running server), asks each challenge with fixed
+  decoding, and records the expected chosen token and top-k logprobs.
+  The file is bound to the manifest hash, revision, entrypoint file and
+  its SHA-256, runtime, and engine version, and sealed by `set_hash`
+  (SHA-256 of the canonical JSON without `set_hash`, with a random salt).
+  Prompts come from `--prompts` (chat or completions) or the published
+  generator `ts.challenge-gen/1` with a random or given seed.
+  `--commitment` writes the public `ts.reference-logprobs-commitment/1`
+  without prompts; the secret file is written owner-only. llama.cpp
+  reference runs send `cache_prompt: false` so values come from a full
+  prefill.
+- `tensorseed check-endpoint <base_url> --reference <file>` sends a
+  sampled subset of challenges (`--sample`, reproducible with
+  `--sample-seed`) with bounded `--concurrency`, a per-request `--timeout`,
+  and an optional API key read from `--api-key-env`. It parses both the
+  chat (`logprobs.content[].top_logprobs`) and legacy completions logprob
+  shapes, compares within `--max-mean-abs` (0.5 nats) and
+  `--max-token-abs` (2 nats), repeats failing challenges (`--repeats`, 3),
+  and reports pass, fail, inconclusive, or unsupported per challenge and
+  overall. Exit 0 pass, 1 fail, 2 inconclusive or unsupported. `--json`
+  prints `ts.check-endpoint/1`. No signing, attestation, or marketplace
+  code is included.
 - Commercial serving marks: every catalog entry gets a derived
   `commercial_serving` value (`allowed`, `restricted`, `forbidden`, or
   `unknown`) with a short note, computed on the client from the license id

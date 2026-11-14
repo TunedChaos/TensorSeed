@@ -1590,3 +1590,460 @@ async fn serve_inference_refuses_an_unsigned_copy() {
     );
     assert!(!stdout(&o).contains("vllm"));
 }
+
+/// A chat completion body with logprobs at one position.
+fn chat_logprobs(tok: &str, lp: f64, top: &[(&str, f64)]) -> serde_json::Value {
+    let top: Vec<serde_json::Value> = top
+        .iter()
+        .map(|(t, l)| serde_json::json!({"token": t, "logprob": l, "bytes": []}))
+        .collect();
+    serde_json::json!({
+        "object": "chat.completion",
+        "model": "org/tiny",
+        "choices": [{"index": 0, "finish_reason": "length",
+            "message": {"role": "assistant", "content": tok},
+            "logprobs": {"content": [{"token": tok, "logprob": lp, "bytes": [], "top_logprobs": top}]}}]
+    })
+}
+
+/// A legacy completions body with logprobs at one position.
+fn legacy_logprobs(tok: &str, lp: f64, top: &[(&str, f64)]) -> serde_json::Value {
+    let top: serde_json::Map<String, serde_json::Value> = top
+        .iter()
+        .map(|(t, l)| ((*t).to_string(), serde_json::json!(l)))
+        .collect();
+    serde_json::json!({
+        "object": "text_completion",
+        "choices": [{"index": 0, "text": tok, "logprobs": {
+            "tokens": [tok], "token_logprobs": [lp], "top_logprobs": [top], "text_offset": [0]}}]
+    })
+}
+
+async fn mount_engine(server: &MockServer, chat: serde_json::Value, legacy: serde_json::Value) {
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(legacy))
+        .mount(server)
+        .await;
+}
+
+const REF_TOP: &[(&str, f64)] = &[("Hi", -0.2), ("Hello", -1.9), ("Hey", -2.6)];
+const REF_LEGACY: &[(&str, f64)] = &[(" blue", -0.4), (" clear", -1.5)];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reference_logprobs_then_check_endpoint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let (cfg, dir, _) = pulled_gguf(tmp.path(), &server, "apache-2.0").await;
+    let dir_s = dir.to_str().unwrap();
+    mount_engine(
+        &server,
+        chat_logprobs("Hi", -0.2, REF_TOP),
+        legacy_logprobs(" blue", -0.4, REF_LEGACY),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"build_info": "b1-test"})),
+        )
+        .mount(&server)
+        .await;
+    let ep = format!("{}/v1", server.uri());
+    let refp = tmp.path().join("ref.json");
+    let commitp = tmp.path().join("commit.json");
+
+    // Generated prompts from a fixed seed, against a running endpoint.
+    let seed = "11".repeat(32);
+    let o = run(
+        &cfg,
+        &[
+            "reference-logprobs",
+            dir_s,
+            "--no-wait",
+            "--endpoint",
+            &ep,
+            "--count",
+            "6",
+            "--gen-seed",
+            &seed,
+            "--out",
+            refp.to_str().unwrap(),
+            "--commitment",
+            commitp.to_str().unwrap(),
+        ],
+        &[("PATH", "")],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let r: serde_json::Value = serde_json::from_slice(&std::fs::read(&refp).unwrap()).unwrap();
+    assert_eq!(r["schema"], "ts.reference-logprobs/1");
+    assert_eq!(r["repo"], "org/tiny");
+    assert_eq!(r["revision"], C);
+    assert_eq!(r["entrypoint"]["kind"], "gguf");
+    assert_eq!(r["entrypoint"]["path"], "tiny-q4.gguf");
+    assert_eq!(r["generator"]["engine_version"], "llama.cpp b1-test");
+    assert_eq!(r["generator"]["runtime"], "llama-cpp");
+    assert_eq!(r["generation"]["method"], "ts.challenge-gen/1");
+    assert_eq!(r["generation"]["seed"], seed.as_str());
+    assert_eq!(r["prompts"].as_array().unwrap().len(), 6);
+    assert_eq!(r["prompts"][0]["expected"][0]["token"], "Hi");
+    assert_eq!(
+        r["prompts"][0]["expected"][0]["top_logprobs"][1]["token"],
+        "Hello"
+    );
+    let set_hash = r["set_hash"].as_str().unwrap().to_string();
+    assert!(stdout(&o).contains(&set_hash));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&refp).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the secret set is private");
+    }
+    // The public commitment has the hash and bindings, not the prompts.
+    let c = std::fs::read_to_string(&commitp).unwrap();
+    let cv: serde_json::Value = serde_json::from_str(&c).unwrap();
+    assert_eq!(cv["schema"], "ts.reference-logprobs-commitment/1");
+    assert_eq!(cv["set_hash"], set_hash.as_str());
+    assert_eq!(cv["manifest_sha256"], r["manifest_sha256"]);
+    assert_eq!(cv["prompt_count"], 6);
+    assert!(!c.contains("lp-0001") && !c.contains(&seed) && !c.contains("\"Hi\""));
+    // Requests used fixed decoding and the repo id.
+    let reqs = server.received_requests().await.unwrap();
+    let chat: Vec<serde_json::Value> = reqs
+        .iter()
+        .filter(|q| q.url.path() == "/v1/chat/completions")
+        .map(|q| serde_json::from_slice(&q.body).unwrap())
+        .collect();
+    assert_eq!(chat.len(), 6);
+    for b in &chat {
+        assert_eq!(b["model"], "org/tiny");
+        assert_eq!(b["temperature"], 0.0);
+        assert_eq!(b["logprobs"], true);
+        assert_eq!(b["top_logprobs"], 5);
+        assert_eq!(b["max_tokens"], 1);
+        assert_eq!(
+            b["cache_prompt"], false,
+            "llama.cpp reference runs skip the prompt cache"
+        );
+    }
+    assert_eq!(r["generator"]["request_extra"]["cache_prompt"], false);
+
+    // The same seed regenerates the same prompts (auditable after reveal).
+    let refp2 = tmp.path().join("ref2.json");
+    let o = run(
+        &cfg,
+        &[
+            "reference-logprobs",
+            dir_s,
+            "--no-wait",
+            "--endpoint",
+            &ep,
+            "--count",
+            "6",
+            "--gen-seed",
+            &seed,
+            "--out",
+            refp2.to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0);
+    let r2: serde_json::Value = serde_json::from_slice(&std::fs::read(&refp2).unwrap()).unwrap();
+    assert_eq!(r2["prompts"], r["prompts"]);
+    assert_ne!(r2["set_hash"], r["set_hash"], "a fresh salt each time");
+
+    // A prompt file mixing chat and legacy completions prompts.
+    let prompts = tmp.path().join("prompts.json");
+    std::fs::write(
+        &prompts,
+        r#"[{"id":"chat-1","messages":[{"role":"user","content":"Say hi"}]},{"id":"cmp-1","prompt":"The sky is"}]"#,
+    )
+    .unwrap();
+    let mixed = tmp.path().join("mixed.json");
+    let o = run(
+        &cfg,
+        &[
+            "reference-logprobs",
+            dir_s,
+            "--no-wait",
+            "--endpoint",
+            &ep,
+            "--prompts",
+            prompts.to_str().unwrap(),
+            "--out",
+            mixed.to_str().unwrap(),
+            "--engine-version",
+            "pinned-1",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let m: serde_json::Value = serde_json::from_slice(&std::fs::read(&mixed).unwrap()).unwrap();
+    assert_eq!(m["generation"]["method"], "file");
+    assert_eq!(m["generator"]["engine_version"], "pinned-1");
+    assert_eq!(m["prompts"][1]["id"], "cmp-1");
+    assert_eq!(m["prompts"][1]["expected"][0]["token"], " blue");
+    assert_eq!(
+        m["prompts"][1]["expected"][0]["top_logprobs"][1]["token"],
+        " clear"
+    );
+
+    // check-endpoint: same engine passes, with the key from the environment.
+    let same = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer s3cr3t-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_logprobs(
+            "Hi",
+            -0.25,
+            &[("Hi", -0.25), ("Hello", -1.8), ("Hey", -2.7)],
+        )))
+        .mount(&same)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/completions"))
+        .and(header("authorization", "Bearer s3cr3t-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(legacy_logprobs(" blue", -0.4, REF_LEGACY)),
+        )
+        .mount(&same)
+        .await;
+    let same_url = format!("{}/v1", same.uri());
+    let check = |url: String, reference: PathBuf, extra: Vec<String>| {
+        let cfg = cfg.clone();
+        async move {
+            let mut a: Vec<String> = vec![
+                "check-endpoint".into(),
+                url,
+                "--reference".into(),
+                reference.to_str().unwrap().into(),
+            ];
+            a.extend(extra);
+            let a: Vec<&str> = a.iter().map(String::as_str).collect();
+            run(&cfg, &a, &[("TS_TEST_EP_KEY", "s3cr3t-key")]).await
+        }
+    };
+    let o = check(
+        same_url.clone(),
+        refp.clone(),
+        vec![
+            "--sample".into(),
+            "4".into(),
+            "--api-key-env".into(),
+            "TS_TEST_EP_KEY".into(),
+            "--json".into(),
+            "--concurrency".into(),
+            "3".into(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(rep["schema"], "ts.check-endpoint/1");
+    assert_eq!(rep["verdict"], "pass");
+    assert_eq!(rep["model_id"], "org/tiny");
+    assert_eq!(rep["counts"]["pass"], 4);
+    assert_eq!(rep["sample"]["sent"], 4);
+    assert_eq!(rep["reference"]["set_hash"], set_hash.as_str());
+    assert_eq!(rep["challenges"][0]["verdict"], "pass");
+    assert!(
+        rep["challenges"][0]["comparison"]["mean_abs_dev"]
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
+    let all = format!("{}{}", stdout(&o), stderr(&o));
+    assert!(!all.contains("s3cr3t-key"), "the key is never printed");
+    assert!(
+        !all.contains("Continue this") && !all.contains("\"Hi\""),
+        "no prompt text or expected values in the report"
+    );
+    // Both request shapes, text output.
+    let o = check(
+        same_url.clone(),
+        mixed.clone(),
+        vec![
+            "--sample".into(),
+            "0".into(),
+            "--api-key-env".into(),
+            "TS_TEST_EP_KEY".into(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert!(
+        stdout(&o).contains("verdict: pass (2 pass"),
+        "{}",
+        stdout(&o)
+    );
+    // Without the key the endpoint rejects every request: inconclusive.
+    let o = check(
+        same_url.clone(),
+        refp.clone(),
+        vec!["--repeats".into(), "1".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    assert!(
+        stdout(&o).contains("verdict: inconclusive"),
+        "{}",
+        stdout(&o)
+    );
+    // An unset key variable is an error before any request (exit 2).
+    let o = check(
+        same_url.clone(),
+        refp.clone(),
+        vec!["--api-key-env".into(), "TS_TEST_NO_SUCH_VAR".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    assert!(stderr(&o).contains("TS_TEST_NO_SUCH_VAR"));
+
+    // A different model fails on every attempt.
+    let other = MockServer::start().await;
+    mount_engine(
+        &other,
+        chat_logprobs("Zz", -0.01, &[("Zz", -0.01), ("Q", -5.0)]),
+        legacy_logprobs(" red", -0.1, &[(" red", -0.1)]),
+    )
+    .await;
+    let o = check(
+        format!("{}/v1", other.uri()),
+        refp.clone(),
+        vec![
+            "--sample".into(),
+            "2".into(),
+            "--repeats".into(),
+            "2".into(),
+            "--json".into(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(rep["verdict"], "fail");
+    assert_eq!(rep["challenges"][0]["attempts"], 2);
+    assert_eq!(
+        rep["challenges"][0]["comparison"]["first_token_match"],
+        false
+    );
+    assert_eq!(other.received_requests().await.unwrap().len(), 4);
+
+    // No logprobs: unsupported.
+    let plain = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"}}]
+        })))
+        .mount(&plain)
+        .await;
+    let o = check(
+        format!("{}/v1", plain.uri()),
+        refp.clone(),
+        vec!["--json".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(rep["verdict"], "unsupported");
+    // reference-logprobs refuses an engine without logprobs.
+    let o = run(
+        &cfg,
+        &[
+            "reference-logprobs",
+            dir_s,
+            "--no-wait",
+            "--endpoint",
+            &format!("{}/v1", plain.uri()),
+            "--count",
+            "1",
+            "--out",
+            tmp.path().join("x.json").to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("no logprobs"), "{}", stderr(&o));
+
+    // Timeouts are inconclusive.
+    let slow = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_logprobs("Hi", -0.2, REF_TOP))
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&slow)
+        .await;
+    let o = check(
+        format!("{}/v1", slow.uri()),
+        refp.clone(),
+        vec![
+            "--sample".into(),
+            "1".into(),
+            "--timeout".into(),
+            "1".into(),
+            "--repeats".into(),
+            "1".into(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    assert!(stdout(&o).contains("timed out"), "{}", stdout(&o));
+
+    // A changed reference file, or the wrong published hash, gives no verdict.
+    let o = check(
+        same_url.clone(),
+        refp.clone(),
+        vec!["--expect-set-hash".into(), "0".repeat(64)],
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    assert!(stderr(&o).contains("not the expected"));
+    let tampered = tmp.path().join("tampered.json");
+    let mut t = r.clone();
+    t["prompts"][0]["expected"][0]["logprob"] = serde_json::json!(-0.3);
+    std::fs::write(&tampered, serde_json::to_vec(&t).unwrap()).unwrap();
+    let o = check(same_url.clone(), tampered, vec![]).await;
+    assert_eq!(code(&o), 2);
+    assert!(
+        stderr(&o).contains("set_hash does not match"),
+        "{}",
+        stderr(&o)
+    );
+
+    // A changed weight byte: no reference is produced.
+    let p = dir.join("tiny-q4.gguf");
+    let mut b = std::fs::read(&p).unwrap();
+    b[10] ^= 0xff;
+    std::fs::write(&p, &b).unwrap();
+    let bad = tmp.path().join("bad.json");
+    let o = run(
+        &cfg,
+        &[
+            "reference-logprobs",
+            dir_s,
+            "--no-wait",
+            "--endpoint",
+            &ep,
+            "--count",
+            "1",
+            "--out",
+            bad.to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("failed verification"), "{}", stderr(&o));
+    assert!(!bad.exists());
+}

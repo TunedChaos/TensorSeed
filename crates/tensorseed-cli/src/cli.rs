@@ -198,6 +198,22 @@ pub enum Command {
     /// No runtime is bundled; configure binaries in `[inference]` or put
     /// them on PATH. See docs/SELL-INFERENCE.md.
     ServeInference(ServeInferenceArgs),
+    /// Generate expected next-token logprobs for a verified copy
+    /// (`ts.reference-logprobs/1`), for logprob challenges.
+    ///
+    /// The copy is verified against the signed manifest first. The runtime
+    /// is started the same way serve-inference starts it (on a private
+    /// loopback port), or an already running endpoint is used with
+    /// `--endpoint`. The output file holds the challenge prompts and is
+    /// secret until revealed; `--commitment` writes the public part
+    /// (`set_hash`). See docs/plans/verified-serving.md section 5.2.
+    ReferenceLogprobs(ReferenceLogprobsArgs),
+    /// Send logprob challenges from a reference file to an OpenAI
+    /// compatible endpoint and compare the answers within tolerances.
+    ///
+    /// Exit status: 0 pass, 1 fail, 2 inconclusive or unsupported (also
+    /// for errors that prevent a verdict).
+    CheckEndpoint(CheckEndpointArgs),
     /// List catalog entries.
     ///
     /// Each row shows a commercial serving mark derived from the license id
@@ -740,6 +756,139 @@ pub struct ServeInferenceArgs {
     pub extra: Vec<String>,
 }
 
+/// `reference-logprobs` arguments.
+#[derive(Debug, Args)]
+pub struct ReferenceLogprobsArgs {
+    /// A directory written by `pull`, or a repo id `org/name[@rev]` (read
+    /// from the pull default directory).
+    pub target: String,
+    /// Directory when the target is a repo id.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+    /// Inference runtime.
+    #[arg(long, value_enum, default_value_t = RuntimeArg::Auto)]
+    pub runtime: RuntimeArg,
+    /// GGUF file (quantization) to load, relative to the directory. Each
+    /// file gets its own reference set.
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+    /// Write the reference file (secret until revealed) here.
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub out: PathBuf,
+    /// Also write the public commitment (`set_hash` and bindings, no
+    /// prompts) here.
+    #[arg(long, value_name = "PATH")]
+    pub commitment: Option<PathBuf>,
+    /// Challenge prompts: a JSON array, an object with `prompts`, or JSON
+    /// Lines; each prompt has `messages` (chat) or `prompt` (completions).
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["count", "gen_seed"])]
+    pub prompts: Option<PathBuf>,
+    /// Number of prompts to generate (ts.challenge-gen/1).
+    #[arg(long, default_value_t = 32)]
+    pub count: u32,
+    /// Generator seed, 64 hex digits (default: random, kept in the
+    /// secret file so the set can be regenerated after reveal).
+    #[arg(long, value_name = "HEX")]
+    pub gen_seed: Option<String>,
+    /// Alternatives per position (1 to 20).
+    #[arg(long, default_value_t = 5)]
+    pub top_logprobs: u32,
+    /// Tokens per challenge (1 to 64).
+    #[arg(long, default_value_t = 1)]
+    pub max_tokens: u32,
+    /// Request seed sent with every challenge.
+    #[arg(long, default_value_t = 1)]
+    pub sampling_seed: u64,
+    /// Use this already running OpenAI compatible endpoint (for example
+    /// `http://127.0.0.1:8090/v1`) instead of starting the runtime. It
+    /// must be serving this verified copy and entrypoint.
+    #[arg(long, value_name = "URL")]
+    pub endpoint: Option<String>,
+    /// Model id to request (default: the repo id).
+    #[arg(long, value_name = "ID")]
+    pub model_id: Option<String>,
+    /// Environment variable holding the endpoint's API key (with
+    /// `--endpoint`). The key is never taken on the command line.
+    #[arg(long, value_name = "VAR")]
+    pub api_key_env: Option<String>,
+    /// Engine version to record (default: the runtime's `--version`, or
+    /// the endpoint's `/props` build info, or `unknown`).
+    #[arg(long, value_name = "TEXT")]
+    pub engine_version: Option<String>,
+    /// Seconds per request.
+    #[arg(long, value_name = "SECS", default_value_t = 120)]
+    pub timeout: u64,
+    /// Seconds to wait for /v1/models after starting the runtime
+    /// (overrides inference.ready_timeout_secs).
+    #[arg(long, value_name = "SECS")]
+    pub ready_timeout: Option<u64>,
+    /// Use the local catalog copy without syncing.
+    #[arg(long)]
+    pub no_wait: bool,
+    /// Use this subscribed catalog for the manifest.
+    #[arg(long, value_name = "NAME")]
+    pub catalog: Option<String>,
+    /// Hashing threads for verification.
+    #[arg(long, default_value_t = 4)]
+    pub threads: usize,
+    /// Extra arguments passed to the runtime after the configured ones
+    /// (after `--`).
+    #[arg(last = true, value_name = "ARGS")]
+    pub extra: Vec<String>,
+}
+
+/// `check-endpoint` arguments.
+#[derive(Debug, Args)]
+pub struct CheckEndpointArgs {
+    /// Endpoint base URL, usually ending in `/v1`.
+    pub base_url: String,
+    /// Reference file (`ts.reference-logprobs/1`).
+    #[arg(long, short = 'r', value_name = "PATH")]
+    pub reference: PathBuf,
+    /// Require the reference file to have this published set_hash.
+    #[arg(long, value_name = "HEX")]
+    pub expect_set_hash: Option<String>,
+    /// Challenges to send, sampled from the set (0 for all).
+    #[arg(long, default_value_t = 8)]
+    pub sample: usize,
+    /// Sampling seed, 64 hex digits (default: random; printed so a run
+    /// can be repeated).
+    #[arg(long, value_name = "HEX")]
+    pub sample_seed: Option<String>,
+    /// Model id to request (default: the reference file's repo id).
+    #[arg(long, value_name = "ID")]
+    pub model_id: Option<String>,
+    /// Environment variable holding the endpoint's API key. The key is
+    /// never taken on the command line and never printed.
+    #[arg(long, value_name = "VAR")]
+    pub api_key_env: Option<String>,
+    /// Seconds per request.
+    #[arg(long, value_name = "SECS", default_value_t = 60)]
+    pub timeout: u64,
+    /// Challenges in flight at once.
+    #[arg(long, default_value_t = 2)]
+    pub concurrency: usize,
+    /// Attempts for a challenge outside tolerance; it fails only when
+    /// every attempt does.
+    #[arg(long, default_value_t = 3)]
+    pub repeats: u32,
+    /// Largest mean absolute logprob deviation per challenge (nats).
+    #[arg(long, value_name = "NATS", default_value_t = 0.5)]
+    pub max_mean_abs: f64,
+    /// Largest deviation of any one token (nats).
+    #[arg(long, value_name = "NATS", default_value_t = 2.0)]
+    pub max_token_abs: f64,
+    /// Send llama.cpp's `cache_prompt: false` with every challenge, for
+    /// self-checks and calibration against your own llama.cpp server. A
+    /// marketplace should not send it, so challenges look like ordinary
+    /// requests.
+    #[arg(long)]
+    pub no_prompt_cache: bool,
+    /// Print one JSON document (`ts.check-endpoint/1`) on stdout.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// `verify` arguments.
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
@@ -830,6 +979,8 @@ impl Command {
             Self::Serve(_) => "serve",
             Self::Verify(_) => "verify",
             Self::ServeInference(_) => "serve-inference",
+            Self::ReferenceLogprobs(_) => "reference-logprobs",
+            Self::CheckEndpoint(_) => "check-endpoint",
             Self::List { .. } => "list",
             Self::Show { .. } => "show",
             Self::Takedown { .. } => "takedown",

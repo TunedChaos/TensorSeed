@@ -237,6 +237,72 @@ same weights, matching their id puts you in the same order book. When the
 signed weights statement exists, a buyer will be able to tell which offers
 run the exact catalog revision you verified.
 
+### Publish reference logprobs and check yourself
+
+A marketplace that wants to see that your endpoint really runs the
+weights you listed can send rare logprob challenges: ordinary requests
+whose next-token logprobs were computed ahead of time from a verified copy
+of the same file (design: [plans/verified-serving.md](plans/verified-serving.md),
+section 5.2). Two commands cover this today. Neither holds a wallet or
+marketplace key.
+
+Generate a reference set from your verified copy. It re-hashes the copy
+like `serve-inference`, starts the runtime on a private loopback port,
+asks each challenge with fixed decoding (`temperature` 0, a fixed seed,
+`logprobs`, `top_logprobs` 5), and stops the runtime:
+
+```sh
+tensorseed reference-logprobs Qwen/Qwen2.5-1.5B-Instruct-GGUF \
+  --file qwen2.5-1.5b-instruct-q4_k_m.gguf \
+  --count 32 --out ref-q4_k_m.json --commitment ref-q4_k_m.commit.json
+```
+
+- `ref-q4_k_m.json` (`ts.reference-logprobs/1`) holds the prompts and the
+  expected values. It is written readable only by you. Treat it as
+  secret until the set is retired: a seller who knows the prompts can
+  special-case them. Whoever runs the checks (usually the marketplace)
+  should generate and hold its own set.
+- `ref-q4_k_m.commit.json` (`ts.reference-logprobs-commitment/1`) is the
+  public part: `set_hash`, the manifest hash, revision, file, engine, and
+  decoding, with no prompts. Publishing it commits to the set; after the
+  set is revealed, anyone can check the file against `set_hash` and
+  regenerate the expectations with the same command.
+- Each quantization is its own set. A q2_k reference is not valid for a
+  q4_k_m listing.
+- Prompts are generated from a random seed by a published method
+  (`ts.challenge-gen/1`), or read from `--prompts file.json` (chat
+  `messages` or completions `prompt`). `--gen-seed` makes the set
+  reproducible.
+- `--endpoint http://127.0.0.1:8090/v1` uses a server that is already
+  running instead of starting one. It must be serving the same file.
+
+Then check an endpoint against the set:
+
+```sh
+TS_CHECK_KEY=... tensorseed check-endpoint https://llm.example.com/v1 \
+  --reference ref-q4_k_m.json --sample 8 --api-key-env TS_CHECK_KEY
+```
+
+It sends a sample of the challenges (`--sample`, `--concurrency`,
+`--timeout`), compares the returned `top_logprobs` with the expected ones,
+and prints a verdict per challenge and overall: `pass`, `fail`,
+`inconclusive` (errors, timeouts, or attempts that disagree), or
+`unsupported` (the endpoint returns no logprobs). Exit status is 0 for
+pass, 1 for fail, and 2 for inconclusive, unsupported, or an error that
+prevents a verdict. `--json` prints a `ts.check-endpoint/1` report with no
+prompt text and no credentials. The API key is read from the variable you
+name, never from the command line.
+
+Defaults are starting points, not calibrated limits: a mean absolute
+deviation of at most 0.5 nats and no single token off by more than 2
+nats (`--max-mean-abs`, `--max-token-abs`), and a challenge fails only
+when all 3 attempts (`--repeats`) fail. Even the same file on the same
+llama.cpp build is not bit-identical across requests, because the prompt
+cache and batching change the arithmetic. For a self-check against your
+own llama.cpp server, `--no-prompt-cache` sends llama.cpp's
+`cache_prompt: false`; a marketplace should leave it off so challenges
+look like normal traffic.
+
 ## 7. License duties when you sell access
 
 Serving a model commercially usually keeps obligations even when the mark
@@ -268,6 +334,10 @@ Again: these notes are not legal advice.
   quantization to load.
 - `llama-server ... was not found`: install it, put it on `PATH`, or set
   `inference.llama_server`. `tensorseed doctor` shows what it finds.
+- `check-endpoint` says `unsupported`: the runtime or proxy does not
+  return `logprobs`. Such an offer cannot be logprob checked.
+- `check-endpoint` says `inconclusive` with HTTP 503: the runtime is still
+  loading the model; wait for `/v1/models` and rerun.
 - `did not list a model within 600s`: large models load slowly; raise
   `inference.ready_timeout_secs` or `--ready-timeout`, and read the
   runtime's own log lines above the error.

@@ -8,6 +8,7 @@
 
 pub mod backend;
 pub mod chain;
+pub mod challenge;
 pub mod config;
 pub mod doctor;
 pub mod follow;
