@@ -419,7 +419,7 @@ Permissions (`finish-args`), each for one reason:
 | `--talk-name=org.kde.StatusNotifierWatcher` | The tray icon. |
 | `--filesystem=xdg-config/tensorseed:create` | The CLI's config, keys, `mirrors.toml`, and `hf_token`. |
 | `--filesystem=xdg-data/tensorseed:create` | State, catalog cache, staging, seed data, publish trees, and mirrors (`~/.local/share/tensorseed`). |
-| `--filesystem=xdg-download/tensorseed:create` | Where pulls go by default inside the sandbox. |
+| `--filesystem=xdg-download/tensorseed:create` | Where pulls go by default, the same folder as outside the sandbox. |
 
 No home directory access, no host filesystem, and no other bus names.
 The single instance name (`dev.tensorseed.desktop.SingleInstance`) is
@@ -437,15 +437,15 @@ exposes at the same path. Data paths are `~/.local/share/tensorseed` on
 every Linux build already. So Desktop in the Flatpak and a `tensorseed`
 installed on the host read and write the same files.
 
-Downloads: the CLI's default `general.download_dir` is `.`, the working
-directory, which the sandbox usually cannot write. Inside a Flatpak the
-default becomes `tensorseed` under the XDG download directory
-(`~/Downloads/tensorseed` on most systems), which `xdg-download/tensorseed`
-exposes. A narrow folder under Downloads is the smallest grant that works
-without asking, and the file chooser portal does not fit: pulls and
-seeding run in the background and need the same folder again on every
-start. A `download_dir` set in the config wins; when it is outside the
-granted folders, grant it once:
+Downloads: the default `general.download_dir` is `tensorseed` under the
+XDG download directory (`~/Downloads/tensorseed` on most systems) for every
+Linux build, and `xdg-download/tensorseed` exposes exactly that folder, so
+the Flatpak and a host CLI find the same copies without any config. A
+narrow folder under Downloads is the smallest grant that works without
+asking, and the file chooser portal does not fit: pulls and seeding run in
+the background and need the same folder again on every start. A
+`download_dir` set in the config wins; when it is outside the granted
+folders, grant it once:
 
 ```fish
 flatpak override --user --filesystem=/srv/models dev.tensorseed.desktop

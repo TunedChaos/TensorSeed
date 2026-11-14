@@ -762,7 +762,7 @@ Global flags: `--config`, `--log-format json|pretty`, `-v`.
 ```toml
 [general]
 state_db = "~/.local/share/tensorseed/state.sqlite"
-download_dir = "."               # pull default: <download_dir>/<org>/<name>
+download_dir = "~/Downloads/tensorseed"  # pull default: <download_dir>/<org>/<name>; unset: tensorseed under the user's Downloads folder
 staging_dir = "/srv/tensorseed/staging"
 seed_dir = "/srv/tensorseed/seed"
 keep_local_seed = true

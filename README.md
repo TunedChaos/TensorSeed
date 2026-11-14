@@ -132,6 +132,14 @@ tensorseed seed                     # seed everything under storage.local_dir (C
 tensorseed completions bash         # print a bash completion script
 ```
 
+`pull` writes each repo to `<download_dir>/<org>/<name>` (datasets under
+`datasets/`), and `verify` and Desktop look there too. By default
+`general.download_dir` is a `tensorseed` folder in your Downloads folder:
+`~/Downloads/tensorseed` on Linux (the XDG download directory) and macOS,
+and `%USERPROFILE%\Downloads\tensorseed` on Windows (the Downloads folder,
+wherever you moved it). Set `download_dir` to an absolute or `~/` path to
+keep models elsewhere, or pass `--out` for one pull.
+
 The default download order is the BitTorrent swarm, then Hugging Face,
 then HTTP mirrors. To follow more than one catalog, add `[[catalogs]]`
 entries (see `config/tensorseed.example.toml`). `list` shows how many

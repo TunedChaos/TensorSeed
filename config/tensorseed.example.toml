@@ -15,7 +15,12 @@ staging_dir = "/srv/tensorseed/staging"
 seed_dir = "/srv/tensorseed/seed"
 keep_local_seed = true
 max_concurrent_downloads = 2
-download_dir = "."               # pull writes to <download_dir>/<org>/<name> unless --out is given
+# pull writes to <download_dir>/<org>/<name> unless --out is given. Leave it
+# unset for the default, a tensorseed folder in your Downloads folder
+# (~/Downloads/tensorseed on Linux and macOS, %USERPROFILE%\Downloads\tensorseed
+# on Windows). Use an absolute or ~/ path: a relative one such as "." follows
+# the directory each command runs in, and `tensorseed doctor` warns about it.
+# download_dir = "~/models"
 
 [catalog]
 backend = "file"                 # "chia" | "file"; the public catalog uses the file backend

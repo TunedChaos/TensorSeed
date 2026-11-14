@@ -1739,21 +1739,59 @@ pub fn in_flatpak() -> bool {
     std::env::var_os("FLATPAK_ID").is_some_and(|v| !v.is_empty())
 }
 
-/// Default `general.download_dir`: the working directory, except inside a
-/// Flatpak, where the working directory is usually not shared with the
-/// sandbox. There it is `tensorseed` under the XDG download directory,
-/// which the manifest exposes (`xdg-download/tensorseed:create`).
+/// Default `general.download_dir`: a `tensorseed` folder in the user's
+/// Downloads folder, so pulled copies land in one visible place no matter
+/// which directory a command runs in.
+///
+/// - Linux and other Unix: the XDG download directory (`XDG_DOWNLOAD_DIR`
+///   or `user-dirs.dirs`, else `~/Downloads`), so `~/Downloads/tensorseed`
+///   on most systems. The Flatpak sees the same folder
+///   (`xdg-download/tensorseed:create` in its manifest), so Desktop in the
+///   Flatpak and a host CLI that share one config also share one default.
+/// - Windows: the Downloads known folder, which follows a folder the user
+///   moved, else `%USERPROFILE%\Downloads`, so
+///   `%USERPROFILE%\Downloads\tensorseed` on most systems.
+/// - macOS: `~/Downloads/tensorseed`.
+///
+/// Falls back to `.` (the working directory) only when there is no home
+/// directory at all. A `download_dir` set in the config always wins.
 fn default_download_dir() -> String {
-    if in_flatpak() {
-        if let Some(dir) = xdg_download_dir() {
-            return dir.join("tensorseed").to_string_lossy().into_owned();
-        }
+    user_download_dir().map_or_else(
+        || ".".into(),
+        |d| d.join("tensorseed").to_string_lossy().into_owned(),
+    )
+}
+
+/// The user's Downloads folder; see [`default_download_dir`].
+fn user_download_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        directories::UserDirs::new()
+            .and_then(|u| u.download_dir().map(Path::to_path_buf))
+            .or_else(|| home_dir().map(|h| h.join("Downloads")))
     }
-    ".".into()
+    #[cfg(target_os = "macos")]
+    {
+        home_dir().map(|h| h.join("Downloads"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        xdg_download_dir()
+    }
+}
+
+/// True when `download_dir` is relative, so `pull` resolves it against the
+/// directory each command runs in (`.` was the default before 0.3.0).
+/// `doctor` warns about it.
+#[must_use]
+pub fn download_dir_is_relative(download_dir: &str) -> bool {
+    let d = download_dir.trim();
+    !d.is_empty() && !d.starts_with('~') && Path::new(d).is_relative()
 }
 
 /// The XDG download directory: `XDG_DOWNLOAD_DIR` from the environment or
 /// `user-dirs.dirs`, else `~/Downloads`. `None` without a home directory.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn xdg_download_dir() -> Option<PathBuf> {
     let home = home_dir()?;
     let resolve = |v: &str| -> PathBuf {
@@ -2771,6 +2809,54 @@ dir = "/mnt/nas/tensorseed"
         });
     }
 
+    #[test]
+    fn download_dir_default_is_downloads_and_explicit_values_win() {
+        Jail::expect_with(|jail| {
+            let home = jail.directory().to_path_buf();
+            jail.set_env("HOME", home.to_str().unwrap());
+            jail.set_env("USERPROFILE", home.to_str().unwrap());
+            jail.set_env("XDG_DOWNLOAD_DIR", "");
+            jail.set_env("XDG_CONFIG_HOME", home.join("cfg").to_str().unwrap());
+            jail.set_env("FLATPAK_ID", "");
+            let default = General::default().download_dir;
+            assert!(Path::new(&default).is_absolute(), "{default}");
+            assert!(default.ends_with("tensorseed"), "{default}");
+            assert!(!download_dir_is_relative(&default));
+            #[cfg(not(windows))]
+            assert_eq!(default, home.join("Downloads/tensorseed").to_string_lossy());
+
+            // No download_dir in the file: the default.
+            jail.create_file("none.toml", "[general]\nmax_concurrent_downloads = 2\n")?;
+            let cfg = load(&jail.directory().join("none.toml")).unwrap();
+            assert_eq!(cfg.general.download_dir, native_string(&default));
+
+            // Set explicitly, including the old ".": kept as written.
+            for v in [".", "models", "/srv/models", "~/models"] {
+                jail.create_file("set.toml", &format!("[general]\ndownload_dir = {v:?}\n"))?;
+                let cfg = load(&jail.directory().join("set.toml")).unwrap();
+                assert_eq!(cfg.general.download_dir, native_string(v), "{v}");
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn relative_download_dirs_are_flagged() {
+        for d in [".", "./", "models", "./models", "$HOME/models"] {
+            assert!(download_dir_is_relative(d), "{d}");
+        }
+        for d in ["", "~/models", "~\\models"] {
+            assert!(!download_dir_is_relative(d), "{d}");
+        }
+        #[cfg(not(windows))]
+        assert!(!download_dir_is_relative("/srv/models"));
+        #[cfg(windows)]
+        {
+            assert!(!download_dir_is_relative("C:\\models"));
+            assert!(!download_dir_is_relative("C:/models"));
+        }
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn flatpak_uses_host_config_dir_and_download_dir() {
@@ -2782,7 +2868,11 @@ dir = "/mnt/nas/tensorseed"
             jail.set_env("FLATPAK_ID", "");
             assert!(!in_flatpak());
             assert_eq!(config_dir(), PathBuf::from("/sandbox/config"));
-            assert_eq!(General::default().download_dir, ".");
+            // Outside a Flatpak the default is the same folder.
+            assert_eq!(
+                General::default().download_dir,
+                home.join("Downloads/tensorseed").to_string_lossy()
+            );
 
             jail.set_env("FLATPAK_ID", "dev.tensorseed.desktop");
             jail.set_env("HOST_XDG_CONFIG_HOME", "");

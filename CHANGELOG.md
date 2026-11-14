@@ -62,6 +62,18 @@
   the release machine (`TAURI_SIGNING_PRIVATE_KEY` and
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), never in CI;
   `pnpm --dir desktop build:unsigned` builds without a key.
+- Default `general.download_dir` is now a `tensorseed` folder in your
+  Downloads folder instead of `.`, so a pull no longer lands wherever the
+  command happened to run: `~/Downloads/tensorseed` on Linux (the XDG
+  download directory, the folder the Flatpak can already see, so a
+  Flatpak and a host CLI sharing one config use the same copies),
+  `%USERPROFILE%\Downloads\tensorseed` on Windows (the Downloads known
+  folder, so a moved Downloads folder is followed), and
+  `~/Downloads/tensorseed` on macOS. A `download_dir` set in the config is
+  used as written. `tensorseed doctor` warns when it is `.` or another
+  relative path, and copies pulled under the old default stay where they
+  are (move them, or reach them with `--dir` and `--out`). The example
+  config no longer sets it.
 - Workspace: `tensorseed-core` and `tensorseed-verify` declare
   `default-features = false` in `[workspace.dependencies]` and members
   that want the defaults ask for them, which Cargo 1.98 requires.

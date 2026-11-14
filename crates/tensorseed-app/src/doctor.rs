@@ -232,6 +232,9 @@ pub async fn run_with_config(cfg: &Config, opts: &Options) -> Vec<Check> {
     out.push(hf);
     out.extend(ports);
     let download = expand(&cfg.general.download_dir);
+    if let Some(c) = check_download_dir_setting(&cfg.general.download_dir) {
+        out.push(c);
+    }
     out.push(check_disk(&download, opts));
     out.push(check_writable_dir(
         "dir.download",
@@ -947,6 +950,38 @@ async fn check_ports(cfg: &Config, opts: &Options) -> Vec<Check> {
     out
 }
 
+/// A relative `general.download_dir` (such as `.`, the default before
+/// 0.3.0) resolves against the directory each command runs in, so pulls
+/// scatter and `verify` and Desktop miss copies made elsewhere. `None`
+/// when the setting is absolute or `~/`.
+fn check_download_dir_setting(download_dir: &str) -> Option<Check> {
+    if !crate::config::download_dir_is_relative(download_dir) {
+        return None;
+    }
+    let what = if matches!(download_dir.trim(), "." | "./" | ".\\") {
+        "the working directory".to_string()
+    } else {
+        format!("relative to the working directory ({download_dir:?})")
+    };
+    let default = crate::config::General::default().download_dir;
+    Some(
+        Check::new(
+            "config.download_dir",
+            "download dir setting",
+            Status::Warn,
+            format!(
+                "general.download_dir is {what}, so each pull lands under the directory the command runs in"
+            ),
+        )
+        .with_details(vec![
+            format!(
+                "The default is now {default}. Remove download_dir from the config to use it, or set an absolute path."
+            ),
+            "Copies already pulled stay where they are; move them, or pass --dir or --out to reach them.".to_string(),
+        ]),
+    )
+}
+
 /// Nearest existing ancestor of `p` (itself when it exists).
 fn existing_ancestor(p: &Path) -> Option<PathBuf> {
     let joined = if p.is_absolute() {
@@ -1329,6 +1364,25 @@ mod tests {
         assert_eq!(get("config").status, Status::Ok);
         assert_eq!(get("catalog.tensorseed").message, "skipped (offline)");
         assert_eq!(get("dir.download").status, Status::Ok);
+        assert!(!ids.contains(&"config.download_dir"), "{ids:?}");
+    }
+
+    #[test]
+    fn relative_download_dir_gets_a_hint() {
+        let c = check_download_dir_setting(".").unwrap();
+        assert_eq!(c.id, "config.download_dir");
+        assert_eq!(c.status, Status::Warn);
+        assert!(c.message.contains("the working directory"), "{}", c.message);
+        assert!(
+            c.details[0].contains("Remove download_dir"),
+            "{:?}",
+            c.details
+        );
+        let c = check_download_dir_setting("models").unwrap();
+        assert!(c.message.contains("\"models\""), "{}", c.message);
+        assert!(check_download_dir_setting("~/models").is_none());
+        let abs = std::env::temp_dir().join("models");
+        assert!(check_download_dir_setting(&abs.to_string_lossy()).is_none());
     }
 
     #[test]

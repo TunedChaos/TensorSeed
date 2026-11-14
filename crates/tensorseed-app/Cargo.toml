@@ -37,6 +37,10 @@ toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 
+# The Downloads known folder for the default download_dir.
+[target.'cfg(windows)'.dependencies]
+directories.workspace = true
+
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
 tempfile.workspace = true
