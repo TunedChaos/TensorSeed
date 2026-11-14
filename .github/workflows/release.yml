@@ -25,6 +25,37 @@ jobs:
         run: |
           cargo install --locked just cargo-zigbuild
           pip install ziglang
+      - name: Install nfpm
+        env:
+          # Pinned to the v2.49.0 GitHub release. Digests are the SHA-256
+          # lines for nfpm_2.49.0_Linux_{x86_64,arm64}.tar.gz in that
+          # release's checksums.txt.
+          NFPM_VERSION: "2.49.0"
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)
+              asset="Linux_x86_64"
+              sha256="2afaa5ffb5e3493402e31e7c67a5a1fb42133e3f66fc315ca0051934125561c7"
+              ;;
+            aarch64)
+              asset="Linux_arm64"
+              sha256="d4eee71839e92c68cbd3b101640bad32d2856fc551acae0635be9118e48c9d9c"
+              ;;
+            *)
+              echo "unsupported architecture $(uname -m) for nfpm" >&2
+              exit 1
+              ;;
+          esac
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          archive="nfpm_${NFPM_VERSION}_${asset}.tar.gz"
+          url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${archive}"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/$archive" "$url"
+          echo "${sha256}  $tmp/$archive" | sha256sum -c
+          tar -xzf "$tmp/$archive" -C "$tmp" nfpm
+          sudo install -m 0755 "$tmp/nfpm" /usr/local/bin/nfpm
+          nfpm --version
       - name: Checks
         run: just check-all
       - name: Targets
