@@ -1,12 +1,13 @@
 # Tensorseed signing keys
 
-Tensorseed uses two separate minisign (Ed25519) keys. They protect different
-things, live in different places, and are never interchangeable.
+Tensorseed uses three separate minisign (Ed25519) keys. They protect
+different things, live in different places, and are never interchangeable.
 
 | Key | Signs | Public key | Where the secret lives |
 |---|---|---|---|
 | Catalog publisher key (id `CE1E0E3D543DFFB8`) | Catalog entries, deltas, snapshots, heads, `mirrors.toml`, and the Chia anchor | `RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd` | The publishing host, because the weekly head re-sign and every catalog update need it |
 | Release key (id `F5D2D3C4C27D459D`) | `SHA256SUMS` of the release archives (`SHA256SUMS.minisig`) | `RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P` | Offline only, on the maintainer's workstation and an offline backup |
+| Desktop updater key (id `B81047C9B22BB400`) | Tensorseed Desktop update installers (the `.sig` files listed in `latest.json`) | `RWQAtCuyyUcQuHCA3dL0mjTjQ4yVF6m2VA7VrCQsnphGnFQUTqnx7oH+` | Offline only, on the release machine and an offline backup |
 
 ## Release public key
 
@@ -20,7 +21,24 @@ key is in [README.md](README.md), [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md),
 and [keys/tensorseed-release.pub](keys/tensorseed-release.pub); all copies
 must match. It is not the catalog publisher key (id `CE1E0E3D543DFFB8`).
 
-## Why two keys
+## Desktop updater public key
+
+```
+untrusted comment: minisign public key: B81047C9B22BB400
+RWQAtCuyyUcQuHCA3dL0mjTjQ4yVF6m2VA7VrCQsnphGnFQUTqnx7oH+
+```
+
+Tensorseed Desktop has this key compiled in (`plugins.updater.pubkey` in
+`desktop/src-tauri/tauri.conf.json`, the base64 form of
+[keys/tensorseed-desktop-updater.pub](keys/tensorseed-desktop-updater.pub))
+and installs an update only when its signature verifies against it. The
+private key was generated on the release machine and never leaves it;
+updates are signed there, not in CI (see "Releasing an update" in
+[desktop/README.md](desktop/README.md#releasing-an-update)). Changing this
+key means every installed Desktop needs a manual reinstall, so it is only
+replaced if it is compromised.
+
+## Why separate keys
 
 - **Smaller blast radius.** The catalog key has to sit on an online
   publishing host. If that host were compromised, an attacker could sign
@@ -30,8 +48,11 @@ must match. It is not the catalog publisher key (id `CE1E0E3D543DFFB8`).
 - **Different lifetimes.** The catalog key signs every week and is pinned in
   every client configuration; the release key signs a few times a year and
   can stay encrypted and offline in between.
-- **Independent rotation.** Either key can be replaced without touching the
-  other.
+- **Independent rotation.** Any key can be replaced without touching the
+  others.
+- **The updater key installs code.** An installed Desktop runs whatever
+  this key signs, without the user checking `SHA256SUMS`, so it is kept
+  apart from both other keys and used only for Desktop updates.
 
 The release tooling enforces the separation: `just sign` refuses a key whose
 id is the catalog key id `CE1E0E3D543DFFB8`.

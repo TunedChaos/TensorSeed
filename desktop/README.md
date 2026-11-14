@@ -8,7 +8,8 @@ with the same config, job state, and seeder as the `tensorseed` CLI. See
 Status: M3.2 shell. The window has four views: the followed catalogs and
 their entries, an entry page, the local copies on this machine, and the
 torrent settings. A tray icon shows what is running. Pull runs the CLI
-for now; verify and seed run in process. The updater is not wired.
+for now; verify and seed run in process. The AppImage, MSI, and NSIS
+builds update themselves (see Updates).
 
 ## What it does
 
@@ -165,8 +166,16 @@ development packages (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
 ```fish
 pnpm --dir desktop install
 pnpm --dir desktop check            # svelte-check, front end and ui/
-pnpm --dir desktop tauri build      # release binary plus .deb and AppImage
+pnpm --dir desktop build:unsigned   # release binary plus .deb and AppImage, no updater signatures
 ```
+
+`tauri build` with no flags also writes updater signatures, so it stops
+with "A public key has been found, but no private key" unless the updater
+key is set (see Releasing an update). `build:unsigned` passes
+`--config src-tauri/tauri.unsigned.conf.json`, which turns
+`createUpdaterArtifacts` off for that build only; use it for local, test,
+and CI builds. Extra arguments pass through, for example
+`pnpm --dir desktop build:unsigned --bundles appimage`.
 
 `pnpm --dir desktop tauri dev` runs against the Vite dev server. The app
 reads the same config as the CLI: `TENSORSEED_CONFIG`, else the default
@@ -189,7 +198,7 @@ NSIS on the first bundle build.
 
 ```powershell
 pnpm --dir desktop install --frozen-lockfile
-pnpm --dir desktop tauri build --bundles msi,nsis
+pnpm --dir desktop build:unsigned --bundles msi,nsis
 ```
 
 This makes `Tensorseed Desktop_<version>_x64_en-US.msi` and
@@ -232,6 +241,104 @@ SmartScreen warns on first run.
   M3.6 decision.
 - Bind interface is not supported on Windows, and the settings view
   disables it.
+
+## Updates
+
+Desktop checks for a new version by fetching one file,
+`https://github.com/TunedChaos/TensorSeed/releases/latest/download/latest.json`.
+Nothing else is sent: no identifiers, no usage data, and no telemetry.
+The check runs 10 seconds after start (Settings, Updates, "Check for
+updates when Desktop starts"; on by default) and whenever you press
+"Check for updates". The setting is stored in `desktop.json` in the app
+config directory (`~/.config/dev.tensorseed.desktop` on Linux,
+`%APPDATA%\dev.tensorseed.desktop` on Windows), not in
+`tensorseed.toml`.
+
+When a newer version is listed, Desktop shows its version and release
+notes and waits. Nothing downloads until you press "Install and
+restart". The installer is then downloaded, its signature is checked
+against the updater public key compiled into the app (id
+`B81047C9B22BB400`, also in `keys/tensorseed-desktop-updater.pub`), the
+signed version must match the announced one (`requireSignedVersion`), the
+seeder is stopped, and the update is installed:
+
+- **AppImage:** the AppImage file is replaced in place and Desktop
+  restarts.
+- **NSIS and MSI:** the installer runs in passive mode (a progress window,
+  no questions) and Desktop restarts. The MSI asks for elevation, as on a
+  first install.
+- **.deb and .rpm:** no self update. Settings says to update through your
+  package manager.
+- **Flatpak:** no self update. Settings says to update through Flatpak or
+  Flathub (`flatpak update`).
+- **Development builds** (`tauri dev`, plain `cargo build`) never check.
+
+A failed signature check, a version mismatch, or a missing entry for this
+build's installer type leaves the installed copy untouched and shows the
+error.
+
+## Releasing an update
+
+Updater signatures are made on the release machine, which holds the
+updater private key and its password. They are never made in CI, and
+the key never goes to a build host. CI and test builds use
+`build:unsigned` and need no key.
+
+1. **Build.** On Linux, on the release machine, with the key set, so
+   `tauri build` signs the AppImage as it builds it:
+
+   ```fish
+   set -x TAURI_SIGNING_PRIVATE_KEY ~/.tauri/tensorseed-desktop-updater.key  # a path, or the key text itself
+   read -s -P 'updater key password: ' -x TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+   pnpm --dir desktop tauri build --bundles appimage,deb
+   set -e TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+   ```
+
+   This writes `Tensorseed Desktop_<version>_amd64.AppImage` and
+   `Tensorseed Desktop_<version>_amd64.AppImage.sig`.
+
+   On Windows, build without the key (`build:unsigned --bundles
+   msi,nsis`), copy the `.msi` and `-setup.exe` to the release machine,
+   and sign them there, binding each signature to the version:
+
+   ```fish
+   read -s -P 'updater key password: ' -x TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+   for f in 'Tensorseed Desktop_0.3.1_x64-setup.exe' 'Tensorseed Desktop_0.3.1_x64_en-US.msi'
+       pnpm --dir desktop tauri signer sign -f ~/.tauri/tensorseed-desktop-updater.key --app-version 0.3.1 $f
+   end
+   set -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+   ```
+
+   Sign the exact files you upload: rebuilding changes the bytes and
+   breaks the signature.
+
+2. **Write `latest.json`.** `scripts/make-latest-json` reads the `.sig`
+   next to each installer, checks the signed version and file name,
+   verifies each signature against the public key in `tauri.conf.json`
+   with `minisign` (`--verify`), and writes the feed:
+
+   ```fish
+   scripts/make-latest-json --version 0.3.1 --notes-file notes.md --verify \
+       --appimage 'Tensorseed Desktop_0.3.1_amd64.AppImage' \
+       --nsis 'Tensorseed Desktop_0.3.1_x64-setup.exe' \
+       --msi 'Tensorseed Desktop_0.3.1_x64_en-US.msi' \
+       --out latest.json
+   ```
+
+   Download URLs default to the `v<version>` release on GitHub, with
+   spaces in file names turned into dots as GitHub does on upload
+   (`--base-url` changes the prefix). The entries are
+   `linux-x86_64-appimage`, `windows-x86_64-nsis`, and
+   `windows-x86_64-msi`, so each install type gets its own installer.
+
+3. **Publish.** Upload the installers, their `.sig` files, and the usual
+   `SHA256SUMS` and `SHA256SUMS.minisig` first, then `latest.json` last.
+   Desktop follows `releases/latest`, which GitHub points at the newest
+   release that is not a draft or a pre-release, so a pre-release never
+   reaches installed copies.
+
+Updater signatures only cover the in app update. The release key and
+`SHA256SUMS.minisig` still cover every download (see `RELEASE-KEY.md`).
 
 ## Inference serving
 
@@ -399,10 +506,6 @@ What a Flathub submission would still need (nothing has been submitted):
 
 ## Not done yet
 
-- Updater: deliberately absent. `tauri-plugin-updater` is added in M3.6
-  once the release owner has generated the updater key on the release
-  machine and its public key is committed (plan section 5, Updater). No
-  key is generated or stored here.
 - Pull runs the CLI as a subprocess, so there is no progress bar, pause,
   or cancel yet, and the CLI has to be installed. The in process pull is
   M3.3. Dataset verify also goes through the CLI.

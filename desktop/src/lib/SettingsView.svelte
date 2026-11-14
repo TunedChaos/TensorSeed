@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import { settingsCheck, settingsGet, settingsSet, type SettingsView, type TorrentSettings } from "./native";
   import { DAYS, expandDays, lines, validate } from "./settings";
+  import UpdatesCard from "./UpdatesCard.svelte";
 
   type NumKey = {
     [K in keyof TorrentSettings]: TorrentSettings[K] extends number ? K : never;
@@ -169,6 +170,8 @@
     <span class="label text-xs whitespace-normal {errors[k] ? 'text-error' : ''}">{errors[k] ?? hint}</span>
   </label>
 {/snippet}
+
+<UpdatesCard />
 
 <section class="flex min-w-0 flex-col gap-4" aria-labelledby="settings-title">
   <div class="bg-base-100 sticky -top-4 z-10 -mx-4 -mt-4 flex flex-col gap-2 px-4 pt-4 pb-2">

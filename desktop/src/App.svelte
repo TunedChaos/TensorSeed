@@ -8,6 +8,7 @@
   import LocalView from "./lib/LocalView.svelte";
   import SettingsView from "./lib/SettingsView.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
+  import UpdatePrompt from "./lib/UpdatePrompt.svelte";
   import { initialRoute, loadTheme, onDeepLink, saveTheme, type DeepLink } from "./lib/native";
   import { parseHash, routeHash, type View } from "./lib/router";
 
@@ -59,6 +60,8 @@
     <div class="flex-1"></div>
     <ThemeToggle load={loadTheme} save={saveTheme} />
   </header>
+
+  <UpdatePrompt />
 
   {#if linkError}
     <div class="alert alert-error m-4" role="alert">

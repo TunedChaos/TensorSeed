@@ -270,3 +270,49 @@ export function loadTheme(): ThemePreference {
 export function saveTheme(theme: ThemePreference): void {
   localStorage.setItem(THEME_KEY, theme);
 }
+
+/** `updater::Channel` in src-tauri/src/updater.rs. */
+export type UpdateChannel = "app-image" | "nsis" | "msi" | "deb" | "rpm" | "flatpak" | "mac-app" | "dev";
+
+/** `updater::Info`. */
+export type UpdateInfo = {
+  currentVersion: string;
+  channel: UpdateChannel;
+  selfUpdates: boolean;
+  elsewhere: string | null;
+  checkOnStart: boolean;
+};
+
+/** `updater::Available`. */
+export type UpdateAvailable = { currentVersion: string; version: string; notes: string; date: string | null };
+
+/** `updater::Progress`. */
+export type UpdateProgress = { downloaded: number; total: number | null; done: boolean };
+
+export function updateInfo(): Promise<UpdateInfo> {
+  return invoke<UpdateInfo>("update_info");
+}
+
+/** Fetch latest.json only; nothing is downloaded or installed. */
+export function updateCheck(): Promise<UpdateAvailable | null> {
+  return invoke<UpdateAvailable | null>("update_check");
+}
+
+/** Download, verify, install, and restart. Only after the user confirms. */
+export function updateInstall(version: string): Promise<void> {
+  return invoke<void>("update_install", { version });
+}
+
+export function updateSetCheckOnStart(enabled: boolean): Promise<void> {
+  return invoke<void>("update_set_check_on_start", { enabled });
+}
+
+/** Must match `UPDATE_AVAILABLE_EVENT` in src-tauri/src/updater.rs. */
+export function onUpdateAvailable(handler: (u: UpdateAvailable) => void): Promise<UnlistenFn> {
+  return listen<UpdateAvailable>("update://available", (e) => handler(e.payload));
+}
+
+/** Must match `UPDATE_PROGRESS_EVENT` in src-tauri/src/updater.rs. */
+export function onUpdateProgress(handler: (p: UpdateProgress) => void): Promise<UnlistenFn> {
+  return listen<UpdateProgress>("update://progress", (e) => handler(e.payload));
+}

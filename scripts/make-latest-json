@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026 Tuned Chaos
+"""Write the updater manifest (latest.json) for a Tensorseed Desktop release.
+
+Give it the signed updater artifacts that `pnpm tauri build` made with
+TAURI_SIGNING_PRIVATE_KEY set: each installer next to its `.sig` file.
+
+    scripts/make-latest-json --version 0.3.0 --notes-file notes.md \\
+        --appimage 'desktop/src-tauri/target/release/bundle/appimage/Tensorseed Desktop_0.3.0_amd64.AppImage' \\
+        --nsis 'win/Tensorseed Desktop_0.3.0_x64-setup.exe' \\
+        --msi 'win/Tensorseed Desktop_0.3.0_x64_en-US.msi' \\
+        --verify --out latest.json
+
+Platform keys are `linux-x86_64-appimage`, `windows-x86_64-nsis`, and
+`windows-x86_64-msi`, so each Windows installer updates to the same kind.
+URLs point at the release assets of tag v<version> (GitHub stores a space
+in an asset name as a period; this script does the same). Every signature
+must carry `version:<version>` in its trusted comment, which Desktop
+requires (`requireSignedVersion`). With --verify, every signature is also
+checked against the public key in desktop/src-tauri/tauri.conf.json with
+the minisign command.
+
+Needs only the Python standard library (and minisign for --verify). It
+never reads or needs a private key.
+"""
+
+import argparse
+import base64
+import datetime
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+CONF = ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
+REPO_RELEASES = "https://github.com/TunedChaos/TensorSeed/releases/download"
+
+
+def fail(msg):
+    print(f"make-latest-json: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_sig(path):
+    sig_path = pathlib.Path(str(path) + ".sig")
+    if not sig_path.is_file():
+        fail(f"{sig_path} is missing; build with TAURI_SIGNING_PRIVATE_KEY set")
+    sig_b64 = sig_path.read_text().strip()
+    try:
+        text = base64.b64decode(sig_b64, validate=True).decode()
+    except Exception:
+        fail(f"{sig_path} is not a Tauri updater signature (base64 minisign)")
+    return sig_b64, text
+
+
+def trusted_fields(sig_text):
+    for line in sig_text.splitlines():
+        if line.startswith("trusted comment: "):
+            rest = line[len("trusted comment: "):]
+            return dict(f.split(":", 1) for f in rest.split("\t") if ":" in f)
+    return {}
+
+
+def asset_name(path):
+    return pathlib.Path(path).name.replace(" ", ".")
+
+
+def verify(path, sig_text, pubkey_text):
+    if shutil.which("minisign") is None:
+        fail("--verify needs the minisign command on PATH")
+    with tempfile.TemporaryDirectory() as d:
+        sig_file = os.path.join(d, "sig")
+        key_file = os.path.join(d, "key.pub")
+        pathlib.Path(sig_file).write_text(sig_text)
+        pathlib.Path(key_file).write_text(pubkey_text)
+        r = subprocess.run(
+            ["minisign", "-Vm", str(path), "-x", sig_file, "-p", key_file, "-q"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            why = (r.stderr.strip() or r.stdout.strip() or "signature verification failed").replace("\n", " ")
+            key_id = pubkey_text.splitlines()[0].rsplit(" ", 1)[-1]
+            fail(f"{path}: signature does not verify against key {key_id}: {why}")
+
+
+def load_pubkey(arg):
+    """Minisign public key text from --pubkey, else from tauri.conf.json."""
+    raw = json.loads(CONF.read_text())["plugins"]["updater"]["pubkey"] if arg is None else arg
+    if arg is not None and pathlib.Path(arg).is_file():
+        raw = pathlib.Path(arg).read_text()
+    raw = raw.strip()
+    if raw.startswith("untrusted comment:"):
+        return raw + "\n"
+    try:
+        text = base64.b64decode(raw, validate=True).decode()
+    except (ValueError, UnicodeDecodeError):
+        fail("--pubkey is neither a public key file nor a base64 public key")
+    if not text.startswith("untrusted comment:"):
+        fail("the public key does not decode to a minisign public key")
+    return text
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--version", required=True, help="release version, without the v")
+    ap.add_argument("--notes-file", help="release notes shown in Desktop (plain text or Markdown)")
+    ap.add_argument("--notes", help="release notes as a string")
+    ap.add_argument("--pub-date", help="RFC 3339 date (default: now, UTC)")
+    ap.add_argument("--base-url", help=f"where the assets live (default: {REPO_RELEASES}/v<version>)")
+    ap.add_argument("--appimage", help="the Linux AppImage")
+    ap.add_argument("--nsis", help="the Windows NSIS setup.exe")
+    ap.add_argument("--msi", help="the Windows MSI")
+    ap.add_argument("--verify", action="store_true", help="check every signature with minisign against the committed public key")
+    ap.add_argument("--pubkey", help="public key to verify with instead of the committed one: a .pub file (Tauri base64 or minisign text) or the base64 string")
+    ap.add_argument("--out", default="latest.json", help="output file (default: latest.json)")
+    a = ap.parse_args()
+
+    version = a.version.lstrip("v")
+    if a.notes and a.notes_file:
+        fail("give --notes or --notes-file, not both")
+    notes = pathlib.Path(a.notes_file).read_text() if a.notes_file else (a.notes or "")
+    pub_date = a.pub_date or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    base = (a.base_url or f"{REPO_RELEASES}/v{version}").rstrip("/")
+
+    pubkey_text = None
+    if a.verify:
+        pubkey_text = load_pubkey(a.pubkey)
+
+    targets = [("linux-x86_64-appimage", a.appimage), ("windows-x86_64-nsis", a.nsis), ("windows-x86_64-msi", a.msi)]
+    platforms = {}
+    for key, path in targets:
+        if not path:
+            continue
+        if not pathlib.Path(path).is_file():
+            fail(f"{path} does not exist")
+        sig_b64, sig_text = read_sig(path)
+        fields = trusted_fields(sig_text)
+        if fields.get("version", "").lstrip("v") != version:
+            fail(f"{path}.sig was signed for version {fields.get('version')!r}, not {version!r}")
+        if fields.get("file") and fields["file"] != pathlib.Path(path).name:
+            fail(f"{path}.sig was made for {fields['file']!r}")
+        if a.verify:
+            verify(path, sig_text, pubkey_text)
+        platforms[key] = {"signature": sig_b64, "url": f"{base}/{urllib.parse.quote(asset_name(path))}"}
+    if not platforms:
+        fail("give at least one of --appimage, --nsis, --msi")
+
+    doc = {"version": version, "notes": notes, "pub_date": pub_date, "platforms": platforms}
+    pathlib.Path(a.out).write_text(json.dumps(doc, indent=2) + "\n")
+    print(f"wrote {a.out}: {version}, {', '.join(platforms)}")
+
+
+if __name__ == "__main__":
+    main()

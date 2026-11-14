@@ -49,6 +49,19 @@
   later MSI install from reusing the old NSIS folder, and deletes the
   WebView2 profile when "Delete the application data" is ticked. Updates
   keep both. Config, data, pulled copies, and mirrors are never touched.
+- Tensorseed Desktop updates: the AppImage, MSI, and NSIS builds check
+  `latest.json` on the latest GitHub release at start (can be turned off
+  in Settings) and from **Check for updates**, show the new version and
+  its notes, and install only after you confirm, once the installer's
+  signature verifies against the updater key (id `B81047C9B22BB400`,
+  `keys/tensorseed-desktop-updater.pub`) and is bound to the announced
+  version. The check fetches that one file and sends no telemetry. .deb,
+  .rpm, and Flatpak installs never self update; Settings points to the
+  package manager or Flathub instead. `scripts/make-latest-json` builds
+  and verifies the feed from the signed installers. Updates are signed on
+  the release machine (`TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), never in CI;
+  `pnpm --dir desktop build:unsigned` builds without a key.
 - Workspace: `tensorseed-core` and `tensorseed-verify` declare
   `default-features = false` in `[workspace.dependencies]` and members
   that want the defaults ask for them, which Cargo 1.98 requires.
@@ -68,8 +81,8 @@
   window. Pull runs the `tensorseed` CLI for now; verify and seed run in
   process, one seeder per machine (Desktop will not start a second one
   next to a running `serve`). Linux packages get a desktop file with
-  `%u` and `MimeType=x-scheme-handler/tensorseed`. The updater stays
-  off. See `desktop/README.md`.
+  `%u` and `MimeType=x-scheme-handler/tensorseed`. See
+  `desktop/README.md`.
 - Tensorseed Desktop on Windows: `pnpm --dir desktop tauri build
   --bundles msi,nsis` makes unsigned MSI (per machine) and NSIS (per
   user) installers, tested on Windows 11 (install, deep links, single

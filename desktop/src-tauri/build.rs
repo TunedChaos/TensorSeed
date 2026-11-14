@@ -20,6 +20,10 @@ fn main() {
             "seeds_resume",
             "status",
             "initial_route",
+            "update_info",
+            "update_check",
+            "update_install",
+            "update_set_check_on_start",
         ]),
     ))
     .expect("failed to run the Tauri build script");

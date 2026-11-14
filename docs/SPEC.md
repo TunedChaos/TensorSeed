@@ -1373,7 +1373,7 @@ Design only in this revision; 0.3.0 comes after 0.2.0. Hugging Face models and d
 - The 0.2.0 CLI .deb and .rpm stay CLI-only: they must not start pulling in a webview or a tray. A Desktop package may depend on the CLI package, or bundle the CLI binary, but the CLI artifact itself stays GUI-free.
 - There is no macOS CLI build yet; a macOS Desktop build is not part of this plan until that changes.
 - The Desktop code stays portable (platform specifics behind `cfg` gates) so macOS can be added later, but macOS is not a 0.3.0 release target.
-- Updates: Desktop includes the Tauri in-app updater, verifying update signatures with a dedicated updater key (separate from the release key) against a static feed on tensorseed.dev. The app sends no telemetry.
+- Updates: Desktop includes the Tauri in-app updater, verifying update signatures with a dedicated updater key (separate from the release key) against a static `latest.json` attached to the latest GitHub release. Only the AppImage, MSI, and NSIS builds self update; .deb, .rpm, and Flatpak installs update through their package manager or Flathub. The app sends no telemetry.
 
 **Order.** 0.3.0 starts after the 0.2.0 explorer UI exists, so Desktop can reuse it. CLI packaging and the `gui` launcher stub can be designed earlier, but the app itself is a 0.3.0 milestone.
 

@@ -9,7 +9,9 @@
 //! No telemetry: the only network requests are the catalog, mirror, and
 //! chain check requests `tensorseed-app` makes when the user syncs, the
 //! BitTorrent swarm when the user seeds, and a probe of the local
-//! `tensorseed serve` health endpoint (`serve.health_listen`).
+//! `tensorseed serve` health endpoint (`serve.health_listen`), and the
+//! update check in [`updater`] (one GET of `latest.json`, at start when
+//! enabled and when the user asks, then the installer once they confirm).
 
 pub mod commands;
 pub mod copies;
@@ -18,6 +20,7 @@ mod platform;
 pub mod seeder;
 pub mod status;
 mod tray;
+pub mod updater;
 
 use std::sync::Mutex;
 
@@ -84,7 +87,9 @@ pub fn run() {
     let builder = platform::single_instance(tauri::Builder::default());
     let app = builder
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(seeder::Seeder::default())
+        .manage(updater::Pending::default())
         .manage(jobs::Jobs::default())
         .manage(InitialLink(Mutex::new(initial)))
         .invoke_handler(tauri::generate_handler![
@@ -102,6 +107,10 @@ pub fn run() {
             commands::seeds_resume,
             commands::status,
             commands::initial_route,
+            updater::update_info,
+            updater::update_check,
+            updater::update_install,
+            updater::update_set_check_on_start,
         ])
         .setup(|app| {
             platform::register_deep_links(app);
@@ -123,6 +132,7 @@ pub fn run() {
             if let Err(e) = tray::build(app) {
                 tracing::warn!("no system tray: {e}");
             }
+            updater::spawn_startup_check(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

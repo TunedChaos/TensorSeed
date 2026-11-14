@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:unsigned": "tauri build --config src-tauri/tauri.unsigned.conf.json"
   },
   "engines": {
     "pnpm": ">=9"

@@ -42,10 +42,8 @@ tokio = { version = "1", features = ["sync", "time", "process", "io-util", "macr
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# TODO(M3.6): tauri-plugin-updater lands with packaging, once the release
-# owner has generated the updater key on the release machine and its public
-# key is committed (docs/plans/0.3.0-desktop.md, section 5, Updater). Until
-# then the app has no updater and makes no update requests.
+# Self updates for the AppImage, MSI, and NSIS builds (src/updater.rs).
+tauri-plugin-updater = "2"
 
 # Deep links on Linux and Windows start a second process; single instance
 # forwards the URL to the running window instead. macOS delivers the URL to
@@ -67,6 +65,7 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 
 [dev-dependencies]
+base64 = "0.23"
 tempfile = "3"
 
 [profile.release]
