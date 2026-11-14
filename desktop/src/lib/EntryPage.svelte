@@ -13,7 +13,9 @@
     type EntryArgs,
     type EntryPage,
     type JobEvent,
+    type VerifyMode,
   } from "./native";
+  import { copyBadge, fileCount } from "./copy";
 
   let { entry }: { entry: EntryArgs } = $props();
 
@@ -59,7 +61,13 @@
   function apply(e: JobEvent) {
     if (e.line !== null) log = [...log.slice(-499), e.line];
     if (e.state !== "running") {
-      result = { ok: e.state === "ok", text: e.message ?? e.state };
+      let text = e.message ?? e.state;
+      // A catalog check of a partial or other revision copy fails by design;
+      // say that it is about this copy, not the catalog entry.
+      const st = page?.local.status;
+      if (e.state !== "ok" && job?.kind === "verify-catalog" && st && st.kind !== "complete")
+        text = `This local copy does not match the full catalog entry (${st.summary}). The catalog entry itself is not affected. ${text}`;
+      result = { ok: e.state === "ok", text };
       job = null;
       load(false);
     }
@@ -74,13 +82,18 @@
     return () => unlisten?.();
   });
 
-  async function start(kind: "pull" | "verify") {
+  async function start(kind: "pull" | "verify" | "complete", mode: VerifyMode = "auto") {
     result = null;
     log = [];
     early = [];
     try {
-      const id = kind === "pull" ? await pullStart(entry) : await verifyStart(entry);
-      job = { id, kind };
+      let id: number;
+      if (kind === "pull") id = await pullStart(entry);
+      // Pull the catalog entry at this copy's commit into the same folder:
+      // files already present are kept, only the missing ones download.
+      else if (kind === "complete") id = await pullStart({ ...entry, revision: page?.local.status?.catalogCommit ?? entry.revision });
+      else id = await verifyStart(entry, mode);
+      job = { id, kind: kind === "verify" && mode === "catalog" ? "verify-catalog" : kind };
       const mine = early.filter((e) => e.job === id);
       early = [];
       for (const e of mine) if (job) apply(e);
@@ -109,6 +122,8 @@
       .sort((a, b) => a.path.localeCompare(b.path)),
   );
   let localMatches = $derived(page?.local.commit && m ? page.local.commit === m.hf_commit : null);
+  let copy = $derived(page?.local.status ?? null);
+  let badge = $derived(copyBadge(copy));
   let busy = $derived(job !== null || seeding);
 
   function chainLabel(p: EntryPage): { cls: string; text: string; detail?: string } {
@@ -147,7 +162,13 @@
       title={page && !page.cliFound ? "Install the tensorseed CLI (or set TENSORSEED_CLI): Desktop runs it for pulls" : "Download and verify every file"}
       onclick={() => start("pull")}
     >{page?.local.pulled ? "Pull again" : "Pull"}</button>
-    <button type="button" class="btn btn-sm" disabled={busy || !page?.local.pulled} onclick={() => start("verify")}>Verify</button>
+    <button
+      type="button"
+      class="btn btn-sm"
+      disabled={busy || !page?.local.pulled}
+      title={copy?.verifyDefault === "record" ? "Check this copy against its own pull record" : "Check every file against the signed manifest"}
+      onclick={() => start("verify")}
+    >Verify</button>
     <button
       type="button"
       class="btn btn-sm"
@@ -172,7 +193,7 @@
     <section aria-label="Job output">
       <h3 class="mb-1 font-semibold">
         {#if job}<span class="loading loading-spinner loading-xs" aria-hidden="true"></span>{/if}
-        {job ? (job.kind === "pull" ? "Pulling" : "Verifying") : "Output"}
+        {job ? (job.kind === "verify" || job.kind === "verify-catalog" ? "Verifying" : "Pulling") : "Output"}
       </h3>
       <pre class="bg-base-200 rounded-box max-h-64 overflow-auto p-2 text-xs" data-testid="job-log">{log.join("\n")}</pre>
     </section>
@@ -240,16 +261,46 @@
           <h3 id="local-h" class="card-title text-base">This machine</h3>
           <p class="text-xs break-all"><code>{page.local.dir}</code></p>
           {#if page.local.pulled}
+            {#if badge && copy}
+              <p class="flex flex-wrap items-center gap-1" data-testid="copy-status">
+                <span class="badge {badge.cls} badge-sm">{badge.text}</span>
+                <span class="text-xs">{copy.summary}</span>
+              </p>
+            {/if}
             <p class="text-sm">
               Pulled {page.local.pulledAt ? new Date(page.local.pulledAt).toLocaleString() : ""},
-              {page.local.files} files, {formatBytes(page.local.bytes)}{page.local.skipped ? `, ${page.local.skipped} skipped` : ""}
+              {fileCount(page.local.files)}, {formatBytes(page.local.bytes)} on disk{page.local.skipped ? `, ${page.local.skipped} skipped` : ""}
             </p>
             <p class="text-xs">
-              Commit <code>{shortHex(page.local.commit ?? "")}</code>
-              {#if localMatches === true}<span class="badge badge-success badge-sm">latest</span>
-              {:else if localMatches === false}<span class="badge badge-warning badge-sm">older than the catalog</span>{/if}
-              {#if page.local.signed}<span class="badge badge-sm">signed pull</span>{/if}
+              This copy's commit <code title={page.local.commit ?? ""}>{shortHex(page.local.commit ?? "")}</code>
+              {#if localMatches === true}<span class="badge badge-success badge-sm">same as the catalog entry</span>
+              {:else if localMatches === false}<span class="badge badge-warning badge-sm">other revision than the catalog entry</span>{/if}
+              {#if page.local.signed}<span class="badge badge-sm">signed pull</span>
+              {:else if page.local.source}<span class="badge badge-ghost badge-sm">from {page.local.source}</span>{/if}
             </p>
+            {#if copy && copy.kind !== "complete" && copy.kind !== "unchecked"}
+              <p class="text-xs opacity-80">
+                Verify checks this copy against its own pull record. It says nothing about the catalog entry, which keeps its own signature and anchor status.
+              </p>
+              <div class="flex flex-wrap gap-2">
+                {#if copy.canComplete}
+                  <button
+                    type="button"
+                    class="btn btn-xs btn-primary"
+                    disabled={busy || !page.cliFound || page.takenDown}
+                    title="Pull the {copy.missingFiles} missing files from the signed catalog into this folder; files already here are kept"
+                    onclick={() => start("complete")}
+                  >Complete this copy</button>
+                {/if}
+                <button
+                  type="button"
+                  class="btn btn-xs"
+                  disabled={busy || !m || page.manifestSource !== "catalog"}
+                  title="Check every file of the signed catalog entry; missing files are reported"
+                  onclick={() => start("verify", "catalog")}
+                >Verify against catalog</button>
+              </div>
+            {/if}
             <p class="text-xs">
               {page.local.seeding ? "Seeding from Desktop." : page.local.hasTorrent ? "Has a torrent; ready to seed." : "No torrent; cannot seed."}
             </p>

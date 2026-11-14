@@ -5945,6 +5945,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-deep-link",
  "tauri-plugin-single-instance",
+ "tempfile",
  "tensorseed-app",
  "tensorseed-catalog",
  "tensorseed-core",

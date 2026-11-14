@@ -28,8 +28,20 @@ for now; verify and seed run in process. The updater is not wired.
     `TENSORSEED_CLI`, next to the Desktop binary, `PATH`, `/usr/bin`,
     `/usr/local/bin`, `~/.local/bin`, then `~/.cargo/bin`. An in process
     pull with progress events is M3.3.
-  - **Verify** checks a local model copy natively against its signed
-    manifest (datasets go through `tensorseed verify` for now).
+  - **Verify** checks a local model copy natively (datasets go through
+    `tensorseed verify` for now). A complete signed copy is checked
+    against the signed catalog manifest; any other copy is checked against
+    its own pull record (`.tensorseed/pull.json`) by default, and
+    **Verify against catalog** is offered next to it.
+- **Copy status.** The local copies view and the entry page label each
+  copy as complete, partial (a file selection or a subset manifest),
+  unsigned (pulled from a manifest file or URL, or Hugging Face), or at a
+  different revision than the catalog entry, with a one line reason
+  such as "Partial copy: 1 of 9 files, not from the signed catalog", and
+  show the copy's own commit, file count, and size on disk. The label
+  describes the copy only: the catalog entry keeps its own signature and
+  anchor status. **Complete this copy** pulls the missing files from the
+  signed catalog into the same folder, keeping the files already there.
   - **Seed** starts the in process torrent engine on the pulled copy with
     the `[torrent]` settings, including the caps, schedule, and stop
     rules. One seeder per machine: if `tensorseed serve` answers on its
@@ -129,8 +141,8 @@ looked and exits 1.
   `initial_route`). `build.rs` declares them and
   `capabilities/default.json` allows exactly those plus event listening.
 - `src-tauri/src/seeder.rs` (in process engine), `jobs.rs` (pull and
-  verify jobs), `status.rs` (what the tray and status bar show),
-  `tray.rs`.
+  verify jobs), `copies.rs` (copy status and the pull record check),
+  `status.rs` (what the tray and status bar show), `tray.rs`.
 - `src-tauri/src/platform.rs`: platform specific wiring behind
   `cfg(target_os = ...)` with portable defaults, so macOS can be added
   later. 0.3.0 release targets are Linux and Windows only.

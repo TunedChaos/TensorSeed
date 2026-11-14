@@ -66,6 +66,9 @@ all = { level = "warn", priority = -1 }
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 strip = "symbols"
 lto = "thin"

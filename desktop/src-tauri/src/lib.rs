@@ -12,6 +12,7 @@
 //! `tensorseed serve` health endpoint (`serve.health_listen`).
 
 pub mod commands;
+pub mod copies;
 pub mod jobs;
 mod platform;
 pub mod seeder;

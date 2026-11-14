@@ -47,17 +47,38 @@ export function initialRoute(): Promise<DeepLink | null> {
   return invoke<DeepLink | null>("initial_route");
 }
 
+/** How a local copy compares with its catalog entry (`copies::CopyStatus`). */
+export type CopyStatus = {
+  kind: "commitMismatch" | "partial" | "unsigned" | "complete" | "unchecked";
+  partial: boolean;
+  unsigned: boolean;
+  commitMismatch: boolean;
+  presentFiles: number;
+  presentBytes: number;
+  catalogFiles: number | null;
+  catalogCommit: string | null;
+  missingFiles: number;
+  summary: string;
+  verifyDefault: "catalog" | "record";
+  canComplete: boolean;
+};
+
 export type LocalCopy = {
   repoType: RepoType;
   id: string;
   dir: string;
   pulled: boolean;
+  /** This copy's own commit, from its pull record. */
   commit: string | null;
   pulledAt: string | null;
   signed: boolean;
+  source: string | null;
+  /** Files and bytes this copy holds (skipped files not counted). */
   files: number;
   bytes: number;
+  recordFiles: number;
   skipped: number;
+  status: CopyStatus | null;
   hasTorrent: boolean;
   seeding: boolean;
   error: string | null;
@@ -184,8 +205,11 @@ export function pullStart(a: EntryArgs): Promise<number> {
   });
 }
 
-export function verifyStart(a: EntryArgs): Promise<number> {
-  return invoke<number>("verify_start", { repoType: a.repoType, id: a.id, catalog: a.catalog ?? null });
+/** `auto` checks a complete signed copy against the catalog and any other copy against its own pull record. */
+export type VerifyMode = "auto" | "record" | "catalog";
+
+export function verifyStart(a: EntryArgs, mode: VerifyMode = "auto"): Promise<number> {
+  return invoke<number>("verify_start", { repoType: a.repoType, id: a.id, catalog: a.catalog ?? null, mode });
 }
 
 export function seedStart(a: EntryArgs): Promise<string> {

@@ -317,6 +317,96 @@ pub fn start_pull(
     Ok(job)
 }
 
+/// Re-hash a copy against its own pull record (`copies::verify_record`).
+/// Used by default for partial, unsigned, and other revision copies: it
+/// says whether the copy still holds what it was pulled with, and does not
+/// judge the catalog entry.
+pub fn start_verify_record(
+    app: AppHandle,
+    jobs: Jobs,
+    repo: tensorseed_core::keys::RepoRef,
+    dir: PathBuf,
+    record: tensorseed_app::pull::PullRecord,
+) -> u64 {
+    let ty = repo.repo_type.to_string();
+    let mut ev = jobs.begin(JobKind::Verify, &ty, &repo.id);
+    let job = ev.job;
+    ev.line = Some(format!(
+        "verifying {} against its own pull record",
+        dir.display()
+    ));
+    emit(&app, &ev);
+    tauri::async_runtime::spawn(async move {
+        let d = dir.clone();
+        let r = tauri::async_runtime::spawn_blocking(move || {
+            crate::copies::verify_record(&d, &record, 4).map(|c| (c, record))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("verify task: {e}"))
+        .and_then(|r| r);
+        ev.line = None;
+        match r {
+            Ok((c, record)) => {
+                ev.message = Some(record_message(&c, &record));
+                ev.state = if c.failures.is_empty() {
+                    JobState::Ok
+                } else {
+                    JobState::Failed
+                };
+            }
+            Err(e) => {
+                ev.state = JobState::Failed;
+                ev.message = Some(format!("{e:#}"));
+            }
+        }
+        jobs.end(ev.job);
+        emit(&app, &ev);
+    });
+    job
+}
+
+/// Summary line for a record check. Says what was compared, so a pass is
+/// not read as a check against the signed catalog.
+fn record_message(
+    c: &crate::copies::RecordCheck,
+    record: &tensorseed_app::pull::PullRecord,
+) -> String {
+    let basis = if record.signed {
+        "its pull record (from a signed manifest)"
+    } else {
+        "its pull record (not from the signed catalog)"
+    };
+    if c.failures.is_empty() {
+        let mut msg = if c.ok == 1 {
+            format!("1 file matches {basis}")
+        } else {
+            format!("{} files match {basis}", c.ok)
+        };
+        if c.skipped > 0 {
+            msg.push_str(&format!("; {} not downloaded by choice", c.skipped));
+        }
+        if c.extra > 0 {
+            let noun = if c.extra == 1 { "file" } else { "files" };
+            msg.push_str(&format!("; {} extra {noun} not in the record", c.extra));
+        }
+        msg
+    } else {
+        let shown: Vec<&str> = c.failures.iter().take(5).map(String::as_str).collect();
+        let more = c.failures.len().saturating_sub(shown.len());
+        format!(
+            "{} of {} files this copy was pulled with do not match {basis}: {}{}",
+            c.failures.len(),
+            c.ok + c.failures.len(),
+            shown.join("; "),
+            if more > 0 {
+                format!("; and {more} more")
+            } else {
+                String::new()
+            }
+        )
+    }
+}
+
 /// Verify a local copy. Models verify natively against the signed
 /// manifest (`verify_copy`); datasets run `tensorseed verify`, which
 /// handles them, until that moves into the app crate too.
@@ -408,6 +498,36 @@ mod tests {
                 "--catalog".into(),
                 "main".into()
             ]
+        );
+    }
+
+    #[test]
+    fn record_messages_name_what_was_compared() {
+        let rec: tensorseed_app::pull::PullRecord = serde_json::from_value(serde_json::json!({
+            "schema": "ts.pull/1", "type": "model", "repo": "org/name",
+            "commit": "1".repeat(40), "source": "manifest-file", "signed": false,
+            "pulled_at": "2026-11-12T00:00:00Z", "files": [], "skipped": []
+        }))
+        .unwrap();
+        let ok = crate::copies::RecordCheck {
+            ok: 1,
+            skipped: 8,
+            failures: Vec::new(),
+            extra: 0,
+        };
+        assert_eq!(
+            record_message(&ok, &rec),
+            "1 file matches its pull record (not from the signed catalog); 8 not downloaded by choice"
+        );
+        let bad = crate::copies::RecordCheck {
+            ok: 0,
+            skipped: 0,
+            failures: vec!["a: missing".into()],
+            extra: 0,
+        };
+        assert_eq!(
+            record_message(&bad, &rec),
+            "1 of 1 files this copy was pulled with do not match its pull record (not from the signed catalog): a: missing"
         );
     }
 

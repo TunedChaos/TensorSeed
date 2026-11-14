@@ -14,6 +14,15 @@
   config), pulls default to `tensorseed` under the download directory,
   Desktop skips its runtime scheme registration, and the tray icon is
   written where the host can read it. Not published anywhere.
+- Tensorseed Desktop copy status: local copies and the entry page label
+  each copy as complete, partial, unsigned, or at another revision, with
+  a one line reason and the copy's own commit, file count, and size on
+  disk, instead of reporting a partial or unsigned copy as a failed
+  verification. Verify checks such a copy against its own pull record by
+  default, with **Verify against catalog** and **Complete this copy**
+  (pull the missing files from the signed catalog) next to it. The
+  catalog entry's signature and anchor status are never affected by a
+  local copy.
 - Tensorseed Desktop NSIS uninstaller: removes the
   `HKCU\Software\Tuned Chaos\Tensorseed Desktop` key it leaves behind
   (only its own values, so an installed MSI keeps its), which stops a

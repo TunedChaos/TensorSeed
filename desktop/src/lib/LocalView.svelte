@@ -5,6 +5,7 @@
   import { formatBytes, shortHex } from "@tensorseed/ui/format";
   import { localList, onStatus, type LocalList, type Status } from "./native";
   import { entryHash } from "./router";
+  import { copyBadge, fileCount } from "./copy";
 
   let data = $state<LocalList | null>(null);
   let error = $state<string | null>(null);
@@ -51,15 +52,17 @@
           <thead><tr><th>Repo</th><th>Commit</th><th class="text-right">Size</th><th>Pulled</th><th>Seeding</th></tr></thead>
           <tbody>
             {#each data.copies as c (c.dir)}
+              {@const b = copyBadge(c.status)}
               <tr>
                 <td>
                   <a class="link font-medium" href={entryHash(c.repoType, c.id)}>{c.id}</a>
                   {#if c.repoType === "dataset"}<span class="badge badge-xs ms-1">dataset</span>{/if}
-                  {#if c.signed}<span class="badge badge-success badge-xs ms-1">signed</span>{/if}
+                  {#if b}<span class="badge {b.cls} badge-xs ms-1" data-testid="copy-kind">{b.text}</span>{/if}
+                  {#if c.status && c.status.kind !== "complete"}<div class="text-xs opacity-80" data-testid="copy-summary">{c.status.summary}</div>{/if}
                   {#if c.error}<div class="text-error text-xs">{c.error}</div>{/if}
                 </td>
-                <td class="font-mono text-xs">{shortHex(c.commit ?? "")}</td>
-                <td class="text-right whitespace-nowrap">{formatBytes(c.bytes)}</td>
+                <td class="font-mono text-xs" title={c.commit ?? ""}>{shortHex(c.commit ?? "")}</td>
+                <td class="text-right whitespace-nowrap" title="What this copy holds on disk">{fileCount(c.files)}, {formatBytes(c.bytes)}</td>
                 <td class="text-xs">{c.pulledAt ? new Date(c.pulledAt).toLocaleString() : ""}</td>
                 <td class="text-xs">{seedState(c.dir) ?? (c.hasTorrent ? "ready" : "no torrent")}</td>
               </tr>

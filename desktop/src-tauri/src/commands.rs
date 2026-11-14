@@ -21,6 +21,7 @@ use tensorseed_app::pull::{
 use tensorseed_core::keys::{RepoRef, RepoType};
 use tensorseed_core::verify::META_DIR;
 
+use crate::copies::CatalogRef;
 use crate::jobs::Jobs;
 use crate::seeder::Seeder;
 use tensorseed_app::backend::{Backend, file_catalog, open_reader, pinned_key};
@@ -385,18 +386,24 @@ pub struct LocalCopy {
     dir: String,
     /// A finished pull is recorded (`.tensorseed/pull.json`).
     pulled: bool,
-    /// Pulled commit.
+    /// This copy's own commit (from its pull record).
     commit: Option<String>,
     /// When it was pulled (RFC 3339 UTC).
     pulled_at: Option<String>,
     /// The pull used a signature verified manifest.
     signed: bool,
-    /// Files in the revision.
+    /// `catalog`, `manifest-file`, `manifest-url`, or `huggingface`.
+    source: Option<String>,
+    /// Files this copy holds (downloaded, not skipped).
     files: usize,
-    /// Bytes in the revision.
+    /// Bytes of those files.
     bytes: u64,
+    /// Files the pull record lists, including skipped ones.
+    record_files: usize,
     /// Files deliberately not downloaded.
     skipped: usize,
+    /// How it compares with the catalog entry.
+    status: Option<crate::copies::CopyStatus>,
     /// It has a torrent, so it can be seeded.
     has_torrent: bool,
     /// The in-app seeder is seeding it.
@@ -405,11 +412,18 @@ pub struct LocalCopy {
     error: Option<String>,
 }
 
-async fn local_copy(seeder: &Seeder, repo_type: RepoType, id: &str, dir: &Path) -> LocalCopy {
+async fn local_copy(
+    seeder: &Seeder,
+    repo_type: RepoType,
+    id: &str,
+    dir: &Path,
+    catalog: Option<&CatalogRef>,
+) -> LocalCopy {
     let (record, error) = match read_pull_record(dir) {
         Ok(r) => (r, None),
         Err(e) => (None, Some(err(e))),
     };
+    let status = record.as_ref().map(|r| crate::copies::classify(r, catalog));
     LocalCopy {
         repo_type: repo_type.as_str(),
         id: record
@@ -420,11 +434,12 @@ async fn local_copy(seeder: &Seeder, repo_type: RepoType, id: &str, dir: &Path) 
         commit: record.as_ref().map(|r| r.commit.clone()),
         pulled_at: record.as_ref().map(|r| r.pulled_at.clone()),
         signed: record.as_ref().is_some_and(|r| r.signed),
-        files: record.as_ref().map_or(0, |r| r.files.len()),
-        bytes: record
-            .as_ref()
-            .map_or(0, |r| r.files.iter().map(|f| f.size).sum()),
+        source: record.as_ref().map(|r| r.source.clone()),
+        files: status.as_ref().map_or(0, |s| s.present_files),
+        bytes: status.as_ref().map_or(0, |s| s.present_bytes),
+        record_files: record.as_ref().map_or(0, |r| r.files.len()),
         skipped: record.as_ref().map_or(0, |r| r.skipped.len()),
+        status,
         has_torrent: dir
             .join(META_DIR)
             .join(tensorseed_app::torrents::PULLED_TORRENT)
@@ -466,6 +481,35 @@ fn scan_local(cfg: &Config) -> Vec<(RepoType, String, PathBuf)> {
     out
 }
 
+/// The signed catalog entry a copy is compared with, from the local
+/// catalog copy only (no network requests). Only the file backend keeps a
+/// local copy; other backends leave copies unchecked here.
+async fn offline_catalog_ref(
+    cfg: &Config,
+    ty: RepoType,
+    id: &str,
+    dir: &Path,
+) -> Option<CatalogRef> {
+    if cfg.catalog.backend != "file" {
+        return None;
+    }
+    let repo_id = read_pull_record(dir)
+        .ok()
+        .flatten()
+        .map_or_else(|| id.to_string(), |r| r.repo);
+    let repo = RepoRef::new(ty, repo_id).ok()?;
+    let r = catalog_manifest(cfg, &repo, None, true, None).await.ok()?;
+    catalog_ref(&r)
+}
+
+/// The comparison view of a resolved catalog manifest (signed only).
+fn catalog_ref(r: &tensorseed_app::pull::Resolved) -> Option<CatalogRef> {
+    r.signed.then(|| CatalogRef {
+        commit: r.manifest.hf_commit.clone(),
+        paths: r.manifest.files.iter().map(|f| f.path.clone()).collect(),
+    })
+}
+
 /// `local_list` result.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -484,7 +528,8 @@ pub async fn local_list(seeder: State<'_, Seeder>) -> Result<LocalList, String> 
     let (_, cfg) = load_config()?;
     let mut copies = Vec::new();
     for (ty, id, dir) in scan_local(&cfg) {
-        copies.push(local_copy(&seeder, ty, &id, &dir).await);
+        let catalog = offline_catalog_ref(&cfg, ty, &id, &dir).await;
+        copies.push(local_copy(&seeder, ty, &id, &dir, catalog.as_ref()).await);
     }
     Ok(LocalList {
         download_dir: config::expand(&cfg.general.download_dir)
@@ -601,7 +646,11 @@ pub async fn entry_show(
         }
         _ => None,
     };
-    let local = local_copy(&seeder, ty, &id, &dir).await;
+    let catalog_cmp = match (&resolved, source) {
+        (Some(r), Some("catalog")) => catalog_ref(r),
+        _ => None,
+    };
+    let local = local_copy(&seeder, ty, &id, &dir, catalog_cmp.as_ref()).await;
     let (manifest, signed, tombstone, taken_down, taken_down_in, commercial) = match resolved {
         Some(r) => {
             let covered = r
@@ -764,7 +813,13 @@ pub async fn pull_start(
     crate::jobs::start_pull(app, jobs.inner().clone(), path, &req).map_err(err)
 }
 
-/// Verify the local copy of an entry against its signed manifest.
+/// Verify the local copy of an entry.
+///
+/// `mode` is `catalog` (against the signed manifest), `record` (against
+/// the copy's own pull record), or `auto` (the default): a complete signed
+/// copy is checked against the catalog, and a partial, unsigned, or other
+/// revision copy against its own record, so it is not reported as a broken
+/// catalog entry.
 ///
 /// # Errors
 ///
@@ -776,13 +831,35 @@ pub async fn verify_start(
     repo_type: String,
     id: String,
     catalog: Option<String>,
+    mode: Option<String>,
 ) -> Result<u64, String> {
     let (path, cfg) = load_config()?;
     let ty = parse_type(&repo_type)?;
     let repo = RepoRef::new(ty, id).map_err(|e| e.to_string())?;
     let dir = default_out(&cfg, &repo);
-    if !dir.join(META_DIR).join("pull.json").is_file() {
+    let Some(record) = read_pull_record(&dir).map_err(err)? else {
         return Err(format!("{} has no finished pull to verify", dir.display()));
+    };
+    let use_record = match mode.as_deref().unwrap_or("auto") {
+        "record" => true,
+        "catalog" => false,
+        "auto" => {
+            let cmp = catalog_manifest(&cfg, &repo, None, true, catalog.as_deref())
+                .await
+                .ok()
+                .and_then(|r| catalog_ref(&r));
+            crate::copies::classify(&record, cmp.as_ref()).verify_default == "record"
+        }
+        other => return Err(format!("unknown verify mode {other:?}")),
+    };
+    if use_record {
+        return Ok(crate::jobs::start_verify_record(
+            app,
+            jobs.inner().clone(),
+            repo,
+            dir,
+            record,
+        ));
     }
     crate::jobs::start_verify(app, jobs.inner().clone(), path, cfg, repo, dir, catalog).map_err(err)
 }
