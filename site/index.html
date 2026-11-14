@@ -161,6 +161,45 @@ coin_api_urls = ["https://api.coinset.org"]</code></pre>
     </section>
 
     <section>
+      <h2 id="inference">Serve inference (optional)</h2>
+      <p>
+        <code>tensorseed serve-inference</code> serves a verified copy
+        through an OpenAI compatible engine, and
+        <code>tensorseed sign-responses</code> puts a signing proxy in
+        front of one. The engine is not part of Tensorseed: install it
+        separately. Engines are large, need builds that match your GPU,
+        and update often, so they come from their own projects.
+        Pulling, verifying, and seeding never need one.
+      </p>
+      <ul>
+        <li><strong>llama.cpp</strong> (<code>llama-server</code>) serves
+          GGUF models. Install it with <code>winget install llama.cpp</code>
+          on Windows, <code>brew install llama.cpp</code> on macOS or Linux,
+          your distribution's package, or an archive from the
+          <a href="https://github.com/ggml-org/llama.cpp/releases">llama.cpp releases page</a>.</li>
+        <li><strong>vLLM</strong> (<code>vllm</code>) serves safetensors
+          models. Install it with <code>pip install vllm</code> in a Python
+          virtual environment. It needs Linux and a supported GPU (on
+          Windows, use WSL 2).</li>
+      </ul>
+      <p>
+        Tensorseed finds the engine on <code>PATH</code>, or at
+        <code>inference.llama_server</code> or <code>inference.vllm</code>
+        in the config:
+      </p>
+      <pre><code>[inference]
+llama_server = "/opt/llama.cpp/bin/llama-server"   # "" = llama-server on PATH
+vllm = "~/vllm-env/bin/vllm"                      # "" = vllm on PATH</code></pre>
+      <p>
+        Without an engine, <code>serve-inference</code> stops with
+        "llama.cpp is not installed" (or "vLLM is not installed"), the
+        install options, and a link to the
+        <a href="https://github.com/TunedChaos/TensorSeed/blob/main/docs/SELL-INFERENCE.md#3-install-an-inference-engine">inference guide</a>.
+        Tensorseed Desktop does not serve inference yet; use the CLI.
+      </p>
+    </section>
+
+    <section>
       <h2>Verify a release</h2>
       <p>
         Release archives ship with <code>SHA256SUMS</code> and

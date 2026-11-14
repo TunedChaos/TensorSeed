@@ -250,7 +250,7 @@ pub async fn run_with_config(cfg: &Config, opts: &Options) -> Vec<Check> {
 /// `[inference]`, when configured: runtime binaries, the listen port, and
 /// the upstream API key variable (its value is never shown).
 pub fn check_inference(inf: &crate::inference::InferenceConfig) -> Vec<Check> {
-    use crate::inference::{Runtime, find_binary};
+    use crate::inference::{ENGINE_DOCS_URL, Runtime, find_binary};
     let mut out = Vec::new();
     let mut any = false;
     for rt in Runtime::ALL {
@@ -276,7 +276,7 @@ pub fn check_inference(inf: &crate::inference::InferenceConfig) -> Vec<Check> {
                 title,
                 Status::Fail,
                 format!(
-                    "{} = {:?} is not an executable file or on PATH",
+                    "{} = {:?} is not an executable file or on PATH; see {ENGINE_DOCS_URL}",
                     rt.config_key(),
                     l.wanted
                 ),
@@ -286,8 +286,9 @@ pub fn check_inference(inf: &crate::inference::InferenceConfig) -> Vec<Check> {
                 title,
                 Status::Ok,
                 format!(
-                    "{} not on PATH (needed only to serve {what}; set {})",
+                    "{} not on PATH (needed only to serve {what}; Tensorseed does not bundle it; install {} and put it on PATH or set {})",
                     l.wanted,
+                    rt.label(),
                     rt.config_key()
                 ),
             ),
@@ -299,7 +300,7 @@ pub fn check_inference(inf: &crate::inference::InferenceConfig) -> Vec<Check> {
             "inference.runtime",
             "inference runtime",
             Status::Warn,
-            "[inference] is set but neither llama-server nor vllm was found; serve-inference can only --print-command".into(),
+            format!("[inference] is set but neither llama-server nor vllm was found; serve-inference can only --print-command until you install one (Tensorseed does not bundle them; see {ENGINE_DOCS_URL})"),
         ));
     }
     match inf.listen() {

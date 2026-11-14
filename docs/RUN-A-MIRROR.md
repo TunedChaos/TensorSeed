@@ -439,7 +439,9 @@ meant for you, not the internet.
 - **Sell inference**: a verified copy you seed can also back an OpenAI
   compatible endpoint, which can help pay for bandwidth and hardware.
   `tensorseed serve-inference` verifies the copy, checks the license, and
-  starts llama.cpp or vLLM; see [SELL-INFERENCE.md](SELL-INFERENCE.md).
+  starts llama.cpp or vLLM, which you install separately (Tensorseed does
+  not bundle them); see
+  [SELL-INFERENCE.md](SELL-INFERENCE.md#3-install-an-inference-engine).
   `tensorseed list --commercial` shows which entries permit it.
 - **Help**: `tensorseed doctor` (config, catalog and chain anchor, mirrors,
   ports, disk space, writable directories; `--json` for scripts) and

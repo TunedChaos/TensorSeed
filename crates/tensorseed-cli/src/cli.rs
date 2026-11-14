@@ -190,13 +190,24 @@ pub enum Command {
     /// Re-hash a local copy against a signed manifest or the Hub's hashes.
     Verify(VerifyArgs),
     /// Serve a verified local copy through an OpenAI compatible inference
-    /// server (llama.cpp for GGUF, vLLM for safetensors).
+    /// engine you install separately (llama.cpp for GGUF, vLLM for
+    /// safetensors).
     ///
     /// The copy is verified against the signed manifest first and is never
     /// served when verification fails. Licenses marked forbidden for
     /// commercial serving are refused unless `--i-have-rights` is passed.
-    /// No runtime is bundled; configure binaries in `[inference]` or put
-    /// them on PATH. See docs/SELL-INFERENCE.md.
+    ///
+    /// Tensorseed does not bundle an engine. Install llama.cpp's
+    /// `llama-server` for GGUF files (`winget install llama.cpp`, `brew
+    /// install llama.cpp`, your distribution's package, or
+    /// https://github.com/ggml-org/llama.cpp/releases) or vLLM for
+    /// safetensors (`pip install vllm`; Linux with a supported GPU).
+    /// Tensorseed looks for it on PATH, at `inference.llama_server` or
+    /// `inference.vllm` in the config, or in
+    /// `TENSORSEED_INFERENCE__LLAMA_SERVER` or `TENSORSEED_INFERENCE__VLLM`
+    /// for one run. Without it, serve-inference stops with an error that says
+    /// what to install, and `--print-command` still prints the command. See
+    /// docs/SELL-INFERENCE.md.
     ServeInference(ServeInferenceArgs),
     /// Generate expected next-token logprobs for a verified copy
     /// (`ts.reference-logprobs/1`), for logprob challenges.
@@ -231,6 +242,9 @@ pub enum Command {
     /// to check and attach the signature.
     ClaimServing(ClaimServingArgs),
     /// Run the signing proxy in front of an OpenAI compatible engine.
+    ///
+    /// The engine (llama.cpp's `llama-server` or vLLM) is not bundled: you
+    /// install and start it yourself, and the proxy forwards to it.
     ///
     /// Requests and headers pass through unchanged. JSON responses get
     /// `X-Tensorseed-*` signature headers; event streams end with a signed

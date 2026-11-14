@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use tensorseed_app::inference::{
     Runtime, ServedWeights, VerifyCopyOptions, check_extra_files, choose_runtime, default_model_id,
-    find_binary, license_gate, verify_copy,
+    find_binary, license_gate, missing_engine_message, verify_copy,
 };
 use tensorseed_app::sign_proxy::SignProxy;
 use tensorseed_app::signing::{
@@ -195,7 +195,10 @@ pub async fn claim_serving(
             let lookup = find_binary(&cfg.inference(), runtime);
             let found = match &lookup.found {
                 Some(p) => runtime_version(p).await,
-                None => None,
+                None => bail!(
+                    "{} (or pass --engine-version for an engine you run elsewhere)",
+                    missing_engine_message(runtime, &lookup)
+                ),
             };
             found.with_context(|| {
                 format!(

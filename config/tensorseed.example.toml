@@ -393,6 +393,8 @@ alt_speed = true                 # follow the [torrent.alt_speed] schedule
 # seed_limit_action = "pause"
 
 # [inference]                    # `tensorseed serve-inference` (docs/SELL-INFERENCE.md)
+# The engines are not bundled: install llama.cpp (llama-server, for GGUF)
+# or vLLM (for safetensors) yourself. See docs/SELL-INFERENCE.md, section 3.
 # llama_server = ""              # "" = llama-server on PATH; or a full path
 # vllm = ""                      # "" = vllm on PATH; or a full path
 # host = "127.0.0.1"             # keep loopback and put a TLS reverse proxy in front

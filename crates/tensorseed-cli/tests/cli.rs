@@ -1411,7 +1411,11 @@ async fn serve_inference_verifies_before_serving() {
         s.contains("--alias tiny --host 127.0.0.1 --port 8090 -ngl 0"),
         "{s}"
     );
-    assert!(stderr(&o).contains("llama-server was not found"));
+    assert!(
+        stderr(&o).contains("llama.cpp is not installed: `llama-server` was not found on PATH"),
+        "{}",
+        stderr(&o)
+    );
 
     // Without --print-command and without a runtime: a clear error.
     let o = run(
@@ -1421,7 +1425,39 @@ async fn serve_inference_verifies_before_serving() {
     )
     .await;
     assert_eq!(code(&o), 1);
-    assert!(stderr(&o).contains("was not found"), "{}", stderr(&o));
+    let e = stderr(&o);
+    assert!(e.contains("was not found"), "{e}");
+    assert!(e.contains("does not bundle inference engines"), "{e}");
+    assert!(e.contains("winget install llama.cpp"), "{e}");
+    assert!(
+        e.contains(tensorseed_app::inference::ENGINE_DOCS_URL),
+        "{e}"
+    );
+
+    // The engine can be named for one run through the environment.
+    let o = run(
+        &cfg,
+        &[
+            "serve-inference",
+            "org/tiny",
+            "--no-wait",
+            "--print-command",
+        ],
+        &[
+            ("PATH", ""),
+            (
+                "TENSORSEED_INFERENCE__LLAMA_SERVER",
+                "/opt/llama/llama-server",
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("/opt/llama/llama-server --model"),
+        "{}",
+        stdout(&o)
+    );
 
     // vLLM needs a safetensors checkpoint.
     let o = run(

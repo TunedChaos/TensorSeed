@@ -6,15 +6,17 @@ inference marketplace, or keep for your own apps. The steps are:
 
 1. pull a model and check its license;
 2. verify the copy against the signed catalog;
-3. start it with `tensorseed serve-inference`;
-4. put an authenticating TLS reverse proxy in front of it;
-5. list the endpoint on a marketplace.
+3. install an inference engine (llama.cpp or vLLM, not bundled);
+4. start it with `tensorseed serve-inference`;
+5. put an authenticating TLS reverse proxy in front of it;
+6. list the endpoint on a marketplace.
 
-Tensorseed does not bundle an inference runtime and has no marketplace
-code. It verifies the weights, starts a runtime you installed (llama.cpp
-for GGUF files, vLLM for safetensors), waits until the runtime answers, and
-prints the values a marketplace asks for. Any OpenAI compatible marketplace
-or your own gateway works the same way. [Kompute](https://kompute.gg) is the
+Tensorseed does not bundle an inference engine and has no marketplace
+code. You install the engine separately (llama.cpp for GGUF files, vLLM
+for safetensors; see [section 3](#3-install-an-inference-engine)).
+Tensorseed verifies the weights, starts that engine, waits until it
+answers, and prints the values a marketplace asks for. Any OpenAI
+compatible marketplace or your own gateway works the same way. [Kompute](https://kompute.gg) is the
 worked example below.
 
 > **Not legal advice.** The commercial serving marks in this guide come from
@@ -61,20 +63,62 @@ tensorseed verify ~/.local/share/tensorseed/downloads/Qwen/Qwen2.5-1.5B-Instruct
 For vLLM, pull the whole safetensors checkpoint (`config.json`, the
 tokenizer files, and every `.safetensors` shard).
 
-## 3. Install a runtime
+## 3. Install an inference engine
 
-Install one of these yourself. Tensorseed finds it on `PATH`, or you point
-to it in the config:
+Tensorseed does not bundle an inference engine. You install one yourself,
+next to Tensorseed, and `serve-inference` starts it. The engines are
+large, need builds that match your GPU (CUDA, ROCm, Metal, Vulkan, or
+CPU), and release often, so you get them from their own projects and
+update them on your own schedule. Tensorseed works the same without
+one: pull, verify, and seed never need an engine.
 
-- **llama.cpp** (`llama-server`) for GGUF files: a release archive from
-  the llama.cpp project, your package manager, or a source build.
-- **vLLM** (`vllm`) for safetensors checkpoints: usually a Python virtual
-  environment on a machine with a supported GPU.
+| Engine | Serves | Binary Tensorseed runs |
+|---|---|---|
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | GGUF files | `llama-server` |
+| [vLLM](https://docs.vllm.ai/) | safetensors checkpoints | `vllm` |
+
+**llama.cpp** (`llama-server`):
+
+- Windows: `winget install llama.cpp`, or a zip from the
+  [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases)
+  (pick the build for your GPU, for example CUDA or Vulkan).
+- macOS: `brew install llama.cpp`.
+- Linux: `brew install llama.cpp`, your distribution's package where
+  there is one (for example `sudo dnf install llama-cpp` on Fedora or
+  `sudo pacman -S llama-cpp` on Arch), or an archive from the
+  [releases page](https://github.com/ggml-org/llama.cpp/releases).
+- Any OS: a source build, as described in the project's
+  [install guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md).
+
+**vLLM** (`vllm`) needs Linux and a supported GPU (a recent NVIDIA GPU,
+or an AMD GPU with ROCm). On Windows, run it inside WSL 2 together with a
+Linux build of Tensorseed. Install it with pip in its own virtual
+environment:
+
+```sh
+python3 -m venv ~/vllm-env
+~/vllm-env/bin/pip install vllm
+~/vllm-env/bin/vllm --version
+```
+
+See the [vLLM installation guide](https://docs.vllm.ai/en/latest/getting_started/installation/)
+for the GPU and Python versions each release supports.
+
+### How Tensorseed finds the engine
+
+In this order:
+
+1. `inference.llama_server` or `inference.vllm` in the config, when set:
+   a full path, or a bare name looked up on `PATH`.
+2. `TENSORSEED_INFERENCE__LLAMA_SERVER` or `TENSORSEED_INFERENCE__VLLM`,
+   which set those same keys for one run (environment variables override
+   the config file).
+3. Otherwise `llama-server` or `vllm` on `PATH`.
 
 ```toml
 [inference]
 llama_server = ""                # "" = llama-server on PATH; or a full path
-vllm = ""                        # "" = vllm on PATH; or a full path
+vllm = "~/vllm-env/bin/vllm"     # a vLLM in a virtual environment
 host = "127.0.0.1"               # keep loopback; the reverse proxy is public
 port = 8090
 llama_server_args = []           # e.g. ["-c", "8192", "-ngl", "99"]
@@ -82,6 +126,34 @@ vllm_args = []                   # e.g. ["--max-model-len", "8192"]
 api_key_env = ""                 # env var holding an upstream API key, e.g. "TS_UPSTREAM_KEY"
 ready_timeout_secs = 600         # wait this long for /v1/models
 ```
+
+For one run, without editing the config:
+
+```sh
+TENSORSEED_INFERENCE__LLAMA_SERVER=/opt/llama.cpp/bin/llama-server \
+  tensorseed serve-inference Qwen/Qwen2.5-1.5B-Instruct-GGUF
+```
+
+```powershell
+$env:TENSORSEED_INFERENCE__LLAMA_SERVER = "C:\llama.cpp\llama-server.exe"
+tensorseed serve-inference Qwen/Qwen2.5-1.5B-Instruct-GGUF
+```
+
+### When the engine is missing
+
+`serve-inference` verifies the copy and checks the license first, then
+stops before starting anything:
+
+```text
+error: llama.cpp is not installed: `llama-server` was not found on PATH. Tensorseed does not bundle inference engines; install llama.cpp, which provides llama-server, with `winget install llama.cpp` (Windows), `brew install llama.cpp` (macOS, Linux), your distribution's llama-cpp package, or a release archive from https://github.com/ggml-org/llama.cpp/releases. Then put llama-server on PATH, set inference.llama_server in the config to its full path, or set TENSORSEED_INFERENCE__LLAMA_SERVER for one run. See https://github.com/TunedChaos/TensorSeed/blob/main/docs/SELL-INFERENCE.md#3-install-an-inference-engine (--print-command prints the engine command without starting it)
+```
+
+A configured path that is not an executable file says so instead of "on
+PATH". `--print-command` still works without an engine and prints the
+command it would run, with a note that the engine was not found.
+`reference-logprobs` and `claim-serving` give the same message (they can
+also use an engine that is already running, through `--endpoint` and
+`--engine-version`).
 
 `tensorseed doctor` checks this section when it is present: whether each
 binary is found, whether the port is free, and whether the API key
@@ -340,8 +412,11 @@ you. Tensorseed never holds your wallet key or any marketplace key.
      --sign --wallet 0xYourSellerWallet
    ```
 
-   If you run your own engine, write the claim and run the proxy
-   yourself:
+   The signing proxy is part of Tensorseed, but the engine behind it is
+   not: `--sign` still needs llama.cpp or vLLM installed as in
+   [section 3](#3-install-an-inference-engine). If you run your own engine
+   (installed and started by you, on this machine or another), write the
+   claim and run the proxy yourself:
 
    ```sh
    tensorseed claim-serving Qwen/Qwen2.5-1.5B-Instruct-GGUF \
@@ -352,7 +427,9 @@ you. Tensorseed never holds your wallet key or any marketplace key.
    ```
 
    `--upstream` is the engine root, without `/v1`. The proxy listens on
-   `127.0.0.1:8090` unless you pass `--listen`.
+   `127.0.0.1:8090` unless you pass `--listen`. `claim-serving` reads the
+   engine version from the installed binary; pass `--engine-version` when
+   the engine is not installed where Tensorseed can find it.
 
 3. Bind the claim to your wallet (optional, but marketplaces will want
    it). Both commands print the exact message, for example:
@@ -448,8 +525,11 @@ Again: these notes are not legal advice.
   failed, then pull again.
 - `this copy has N GGUF files; pick one with --file`: name the
   quantization to load.
-- `llama-server ... was not found`: install it, put it on `PATH`, or set
-  `inference.llama_server`. `tensorseed doctor` shows what it finds.
+- `llama.cpp is not installed` or `vLLM is not installed`: Tensorseed
+  does not bundle the engines; install one as in
+  [section 3](#3-install-an-inference-engine), then put it on `PATH` or
+  set `inference.llama_server` or `inference.vllm`. `tensorseed doctor`
+  shows what it finds.
 - `check-endpoint` says `unsupported`: the runtime or proxy does not
   return `logprobs`. Such an offer cannot be logprob checked.
 - `check-endpoint` says `inconclusive` with HTTP 503: the runtime is still

@@ -20,7 +20,7 @@ use tensorseed_app::challenge::{
 };
 use tensorseed_app::inference::{
     Entrypoint, LaunchPlan, PlanInput, Runtime, VerifyCopyOptions, check_extra_files,
-    choose_runtime, default_model_id, find_binary, verify_copy, wait_ready,
+    choose_runtime, default_model_id, find_binary, missing_engine_message, verify_copy, wait_ready,
 };
 use tensorseed_core::hash::is_lower_hex;
 
@@ -241,10 +241,8 @@ pub async fn reference(cfg: &Config, args: &ReferenceLogprobsArgs) -> anyhow::Re
         let lookup = find_binary(&inf, runtime);
         let Some(program) = lookup.found.clone() else {
             bail!(
-                "{} ({}) was not found; install it, set {}, or point --endpoint at a running server",
-                lookup.wanted,
-                runtime.label(),
-                runtime.config_key()
+                "{} (or point --endpoint at an engine that is already running)",
+                missing_engine_message(runtime, &lookup)
             );
         };
         let plan = LaunchPlan::build(PlanInput {

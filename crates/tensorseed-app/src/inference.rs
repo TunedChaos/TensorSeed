@@ -211,6 +211,56 @@ impl Runtime {
             Self::Vllm => "VLLM_API_KEY",
         }
     }
+
+    /// Environment variable that overrides [`Self::config_key`] for one run.
+    #[must_use]
+    pub fn config_env(self) -> &'static str {
+        match self {
+            Self::LlamaCpp => "TENSORSEED_INFERENCE__LLAMA_SERVER",
+            Self::Vllm => "TENSORSEED_INFERENCE__VLLM",
+        }
+    }
+
+    /// How to install this engine, in one sentence.
+    #[must_use]
+    pub fn install_hint(self) -> &'static str {
+        match self {
+            Self::LlamaCpp => {
+                "install llama.cpp, which provides llama-server, with `winget install llama.cpp` (Windows), `brew install llama.cpp` (macOS, Linux), your distribution's llama-cpp package, or a release archive from https://github.com/ggml-org/llama.cpp/releases"
+            }
+            Self::Vllm => {
+                "install vLLM with `pip install vllm` in a Python virtual environment; it needs Linux and a supported GPU (on Windows, use WSL 2)"
+            }
+        }
+    }
+}
+
+/// The install guide for inference engines, linked from the errors.
+pub const ENGINE_DOCS_URL: &str = "https://github.com/TunedChaos/TensorSeed/blob/main/docs/SELL-INFERENCE.md#3-install-an-inference-engine";
+
+/// The message shown when an inference engine binary is not found: what is
+/// missing, what to install, how to point Tensorseed at it, and the guide.
+#[must_use]
+pub fn missing_engine_message(rt: Runtime, lookup: &BinaryLookup) -> String {
+    let place = if lookup.configured {
+        format!(
+            " ({} = {:?} is not an executable file)",
+            rt.config_key(),
+            lookup.wanted
+        )
+    } else {
+        " on PATH".to_string()
+    };
+    format!(
+        "{label} is not installed: `{wanted}` was not found{place}. Tensorseed does not bundle inference engines; {hint}. Then put {bin} on PATH, set {key} in the config to its full path, or set {env} for one run. See {url}",
+        label = rt.label(),
+        wanted = lookup.wanted,
+        hint = rt.install_hint(),
+        bin = rt.default_binary(),
+        key = rt.config_key(),
+        env = rt.config_env(),
+        url = ENGINE_DOCS_URL,
+    )
 }
 
 /// Where a binary was looked for and what was found.
@@ -1324,6 +1374,32 @@ mod tests {
         assert_eq!(l.found, Some(bin));
         cfg.llama_server = dir.path().join("nope").to_string_lossy().into_owned();
         assert_eq!(find_binary(&cfg, Runtime::LlamaCpp).found, None);
+    }
+
+    #[test]
+    fn missing_engine_message_says_what_to_install() {
+        let lookup = BinaryLookup {
+            wanted: "llama-server".into(),
+            configured: false,
+            found: None,
+        };
+        let m = missing_engine_message(Runtime::LlamaCpp, &lookup);
+        assert!(m.starts_with("llama.cpp is not installed: `llama-server` was not found on PATH."));
+        assert!(m.contains("does not bundle inference engines"));
+        assert!(m.contains("winget install llama.cpp"));
+        assert!(m.contains("inference.llama_server"));
+        assert!(m.contains("TENSORSEED_INFERENCE__LLAMA_SERVER"));
+        assert!(m.ends_with(ENGINE_DOCS_URL));
+
+        let lookup = BinaryLookup {
+            wanted: "/opt/vllm/bin/vllm".into(),
+            configured: true,
+            found: None,
+        };
+        let m = missing_engine_message(Runtime::Vllm, &lookup);
+        assert!(m.contains("(inference.vllm = \"/opt/vllm/bin/vllm\" is not an executable file)"));
+        assert!(m.contains("pip install vllm"));
+        assert!(m.contains("Linux and a supported GPU"));
     }
 
     #[test]

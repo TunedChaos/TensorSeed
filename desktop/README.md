@@ -233,6 +233,30 @@ SmartScreen warns on first run.
 - Bind interface is not supported on Windows, and the settings view
   disables it.
 
+## Inference serving
+
+Desktop does not serve inference yet; serving is CLI only
+(`tensorseed serve-inference`, and `tensorseed sign-responses` for the
+signing proxy). Neither Desktop nor the CLI bundles an inference engine.
+The engines are large, need builds that match your GPU, and update
+often, so you install the one you need yourself:
+
+- **llama.cpp** (`llama-server`) for GGUF models: `winget install
+  llama.cpp` on Windows, `brew install llama.cpp` on macOS or Linux, your
+  distribution's package, or the
+  [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases).
+- **vLLM** (`vllm`) for safetensors models: `pip install vllm` in a
+  Python virtual environment, on Linux with a supported GPU (on Windows,
+  inside WSL 2).
+
+The CLI finds the engine on `PATH` or at `inference.llama_server` or
+`inference.vllm` in the config Desktop shares with it, for example
+`llama_server = "C:\\llama.cpp\\llama-server.exe"`. Without one,
+`serve-inference` stops with "llama.cpp is not installed" (or "vLLM is
+not installed"), the install options, and a link to
+[docs/SELL-INFERENCE.md](../docs/SELL-INFERENCE.md#3-install-an-inference-engine).
+Pulling, verifying, and seeding in Desktop never need an engine.
+
 ## Flatpak
 
 `desktop/flatpak/` builds Desktop as the Flatpak `dev.tensorseed.desktop`
@@ -322,6 +346,29 @@ flatpak override --user --filesystem=/srv/models dev.tensorseed.desktop
 
 Paths in the config such as `state_db` or `[file] local_dir` outside
 `~/.local/share/tensorseed` need the same override.
+
+Inference serving in the Flatpak: the bundled CLI can run
+`serve-inference`, but the sandbox cannot see an engine installed on the
+host (the sandbox's `/usr` is the GNOME runtime, and there is no host
+`PATH` or home directory access), and the Flatpak does not ship one. So
+serving stays outside the sandbox:
+
+- Simplest: install the `tensorseed` CLI on the host as well (a release
+  archive, `.deb`, or `.rpm`) next to llama.cpp or vLLM, and serve with
+  it. It reads the same config and the same pulled copies as the
+  Flatpak.
+- Or start the engine on the host yourself and keep the Flatpak's CLI
+  for the rest. `flatpak run --command=tensorseed dev.tensorseed.desktop
+  serve-inference <copy> --print-command` verifies the copy and prints
+  the engine command (pulled copies are at the same path inside and
+  outside the sandbox); run that on the host. The signing proxy can then
+  run from the Flatpak, because the network, including loopback, is
+  shared: `claim-serving <copy> --engine-version <version>`, then
+  `sign-responses --upstream http://127.0.0.1:<engine port> --claim
+  <copy>/.tensorseed/served-weights.json`.
+
+Pointing `inference.llama_server` at a host path does not help in the
+sandbox: the path does not exist there.
 
 Inside the sandbox the tray icon image is written to
 `$XDG_RUNTIME_DIR/app/dev.tensorseed.desktop/tray-icon`, the runtime

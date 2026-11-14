@@ -14,6 +14,19 @@
   config), pulls default to `tensorseed` under the download directory,
   Desktop skips its runtime scheme registration, and the tray icon is
   written where the host can read it. Not published anywhere.
+- Inference engines are documented as a separate install: the README
+  (new Install section), the website, `docs/SELL-INFERENCE.md` (section 3,
+  "Install an inference engine"), `docs/RUN-A-MIRROR.md`, the Desktop
+  README (serving is CLI only; how to serve next to the Flatpak), the
+  example config, and `serve-inference --help` and `sign-responses --help`
+  say that Tensorseed does not bundle llama.cpp or vLLM, what each is
+  for, how to install it per OS, and how Tensorseed finds it (`PATH`,
+  `inference.llama_server` or `inference.vllm`, or
+  `TENSORSEED_INFERENCE__LLAMA_SERVER` and `TENSORSEED_INFERENCE__VLLM`
+  for one run). The missing engine error in `serve-inference`,
+  `reference-logprobs`, and `claim-serving` now says the engine is not
+  installed, how to install it, and links the guide; `doctor` mentions
+  the guide too.
 - Tensorseed Desktop copy status: local copies and the entry page label
   each copy as complete, partial, unsigned, or at another revision, with
   a one line reason and the copy's own commit, file count, and size on

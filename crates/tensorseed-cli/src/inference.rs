@@ -12,8 +12,8 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use tensorseed_app::inference::{
     LaunchPlan, PlanInput, Runtime, ServedWeights, VerifyCopyOptions, check_extra_files,
-    choose_runtime, default_model_id, find_binary, license_gate, local_base_url, verify_copy,
-    wait_ready,
+    choose_runtime, default_model_id, find_binary, license_gate, local_base_url,
+    missing_engine_message, verify_copy, wait_ready,
 };
 use tensorseed_app::sign_proxy::SignProxy;
 use tensorseed_app::signing::{ClaimExtras, ServedClaim, WELL_KNOWN_CLAIM, claim_path};
@@ -156,12 +156,7 @@ pub async fn run(
 
     if args.print_command {
         if lookup.found.is_none() {
-            eprintln!(
-                "note: {} was not found; install {} or set {}",
-                lookup.wanted,
-                runtime.label(),
-                runtime.config_key()
-            );
+            eprintln!("note: {}", missing_engine_message(runtime, &lookup));
         }
         println!("{}", plan.shell_line());
         if args.sign {
@@ -173,11 +168,8 @@ pub async fn run(
     }
     if lookup.found.is_none() {
         bail!(
-            "{} ({}) was not found{}; install it, set {}, or rerun with --print-command",
-            lookup.wanted,
-            runtime.label(),
-            if lookup.configured { "" } else { " on PATH" },
-            runtime.config_key()
+            "{} (--print-command prints the engine command without starting it)",
+            missing_engine_message(runtime, &lookup)
         );
     }
     let api_key = match &plan.api_key {

@@ -56,6 +56,34 @@ independent catalog in
 [docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md). API docs: `cargo doc
 --workspace --no-deps --open` (or `just doc-open`).
 
+## Install
+
+Download a binary, `.deb`, or `.rpm` from the
+[latest GitHub release](https://github.com/TunedChaos/TensorSeed/releases/latest)
+(verify it as in [Release signatures](#release-signatures)), or build it
+with `cargo install --locked --git https://github.com/TunedChaos/TensorSeed`
+(see [Build](#build)). That is all you need to pull, verify, seed, and run
+a mirror.
+
+**Serving inference needs a separate engine.** `tensorseed serve-inference`,
+`reference-logprobs`, and the `sign-responses` signing proxy start or sit
+in front of an OpenAI compatible engine that you install yourself;
+Tensorseed does not bundle one. The engines are large, need builds that
+match your GPU, and update often, so they come from their own projects:
+
+- **llama.cpp** (`llama-server`) for GGUF models: `winget install
+  llama.cpp` on Windows, `brew install llama.cpp` on macOS or Linux, your
+  distribution's package, or the
+  [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases).
+- **vLLM** (`vllm`) for safetensors models: `pip install vllm` in a Python
+  virtual environment. vLLM needs Linux and a supported GPU (on Windows,
+  use WSL 2).
+
+Tensorseed finds the engine on `PATH`, or at `inference.llama_server` or
+`inference.vllm` in the config. Without one, `serve-inference` stops with
+an error that says what to install. Details:
+[docs/SELL-INFERENCE.md](docs/SELL-INFERENCE.md#3-install-an-inference-engine).
+
 ## Use it
 
 ```sh
@@ -165,14 +193,36 @@ Downloads resume after interruption; `tensorseed jobs` shows their state.
 
 `tensorseed serve-inference <dir|org/name>` re-hashes a pulled copy against
 the signed manifest, refuses to serve it if anything differs, checks the
-license, and starts an OpenAI compatible server you installed: llama.cpp
-(`llama-server`) for GGUF files, vLLM for safetensors. It waits until
-`/v1/models` answers, then prints the base URL and model id to list on any
-OpenAI compatible marketplace, and records what it serves in an unsigned
-`.tensorseed/served-weights.json`. No runtime is bundled; configure them in
-`[inference]` or put them on `PATH`, and `--print-command` prints the exact
-command instead. See [docs/SELL-INFERENCE.md](docs/SELL-INFERENCE.md) for
-the full walk through, including a TLS reverse proxy with an API key.
+license, and starts an OpenAI compatible engine that you installed
+separately: llama.cpp (`llama-server`) for GGUF files, vLLM for
+safetensors. It waits until `/v1/models` answers, then prints the base URL
+and model id to list on any OpenAI compatible marketplace, and records
+what it serves in an unsigned `.tensorseed/served-weights.json`.
+
+Tensorseed does not bundle llama.cpp or vLLM (see [Install](#install)).
+It looks for them on `PATH`, at `inference.llama_server` or
+`inference.vllm` in the config, or in `TENSORSEED_INFERENCE__LLAMA_SERVER`
+or `TENSORSEED_INFERENCE__VLLM` for one run:
+
+```sh
+# llama-server on PATH
+tensorseed serve-inference Qwen/Qwen2.5-1.5B-Instruct-GGUF
+# or name it for one run
+TENSORSEED_INFERENCE__LLAMA_SERVER=/opt/llama.cpp/bin/llama-server \
+  tensorseed serve-inference Qwen/Qwen2.5-1.5B-Instruct-GGUF
+```
+
+When the engine is missing, `serve-inference` stops after verifying,
+before anything listens, with an error that names the install options and
+links the guide:
+
+```text
+error: llama.cpp is not installed: `llama-server` was not found on PATH. Tensorseed does not bundle inference engines; install llama.cpp, which provides llama-server, with `winget install llama.cpp` (Windows), `brew install llama.cpp` (macOS, Linux), ...
+```
+
+`--print-command` prints the exact engine command without starting it,
+and `tensorseed doctor` shows which engines it finds. See [docs/SELL-INFERENCE.md](docs/SELL-INFERENCE.md)
+for the full walk through, including a TLS reverse proxy with an API key.
 
 `tensorseed reference-logprobs` computes expected next-token logprobs for
 a set of challenge prompts from a verified copy of one file, bound to the
@@ -181,8 +231,8 @@ the prompts. `tensorseed check-endpoint` sends a sample of those
 challenges to any OpenAI compatible endpoint and reports pass, fail,
 inconclusive, or unsupported within stated tolerances.
 `serve-inference --sign` (or `claim-serving` plus `sign-responses` for an
-engine you run yourself) puts a loopback signing proxy in front of the
-runtime: every JSON response gets `X-Tensorseed-*` Ed25519 signature
+engine you start yourself) puts a loopback signing proxy in front of the
+engine, which you still install separately: every JSON response gets `X-Tensorseed-*` Ed25519 signature
 headers tied to a `ts.served-weights/1` claim, streams end with a signed
 SSE comment, and the claim is served at
 `/.well-known/tensorseed/served-weights.json`. Your wallet can sign the
