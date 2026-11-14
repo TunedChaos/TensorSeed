@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026 Tuned Chaos
+#
+# Desktop entry for the Flatpak. %u passes a tensorseed:// link to the app,
+# and the MimeType line makes it the handler for the scheme.
+[Desktop Entry]
+Type=Application
+Name=Tensorseed Desktop
+GenericName=Model and Dataset Seeder
+Comment=Browse, pull, verify, and seed Tensorseed models and datasets
+Exec=tensorseed-desktop %u
+Icon=dev.tensorseed.desktop
+Terminal=false
+Categories=Network;FileTransfer;P2P;
+Keywords=tensorseed;huggingface;model;dataset;torrent;seed;
+MimeType=x-scheme-handler/tensorseed;
+StartupWMClass=tensorseed-desktop
+StartupNotify=true

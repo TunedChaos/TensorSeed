@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Tensorseed Desktop Flatpak (`desktop/flatpak/`): a manifest for
+  `dev.tensorseed.desktop` on the GNOME 51 runtime that builds Desktop and
+  the `tensorseed` CLI offline from vendored Cargo and pnpm sources
+  (`update-sources.sh` regenerates them), with AppStream metadata, icons,
+  a desktop file that handles `tensorseed://`, and the tray library from
+  Flathub's shared modules (git submodule). Permissions are network,
+  Wayland with X11 fallback, GPU, the tray watcher, and only Tensorseed's
+  config, data, and downloads folders. Inside a Flatpak, Tensorseed reads
+  the host's config directory (so Desktop and a host CLI share one
+  config), pulls default to `tensorseed` under the download directory,
+  Desktop skips its runtime scheme registration, and the tray icon is
+  written where the host can read it. Not published anywhere.
+- Workspace: `tensorseed-core` and `tensorseed-verify` declare
+  `default-features = false` in `[workspace.dependencies]` and members
+  that want the defaults ask for them, which Cargo 1.98 requires.
+
 - Tensorseed Desktop (M3.2, `desktop/`): a tray icon (show or hide the
   window, live seeding and downloading counts and rates, pause all,
   resume all, quit); a settings view for every `[torrent]` option (caps,

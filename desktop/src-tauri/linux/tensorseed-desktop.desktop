@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026 Tuned Chaos
 #
-# Desktop entry template for the deb (and rpm) bundles. %u passes a
+# Desktop entry template for the deb, rpm, and AppImage bundles. %u passes a
 # tensorseed:// link to the app, and the MimeType line makes it the
 # handler for the scheme (xdg-open tensorseed://entry/org/name).
 [Desktop Entry]
@@ -13,7 +13,7 @@ Comment={{comment}}
 Exec={{exec}} %u
 Icon={{icon}}
 Terminal=false
-Categories={{categories}}
+Categories=Network;FileTransfer;P2P;
 MimeType=x-scheme-handler/tensorseed;
 StartupWMClass={{exec}}
 StartupNotify=true

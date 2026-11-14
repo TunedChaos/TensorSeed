@@ -210,7 +210,7 @@ impl Default for General {
             seed_dir: default_data_file("seed"),
             keep_local_seed: true,
             max_concurrent_downloads: 2,
-            download_dir: ".".into(),
+            download_dir: default_download_dir(),
         }
     }
 }
@@ -1704,7 +1704,8 @@ pub fn home_dir() -> Option<PathBuf> {
 /// Per-user config directory.
 ///
 /// On Unix this is `$XDG_CONFIG_HOME`, or `$HOME/.config` when that is
-/// unset. On Windows it is `%APPDATA%` (the roaming profile), falling back
+/// unset. Inside a Flatpak it is the host's directory
+/// (`$HOST_XDG_CONFIG_HOME`, or `$HOME/.config`). On Windows it is `%APPDATA%` (the roaming profile), falling back
 /// to `%USERPROFILE%\AppData\Roaming`.
 pub fn config_dir() -> PathBuf {
     #[cfg(windows)]
@@ -1716,11 +1717,72 @@ pub fn config_dir() -> PathBuf {
     }
     #[cfg(not(windows))]
     {
-        std::env::var_os("XDG_CONFIG_HOME")
+        // Inside a Flatpak, XDG_CONFIG_HOME points at the app's private
+        // `~/.var/app/<id>/config`. Use the host directory instead (exposed
+        // by the manifest's `xdg-config/tensorseed` permission), so the
+        // sandboxed app and a host CLI read the same config file.
+        let var = if in_flatpak() {
+            "HOST_XDG_CONFIG_HOME"
+        } else {
+            "XDG_CONFIG_HOME"
+        };
+        std::env::var_os(var)
+            .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .or_else(|| home_dir().map(|h| h.join(".config")))
             .unwrap_or_else(|| PathBuf::from("."))
     }
+}
+
+/// True inside a Flatpak sandbox (`flatpak run` sets `FLATPAK_ID`).
+pub fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some_and(|v| !v.is_empty())
+}
+
+/// Default `general.download_dir`: the working directory, except inside a
+/// Flatpak, where the working directory is usually not shared with the
+/// sandbox. There it is `tensorseed` under the XDG download directory,
+/// which the manifest exposes (`xdg-download/tensorseed:create`).
+fn default_download_dir() -> String {
+    if in_flatpak() {
+        if let Some(dir) = xdg_download_dir() {
+            return dir.join("tensorseed").to_string_lossy().into_owned();
+        }
+    }
+    ".".into()
+}
+
+/// The XDG download directory: `XDG_DOWNLOAD_DIR` from the environment or
+/// `user-dirs.dirs`, else `~/Downloads`. `None` without a home directory.
+fn xdg_download_dir() -> Option<PathBuf> {
+    let home = home_dir()?;
+    let resolve = |v: &str| -> PathBuf {
+        let v = v.trim().trim_matches('"');
+        match v.strip_prefix("$HOME") {
+            Some(rest) => home.join(rest.trim_start_matches('/')),
+            None => PathBuf::from(v),
+        }
+    };
+    if let Some(v) = std::env::var_os("XDG_DOWNLOAD_DIR").filter(|v| !v.is_empty()) {
+        return Some(resolve(&v.to_string_lossy()));
+    }
+    // Flatpak copies the host's user-dirs.dirs into the sandbox config dir.
+    let mut candidates = Vec::new();
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        candidates.push(PathBuf::from(x));
+    }
+    candidates.push(config_dir());
+    for dir in candidates {
+        let Ok(text) = std::fs::read_to_string(dir.join("user-dirs.dirs")) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Some(v) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") {
+                return Some(resolve(v));
+            }
+        }
+    }
+    Some(home.join("Downloads"))
 }
 
 /// Where the token came from. Display labels never include the token.
@@ -2705,6 +2767,51 @@ dir = "/mnt/nas/tensorseed"
                 let e = expand(p);
                 assert!(!e.to_string_lossy().contains('/'), "{p} -> {}", e.display());
             }
+            Ok(())
+        });
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn flatpak_uses_host_config_dir_and_download_dir() {
+        Jail::expect_with(|jail| {
+            let home = jail.directory().to_path_buf();
+            jail.set_env("HOME", home.to_str().unwrap());
+            jail.set_env("XDG_CONFIG_HOME", "/sandbox/config");
+            jail.set_env("XDG_DOWNLOAD_DIR", "");
+            jail.set_env("FLATPAK_ID", "");
+            assert!(!in_flatpak());
+            assert_eq!(config_dir(), PathBuf::from("/sandbox/config"));
+            assert_eq!(General::default().download_dir, ".");
+
+            jail.set_env("FLATPAK_ID", "dev.tensorseed.desktop");
+            jail.set_env("HOST_XDG_CONFIG_HOME", "");
+            assert_eq!(config_dir(), home.join(".config"));
+            assert_eq!(
+                General::default().download_dir,
+                home.join("Downloads/tensorseed").to_string_lossy()
+            );
+            jail.set_env("HOST_XDG_CONFIG_HOME", "/host/config");
+            assert_eq!(
+                default_path(),
+                PathBuf::from("/host/config/tensorseed/tensorseed.toml")
+            );
+
+            // user-dirs.dirs in the sandbox config dir wins over ~/Downloads.
+            let sandbox = home.join("sandbox-config");
+            std::fs::create_dir_all(&sandbox).unwrap();
+            std::fs::write(
+                sandbox.join("user-dirs.dirs"),
+                "# comment\nXDG_DOWNLOAD_DIR=\"$HOME/Fetched\"\n",
+            )
+            .unwrap();
+            jail.set_env("XDG_CONFIG_HOME", sandbox.to_str().unwrap());
+            assert_eq!(
+                General::default().download_dir,
+                home.join("Fetched/tensorseed").to_string_lossy()
+            );
+            jail.set_env("XDG_DOWNLOAD_DIR", "/data/dl");
+            assert_eq!(General::default().download_dir, "/data/dl/tensorseed");
             Ok(())
         });
     }

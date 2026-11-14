@@ -14,7 +14,7 @@ reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tensorseed-core.workspace = true
+tensorseed-core = { workspace = true, features = ["default"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

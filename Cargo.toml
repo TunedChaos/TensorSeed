@@ -26,9 +26,9 @@ repository = "https://tensorseed.dev"
 homepage = "https://tensorseed.dev"
 
 [workspace.dependencies]
-tensorseed-core = { path = "crates/tensorseed-core", version = "0.2.0" }
+tensorseed-core = { path = "crates/tensorseed-core", version = "0.2.0", default-features = false }
 tensorseed-hf = { path = "crates/tensorseed-hf", version = "0.2.0" }
-tensorseed-verify = { path = "crates/tensorseed-verify", version = "0.2.0" }
+tensorseed-verify = { path = "crates/tensorseed-verify", version = "0.2.0", default-features = false }
 tensorseed-catalog = { path = "crates/tensorseed-catalog", version = "0.2.0" }
 tensorseed-wasm = { path = "crates/tensorseed-wasm", version = "0.2.0" }
 tensorseed-torrent = { path = "crates/tensorseed-torrent", version = "0.2.0" }

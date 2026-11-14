@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright 2026 Tuned Chaos -->
+<component type="desktop-application">
+  <id>dev.tensorseed.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Tensorseed Desktop</name>
+  <summary>Browse, pull, verify, and seed open models and datasets</summary>
+  <developer id="dev.tensorseed">
+    <name>Tuned Chaos</name>
+  </developer>
+  <description>
+    <p>
+      Tensorseed Desktop browses signed, Chia anchored Tensorseed catalogs of
+      open Hugging Face models and datasets. It pulls them over BitTorrent with
+      an HTTP fallback, verifies every file against the signed manifest, and
+      seeds them back to the swarm.
+    </p>
+    <ul>
+      <li>Search catalogs and open an entry from a tensorseed:// link</li>
+      <li>Pull, verify, and seed models and datasets natively</li>
+      <li>Keep seeding from the system tray</li>
+      <li>Shares its config and state with the tensorseed command line tool</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">dev.tensorseed.desktop.desktop</launchable>
+  <provides>
+    <binary>tensorseed-desktop</binary>
+    <binary>tensorseed</binary>
+  </provides>
+  <url type="homepage">https://tensorseed.dev</url>
+  <url type="vcs-browser">https://github.com/TunedChaos/TensorSeed</url>
+  <url type="bugtracker">https://github.com/TunedChaos/TensorSeed/issues</url>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+    <category>P2P</category>
+  </categories>
+  <keywords>
+    <keyword>huggingface</keyword>
+    <keyword>model</keyword>
+    <keyword>dataset</keyword>
+    <keyword>torrent</keyword>
+  </keywords>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.3.0~dev" date="2026-11-14" type="development">
+      <description>
+        <p>First Flatpak build of Tensorseed Desktop.</p>
+      </description>
+    </release>
+  </releases>
+</component>

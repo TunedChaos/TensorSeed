@@ -22,8 +22,8 @@ sha2.workspace = true
 scrypt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tensorseed-core.workspace = true
-tensorseed-verify.workspace = true
+tensorseed-core = { workspace = true, features = ["default"] }
+tensorseed-verify = { workspace = true, features = ["default"] }
 toml.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

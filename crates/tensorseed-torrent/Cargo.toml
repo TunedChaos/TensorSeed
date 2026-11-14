@@ -15,7 +15,7 @@ default = ["engine"]
 engine = ["dep:librqbit", "dep:tokio", "dep:tracing", "dep:bytes"]
 
 [dependencies]
-tensorseed-core.workspace = true
+tensorseed-core = { workspace = true, features = ["default"] }
 thiserror.workspace = true
 hex.workspace = true
 sha1.workspace = true

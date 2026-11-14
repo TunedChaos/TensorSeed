@@ -216,6 +216,123 @@ SmartScreen warns on first run.
 - Bind interface is not supported on Windows, and the settings view
   disables it.
 
+## Flatpak
+
+`desktop/flatpak/` builds Desktop as the Flatpak `dev.tensorseed.desktop`
+from this checkout, on the GNOME 51 runtime (WebKitGTK 4.1) with the
+Rust and Node SDK extensions. Every Cargo crate and npm package comes
+from `cargo-sources.json` and `node-sources.json`, so the build runs
+offline. The tray library (libayatana-appindicator) is built from
+Flathub's shared modules, a git submodule.
+
+```fish
+git submodule update --init desktop/flatpak/shared-modules
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user flathub org.gnome.Platform//51 org.gnome.Sdk//51 \
+    org.freedesktop.Sdk.Extension.rust-stable//26.08 \
+    org.freedesktop.Sdk.Extension.node24//26.08
+flatpak-builder --user --install --force-clean build-dir \
+    desktop/flatpak/dev.tensorseed.desktop.yml
+flatpak run dev.tensorseed.desktop
+# optional single file bundle:
+flatpak-builder --repo=repo --force-clean build-dir desktop/flatpak/dev.tensorseed.desktop.yml
+flatpak build-bundle repo tensorseed-desktop.flatpak dev.tensorseed.desktop
+```
+
+After changing `Cargo.lock`, `desktop/src-tauri/Cargo.lock`, or
+`desktop/pnpm-lock.yaml`, run `desktop/flatpak/update-sources.sh` (it
+needs a flatpak-builder-tools checkout; see the script) and commit the
+two JSON files. The CLI and Desktop workspaces have separate lockfiles,
+so the script generates both and merges them. pnpm itself comes from its
+npm tarball, pinned in the manifest.
+
+What the Flatpak contains:
+
+- `/app/bin/tensorseed-desktop` and the `tensorseed` CLI next to it.
+  Desktop looks for the CLI next to its own binary before `PATH`, so
+  pulls use the bundled CLI and nothing has to be installed on the host.
+  `TENSORSEED_CLI` still overrides it. Run the bundled CLI with
+  `flatpak run --command=tensorseed dev.tensorseed.desktop ...`.
+- `dev.tensorseed.desktop.desktop` (`Exec=tensorseed-desktop %u`,
+  `MimeType=x-scheme-handler/tensorseed;`), so `xdg-open
+  tensorseed://entry/org/name` starts the Flatpak, and a running one gets
+  the link through single instance forwarding. Inside the sandbox Desktop
+  does not write its own handler file.
+- AppStream metadata (`dev.tensorseed.desktop.metainfo.xml`, passes
+  `appstreamcli validate`) and icons at 32, 128, 256, and 512 pixels.
+
+Permissions (`finish-args`), each for one reason:
+
+| Permission | Why |
+| --- | --- |
+| `--share=network` | Catalog sync, Hugging Face, trackers, the DHT, peers. |
+| `--socket=wayland`, `--socket=fallback-x11`, `--share=ipc` | The window. X11 only when there is no Wayland; IPC is the X11 shared memory it needs. |
+| `--device=dri` | WebKit GPU rendering. |
+| `--talk-name=org.kde.StatusNotifierWatcher` | The tray icon. |
+| `--filesystem=xdg-config/tensorseed:create` | The CLI's config, keys, `mirrors.toml`, and `hf_token`. |
+| `--filesystem=xdg-data/tensorseed:create` | State, catalog cache, staging, seed data, publish trees, and mirrors (`~/.local/share/tensorseed`). |
+| `--filesystem=xdg-download/tensorseed:create` | Where pulls go by default inside the sandbox. |
+
+No home directory access, no host filesystem, and no other bus names.
+The single instance name (`dev.tensorseed.desktop.SingleInstance`) is
+under the app id, which Flatpak allows without a permission. There is no
+cache permission because Tensorseed keeps nothing under `~/.cache`; the
+Hugging Face token falls back to `~/.cache/huggingface/token` on the
+host, which the sandbox cannot see, so set the token with Tensorseed's
+own `hf_token` file instead.
+
+Config and data are shared with a host CLI. Flatpak normally points
+`XDG_CONFIG_HOME` at `~/.var/app/dev.tensorseed.desktop/config`; inside a
+Flatpak (`FLATPAK_ID` set) Tensorseed uses the host's directory instead
+(`HOST_XDG_CONFIG_HOME`, else `~/.config`), which the permission above
+exposes at the same path. Data paths are `~/.local/share/tensorseed` on
+every Linux build already. So Desktop in the Flatpak and a `tensorseed`
+installed on the host read and write the same files.
+
+Downloads: the CLI's default `general.download_dir` is `.`, the working
+directory, which the sandbox usually cannot write. Inside a Flatpak the
+default becomes `tensorseed` under the XDG download directory
+(`~/Downloads/tensorseed` on most systems), which `xdg-download/tensorseed`
+exposes. A narrow folder under Downloads is the smallest grant that works
+without asking, and the file chooser portal does not fit: pulls and
+seeding run in the background and need the same folder again on every
+start. A `download_dir` set in the config wins; when it is outside the
+granted folders, grant it once:
+
+```fish
+flatpak override --user --filesystem=/srv/models dev.tensorseed.desktop
+```
+
+Paths in the config such as `state_db` or `[file] local_dir` outside
+`~/.local/share/tensorseed` need the same override.
+
+Inside the sandbox the tray icon image is written to
+`$XDG_RUNTIME_DIR/app/dev.tensorseed.desktop/tray-icon`, the runtime
+folder Flatpak shares with the host, because the tray host reads the icon
+by path.
+
+Not built in CI: a Flatpak build takes about 25 minutes and needs the
+runtime and SDK downloads, so it runs by hand for now. Nothing is
+published.
+
+What a Flathub submission would still need (nothing has been submitted):
+
+- A different app id, or an exception from the Flathub reviewers:
+  `flatpak-builder-lint` rejects ids that end in `.desktop`
+  (`appid-ends-with-lowercase-desktop`). Renaming (for example to
+  `dev.tensorseed.Desktop`) changes the Tauri identifier too, so the
+  WebView profile folder and the single instance name move with it.
+- A manifest in a Flathub repo for the app id whose source is
+  a `type: git` entry with a release tag and commit, not `type: dir`, with
+  `shared-modules` as a submodule there.
+- The `tensorseed.dev` domain verified for the app id (Flathub checks
+  `https://tensorseed.dev/.well-known/org.flathub.VerifiedApps.txt`).
+- Screenshots in the metainfo (hosted at stable URLs) and a `<release>`
+  per version with notes. With those and the id settled,
+  `flatpak-builder-lint` has no other findings for the manifest or the
+  built repo.
+- A review of the permissions above, in particular the downloads folder.
+
 ## Not done yet
 
 - Updater: deliberately absent. `tauri-plugin-updater` is added in M3.6
@@ -227,9 +344,10 @@ SmartScreen warns on first run.
   M3.3. Dataset verify also goes through the CLI.
 - Desktop does not attach to a running `serve`: it only reads its health
   endpoint. Controlling it needs the local control endpoint from M3.4.
-- Packaging: only the local `.deb` and AppImage `tauri build` makes by
-  default. Flatpak, the MSI build method, signing, and bundling the CLI
-  binary are M3.6 decisions.
+- Packaging: the local `.deb` and AppImage `tauri build` makes by
+  default, the Windows MSI and NSIS installers, and the Flatpak (built by
+  hand, not published). Signing, the MSI build method, and bundling the
+  CLI in the other packages are M3.6 decisions.
 - Windows: the NSIS and MSI builds, deep links, single instance
   forwarding, close to tray, the tray icon and its status, pull, verify,
   seed, settings, `tensorseed gui`, and uninstalling have been run on

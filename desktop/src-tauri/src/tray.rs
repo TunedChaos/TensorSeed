@@ -113,6 +113,9 @@ pub fn build<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon() {
         tb = tb.icon(icon.clone());
     }
+    if let Some(dir) = crate::platform::tray_icon_dir() {
+        tb = tb.temp_dir_path(dir);
+    }
     let tray = tb.build(app)?;
 
     let handle = app.handle().clone();

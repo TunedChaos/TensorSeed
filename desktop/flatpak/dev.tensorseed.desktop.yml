@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026 Tuned Chaos
+#
+# Flatpak manifest for Tensorseed Desktop. Builds the desktop app and the
+# tensorseed CLI from this checkout with offline Cargo and pnpm sources
+# (regenerate them with update-sources.sh after a lockfile change).
+#
+#   git submodule update --init desktop/flatpak/shared-modules
+#   flatpak-builder --user --install --force-clean build-dir \
+#     desktop/flatpak/dev.tensorseed.desktop.yml
+#
+# See desktop/README.md (Flatpak) for the permissions and their reasons.
+id: dev.tensorseed.desktop
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.node24
+command: tensorseed-desktop
+finish-args:
+  # Hugging Face, trackers, the DHT, and peers.
+  - --share=network
+  # X11 shared memory, needed by the X11 fallback.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # WebKit GPU rendering.
+  - --device=dri
+  # Tray icon (StatusNotifierItem).
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # The same config, keys, state, catalogs, and mirrors as the host CLI.
+  - --filesystem=xdg-config/tensorseed:create
+  - --filesystem=xdg-data/tensorseed:create
+  # Default pull destination inside the sandbox.
+  - --filesystem=xdg-download/tensorseed:create
+modules:
+  - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
+
+  - name: tensorseed-desktop
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node24/bin
+      env:
+        CARGO_HOME: /run/build/tensorseed-desktop/cargo
+        CARGO_NET_OFFLINE: 'true'
+        npm_config_offline: 'true'
+    build-commands:
+      # Frontend (desktop/dist), with pnpm from its npm tarball.
+      - >-
+        cd desktop && node ../flatpak-node/pnpm-cli/bin/pnpm.cjs install
+        --offline --frozen-lockfile
+        --store-dir ../flatpak-node/pnpm-store
+      - cd desktop && node ../flatpak-node/pnpm-cli/bin/pnpm.cjs build
+      # Desktop binary. custom-protocol serves the bundled frontend, as
+      # `tauri build` does.
+      - >-
+        cargo build --release --offline --locked
+        --manifest-path desktop/src-tauri/Cargo.toml
+        --features tauri/custom-protocol
+      # CLI, next to the desktop binary so its lookup finds it.
+      - cargo build --release --offline --locked -p tensorseed-cli
+      - install -Dm755 desktop/src-tauri/target/release/tensorseed-desktop -t /app/bin
+      - install -Dm755 target/release/tensorseed -t /app/bin
+      - install -Dm644 desktop/flatpak/dev.tensorseed.desktop.desktop -t /app/share/applications
+      - install -Dm644 desktop/flatpak/dev.tensorseed.desktop.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/dev.tensorseed.desktop.png
+      - install -Dm644 desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.tensorseed.desktop.png
+      - install -Dm644 desktop/src-tauri/icons/128x128@2x.png /app/share/icons/hicolor/256x256/apps/dev.tensorseed.desktop.png
+      - install -Dm644 desktop/src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/dev.tensorseed.desktop.png
+    sources:
+      # This checkout. A Flathub submission uses a git source with a tag.
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+          - desktop/node_modules
+          - desktop/dist
+          - desktop/src-tauri/target
+          - desktop/flatpak/shared-modules
+          - .flatpak-builder
+      - cargo-sources.json
+      - node-sources.json
+      - type: archive
+        url: https://registry.npmjs.org/pnpm/-/pnpm-10.34.6.tgz
+        sha256: 44d7db90fcbb2315b581f85989a913466765421fc656c28e80fac1b7ab5be456
+        dest: flatpak-node/pnpm-cli
