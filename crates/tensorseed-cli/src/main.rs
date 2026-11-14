@@ -15,6 +15,7 @@ mod inference;
 mod keys;
 mod mirrors;
 mod serve;
+mod signing;
 mod torrents;
 
 use std::process::ExitCode;
@@ -127,9 +128,13 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             };
             consumer::list(&load()?, &opts, *no_wait, catalog.as_deref()).await
         }
-        Command::ServeInference(args) => inference::run(&load()?, args).await,
+        Command::ServeInference(args) => inference::run(&load()?, &path, args).await,
         Command::ReferenceLogprobs(args) => challenge::reference(&load()?, args).await,
         Command::CheckEndpoint(args) => Ok(challenge::check(args).await),
+        Command::ResponseKey(cmd) => signing::key_cmd(&path, cmd),
+        Command::ClaimServing(args) => signing::claim_serving(&load()?, &path, args).await,
+        Command::SignResponses(args) => signing::sign_responses(&path, args).await,
+        Command::VerifyResponse(args) => Ok(signing::verify_response(args).await),
         Command::Show {
             repo,
             repo_type,

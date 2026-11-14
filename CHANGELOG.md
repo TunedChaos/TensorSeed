@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Response signing (`docs/plans/verified-serving.md` sections 3, 5.1,
+  and 5.8). `tensorseed response-key create|show` makes an Ed25519
+  response key in an owner-only `response-key.json` next to the config
+  and prints only the public key; the secret is never printed, logged,
+  or taken as an argument. `tensorseed claim-serving <dir|org/name>`
+  verifies the copy and writes the `ts.served-weights/1` claim (response
+  public key, manifest hash, repo, revision, file, engine and version,
+  endpoint, optional `--wallet` as plain data, `claim_sha256`) and prints
+  the exact EIP-191 message; `--sig 0x...` checks that a signature made
+  in the seller's own wallet recovers to that wallet and attaches it.
+  Tensorseed holds no wallet keys. `tensorseed sign-responses` (and
+  `serve-inference --sign`, which moves the runtime to a private loopback
+  port) runs a signing proxy on `127.0.0.1:8090` that forwards requests
+  and buyer headers unchanged, uses or mints `X-Tensorseed-Request-Id`,
+  signs every JSON response with the `X-Tensorseed-*` headers over the
+  canonical `ts.response-sig/1` digest, ends event streams with a signed
+  SSE comment line, and serves the claim at
+  `/.well-known/tensorseed/served-weights.json`.
+  `tensorseed verify-response` checks a saved response (headers and body,
+  or a stream) against a claim: signature, body hash, model, request id,
+  claim hash, and timestamp skew. `check-endpoint` verifies signatures
+  when the endpoint serves a claim or `--claim` is given (an unsigned or
+  badly signed answer fails its challenge), takes
+  `--require-signatures` and `--max-skew`, and reports per-challenge
+  signature status and a summary. `serve-inference` without `--sign`
+  still writes `ts.served-weights/0`.
 - `tensorseed reference-logprobs <dir|org/name>` generates a
   `ts.reference-logprobs/1` file for logprob challenges (the first two
   commands of `docs/plans/verified-serving.md`). It verifies the copy

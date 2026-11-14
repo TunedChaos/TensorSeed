@@ -61,6 +61,9 @@ async-trait = "0.1"
 base64 = "0.23"
 blake2 = "0.10"
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+# EIP-191 signature recovery for seller wallet claims (verify only; no wallet keys).
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+sha3 = { version = "0.10", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.2"

@@ -12,8 +12,11 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use tensorseed_app::inference::{
     LaunchPlan, PlanInput, Runtime, ServedWeights, VerifyCopyOptions, check_extra_files,
-    choose_runtime, default_model_id, find_binary, license_gate, verify_copy, wait_ready,
+    choose_runtime, default_model_id, find_binary, license_gate, local_base_url, verify_copy,
+    wait_ready,
 };
+use tensorseed_app::sign_proxy::SignProxy;
+use tensorseed_app::signing::{ClaimExtras, ServedClaim, WELL_KNOWN_CLAIM, claim_path};
 use tensorseed_core::commercial::DISCLAIMER;
 use tensorseed_core::keys::{RepoRef, RepoType};
 use tensorseed_core::paths::native_path;
@@ -42,7 +45,11 @@ pub fn resolve_target(cfg: &Config, target: &str, dir: Option<&Path>) -> anyhow:
 }
 
 /// `tensorseed serve-inference`.
-pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<ExitCode> {
+pub async fn run(
+    cfg: &Config,
+    config_path: &Path,
+    args: &ServeInferenceArgs,
+) -> anyhow::Result<ExitCode> {
     let mut inf = cfg.inference();
     if let Some(h) = &args.host {
         inf.host.clone_from(h);
@@ -55,6 +62,27 @@ pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<Exit
     }
     inf.validate()?;
     let listen = inf.listen()?;
+    // With --sign the proxy takes the configured address and the runtime
+    // moves to a private loopback port behind it.
+    let sign_key = if args.sign {
+        Some(crate::signing::load_key(
+            config_path,
+            args.response_key.as_deref(),
+        )?)
+    } else {
+        None
+    };
+    let runtime_listen = if sign_key.is_some() {
+        std::net::SocketAddr::new(
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            crate::challenge::free_port()?,
+        )
+    } else {
+        listen
+    };
+    if let Some(w) = &args.wallet {
+        tensorseed_app::signing::normalize_wallet(w)?;
+    }
 
     let (dir, repo) = resolve_target(cfg, &args.target, args.dir.as_deref())?;
 
@@ -121,7 +149,7 @@ pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<Exit
         program,
         dir: &copy.dir,
         model_id: &model_id,
-        listen,
+        listen: runtime_listen,
         cfg: &inf,
         extra: &args.extra,
     });
@@ -136,6 +164,11 @@ pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<Exit
             );
         }
         println!("{}", plan.shell_line());
+        if args.sign {
+            eprintln!(
+                "note: with --sign the signing proxy listens on {listen} and forwards to this runtime"
+            );
+        }
         return Ok(ExitCode::SUCCESS);
     }
     if lookup.found.is_none() {
@@ -163,6 +196,11 @@ pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<Exit
     }
     if let Err(e) = std::net::TcpListener::bind(listen) {
         bail!("cannot listen on {listen}: {e}");
+    }
+    if runtime_listen != listen
+        && let Err(e) = std::net::TcpListener::bind(runtime_listen)
+    {
+        bail!("cannot listen on {runtime_listen}: {e}");
     }
 
     println!("starting {}: {}", runtime.label(), plan.shell_line());
@@ -205,32 +243,146 @@ pub async fn run(cfg: &Config, args: &ServeInferenceArgs) -> anyhow::Result<Exit
             "warning: /v1/models lists {ids:?}, not {model_id:?}; list the id the server reports"
         );
     }
-    let sw = ServedWeights::new(
+    let Some((key, key_path)) = sign_key else {
+        let sw = ServedWeights::new(
+            &copy,
+            &plan,
+            &lic,
+            args.i_have_rights,
+            args.public_url.clone(),
+            tensorseed_core::time::now_rfc3339(),
+        );
+        let sw_path = sw.write(&copy.dir)?;
+
+        println!();
+        println!("serving {} with {}", copy.manifest.repo.id, runtime.label());
+        println!("  base_url  {base}");
+        println!("  model id  {model_id}");
+        if let Some(u) = &args.public_url {
+            println!("  public    {u}");
+        }
+        println!(
+            "  record    {} (unsigned, ts.served-weights/0)",
+            sw_path.display()
+        );
+        println!(
+            "list base_url (through your TLS proxy) and the model id on an OpenAI compatible marketplace; see docs/SELL-INFERENCE.md"
+        );
+        println!("press Ctrl-C to stop");
+        return wait_child(child, runtime).await;
+    };
+
+    let engine_version = match crate::challenge::runtime_version(&plan.program).await {
+        Some(v) => v,
+        None => crate::challenge::endpoint_version(&base, api_key.as_deref())
+            .await
+            .unwrap_or_else(|| format!("{} (version unknown)", runtime.label())),
+    };
+    let proxy_base = local_base_url(listen);
+    let now = tensorseed_core::time::now_rfc3339();
+    let record = ServedWeights::from_parts(
         &copy,
-        &plan,
+        runtime,
+        plan.entrypoint.clone(),
+        model_id.clone(),
+        proxy_base.clone(),
         &lic,
         args.i_have_rights,
         args.public_url.clone(),
-        tensorseed_core::time::now_rfc3339(),
+        now.clone(),
     );
-    let sw_path = sw.write(&copy.dir)?;
+    let claim = ServedClaim::from_record(
+        record,
+        ClaimExtras {
+            engine_version,
+            response_pubkey: key.pubkey_hex(),
+            seller_wallet: args.wallet.clone(),
+            logprobs: args.logprobs.into(),
+            started_at: now,
+        },
+    )?;
+    let cpath = claim_path(&copy.dir);
+    let (claim, reused) = claim.reuse(crate::signing::existing_claim(&cpath));
+    if !reused {
+        claim.write(&cpath)?;
+    }
+    let check = claim.verify()?;
+    let runtime_root = base.strip_suffix("/v1").unwrap_or(&base).to_string();
+    let proxy = match SignProxy::bind(listen, &runtime_root, &cpath, key).await {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = child.kill().await;
+            return Err(e);
+        }
+    };
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut proxy_task = tokio::spawn(proxy.run(async {
+        let _ = stop_rx.await;
+    }));
 
     println!();
-    println!("serving {} with {}", copy.manifest.repo.id, runtime.label());
-    println!("  base_url  {base}");
+    println!(
+        "serving {} with {}, responses signed",
+        copy.manifest.repo.id,
+        runtime.label()
+    );
+    println!("  base_url  {proxy_base} (signing proxy; runtime on {base})");
     println!("  model id  {model_id}");
     if let Some(u) = &args.public_url {
         println!("  public    {u}");
     }
     println!(
-        "  record    {} (unsigned, ts.served-weights/0)",
-        sw_path.display()
+        "  claim     {} (ts.served-weights/1{})",
+        cpath.display(),
+        if reused { ", unchanged" } else { "" }
     );
     println!(
-        "list base_url (through your TLS proxy) and the model id on an OpenAI compatible marketplace; see docs/SELL-INFERENCE.md"
+        "  claim url {}{WELL_KNOWN_CLAIM}",
+        proxy_base.trim_end_matches("/v1")
     );
+    println!("  claim_sha256 {}", claim.claim_sha256);
+    println!(
+        "  response key {} ({})",
+        claim.response_key.pubkey,
+        key_path.display()
+    );
+    for w in &check.warnings {
+        eprintln!("warning: {w}");
+    }
+    crate::signing::print_wallet_instructions(&claim, &cpath.display().to_string());
     println!("press Ctrl-C to stop");
+    let out = tokio::select! {
+        st = child.wait() => {
+            let st = st?;
+            if st.success() {
+                Ok(ExitCode::SUCCESS)
+            } else {
+                Err(anyhow::anyhow!("{} exited ({st})", runtime.label()))
+            }
+        }
+        r = &mut proxy_task => {
+            let _ = child.kill().await;
+            match r {
+                Ok(Ok(())) => Err(anyhow::anyhow!("the signing proxy stopped")),
+                Ok(Err(e)) => Err(e.context("the signing proxy failed")),
+                Err(e) => Err(anyhow::anyhow!("the signing proxy failed: {e}")),
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("stopping {} and the signing proxy", runtime.label());
+            let _ = child.kill().await;
+            Ok(ExitCode::SUCCESS)
+        }
+    };
+    let _ = stop_tx.send(());
+    proxy_task.abort();
+    out
+}
 
+async fn wait_child(
+    mut child: tokio::process::Child,
+    runtime: Runtime,
+) -> anyhow::Result<ExitCode> {
     tokio::select! {
         st = child.wait() => {
             let st = st?;

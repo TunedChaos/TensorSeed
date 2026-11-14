@@ -81,6 +81,11 @@ tensorseed list --commercial        # only licenses that permit commercial servi
 tensorseed serve-inference org/name # verify, then serve it with llama.cpp or vLLM
 tensorseed reference-logprobs org/name --out ref.json  # expected logprobs from a verified copy
 tensorseed check-endpoint https://llm.example.com/v1 --reference ref.json  # logprob challenges
+tensorseed response-key create      # Ed25519 response signing key, owner-only file
+tensorseed serve-inference org/name --sign  # runtime behind the signing proxy, writes ts.served-weights/1
+tensorseed claim-serving org/name --wallet 0x...  # claim for your own engine; prints the EIP-191 message
+tensorseed sign-responses --upstream http://127.0.0.1:8081 --claim served-weights.json  # standalone proxy
+tensorseed verify-response --claim https://llm.example.com/v1 --headers h.txt --body b.json
 
 # Publisher side:
 tensorseed catalog keygen           # minisign compatible, password protected
@@ -174,8 +179,16 @@ a set of challenge prompts from a verified copy of one file, bound to the
 manifest hash and sealed by a `set_hash` you can publish before revealing
 the prompts. `tensorseed check-endpoint` sends a sample of those
 challenges to any OpenAI compatible endpoint and reports pass, fail,
-inconclusive, or unsupported within stated tolerances. See the guide and
-[docs/plans/verified-serving.md](docs/plans/verified-serving.md).
+inconclusive, or unsupported within stated tolerances.
+`serve-inference --sign` (or `claim-serving` plus `sign-responses` for an
+engine you run yourself) puts a loopback signing proxy in front of the
+runtime: every JSON response gets `X-Tensorseed-*` Ed25519 signature
+headers tied to a `ts.served-weights/1` claim, streams end with a signed
+SSE comment, and the claim is served at
+`/.well-known/tensorseed/served-weights.json`. Your wallet can sign the
+claim outside Tensorseed; Tensorseed holds no wallet keys.
+`verify-response` and `check-endpoint` verify the signatures. See the
+guide and [docs/plans/verified-serving.md](docs/plans/verified-serving.md).
 
 Every entry in `list`, `show`, the explorer, and Desktop carries a
 commercial serving mark derived from its license id: `allowed`,

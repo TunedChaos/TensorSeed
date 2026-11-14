@@ -17,5 +17,7 @@ pub mod inference;
 pub mod mirrors;
 pub mod pull;
 pub mod serve_config;
+pub mod sign_proxy;
+pub mod signing;
 pub mod swarm;
 pub mod torrents;

@@ -1,13 +1,15 @@
 # Draft: verified serving
 
-Status: **draft for discussion**. Two pieces are built for 0.3.0:
-`tensorseed reference-logprobs` and `tensorseed check-endpoint` (section
-5.7). Everything else beyond the unsigned `ts.served-weights/0`
-placeholder already described in SPEC section 19.1 and
-[SELL-INFERENCE.md](../SELL-INFERENCE.md) is not implemented. Field
-names, command names, header names, and the EAS schema string below are
-proposals. They are not a released schema; the two built file formats
-are versioned `/1` and may still change before release.
+Status: **draft for discussion**. Built for 0.3.0: logprob challenges
+(`tensorseed reference-logprobs` and `tensorseed check-endpoint`, section
+5.7) and response signing (`tensorseed response-key`, `claim-serving`,
+`sign-responses`, `serve-inference --sign`, `verify-response`, and
+signature checks in `check-endpoint`, section 5.8). On-chain
+registration (section 4, `attest-serving`), the dispute tools, and the
+evidence bundle are not implemented. Field names, command names, header
+names, and the EAS schema string below are proposals. They are not a
+released schema; the built file formats are versioned `/1` and may
+still change before release.
 
 Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
 Date: 2026-11-13. Revised the same day: the primary live check is signed
@@ -196,6 +198,10 @@ Verification:
    published.
 6. Require `response_key.alg` to be `ed25519` and the public key to be
    32 bytes.
+
+As built (section 5.8), `signed` is also left out of the unsigned body,
+so attaching `sig` and setting `signed` to true does not change
+`claim_sha256`.
 
 EIP-191 is the proposed default because Tensorseed can print the exact
 message and an external wallet can sign it, with no Tensorseed-held key.
@@ -771,6 +777,118 @@ verdict needs several challenges. The gap between honest noise and a
 different file is narrower for low-bit quantizations, so open question 7
 still stands.
 
+### 5.8 As built in 0.3.0 (response signing)
+
+Code: `tensorseed_app::signing` (key, claim, digest, verification),
+`tensorseed_app::sign_proxy` (the proxy), `check_signature` in
+`tensorseed_app::challenge`, and `crates/tensorseed-cli/src/signing.rs`.
+Choices made where the draft was open:
+
+**Response key.** `tensorseed response-key create` writes
+`response-key.json` (`ts.response-key/1`: `alg` `ed25519`, the 32-byte
+`secret` seed and `pubkey` as hex, `created_at`) next to the config
+file, owner-only (mode 0600 on Unix, written to a temporary file and
+renamed). Loading refuses a key file that group or others can read. The
+secret is never printed, logged, or accepted on the command line; only
+the public key is shown, and `Debug` output shows only the public key.
+An existing key is not replaced without `--force`. `--out` and
+`--response-key` take another path.
+
+**Claim.** `ts.served-weights/1` has the fields of 3.1. `seller_wallet`,
+`public_base_url`, and `sig` are optional. `claim_sha256` is the SHA-256
+of the canonical JSON without `claim_sha256`, `sig`, **and `signed`**
+(a deviation from 3.2, so adding the wallet signature does not change
+the hash the wallet signed). The EIP-191 message is exactly
+`"tensorseed served-weights/1:\n" || claim_sha256`. Tensorseed prints it
+and never holds a wallet key; `claim-serving --sig 0x...` recovers the
+signer (secp256k1, `v` of 27, 28, 0, or 1, low-s only) and attaches the
+signature only when it equals `seller_wallet`. Wallets are stored as
+`0x` and 40 lowercase hex; EIP-55 input is accepted and normalized.
+Verification does steps 1, 2, 3, and 6 of 3.2, and step 5 as a warning.
+Step 4 (catalog match) is done when the claim is written, because
+`claim-serving` and `serve-inference --sign` verify the copy against
+the signed manifest first; `check-endpoint` additionally requires the
+claim's `manifest_sha256` and entrypoint to equal the reference file's.
+`verify-response` does not re-check the catalog. Version 0 records stay
+readable.
+
+**Writers.** `tensorseed claim-serving <dir|org/name>` is for sellers who
+run their own engine: it verifies the copy, applies the license gate,
+reads the engine version from the runtime's `--version` (or
+`--engine-version`), and writes the claim to
+`.tensorseed/served-weights.json` (or `--out`). `--base-url` is the
+signing proxy URL (default `http://127.0.0.1:8090/v1`).
+`serve-inference --sign` moves the runtime to a free loopback port, puts
+the proxy on the configured host and port, and writes the claim with the
+proxy as `base_url`. Without `--sign`, version 0 stays the default. When
+an existing claim says the same thing apart from `started_at` and
+`created_at`, it is kept, so a wallet signature survives a restart.
+
+**Proxy.** `tensorseed sign-responses --upstream <root> --claim <file>`
+(standalone) or `serve-inference --sign`. It binds `127.0.0.1:8090` by
+default, refuses a claim that names another response key, and refuses
+an upstream ending in `/v1` (give the root). Every path is forwarded
+with the method, body, and buyer headers unchanged (including
+`Authorization`), except hop-by-hop headers and `Accept-Encoding`, so the
+engine returns the identity encoding that the body hash covers. Bodies
+are capped at 64 MiB. A valid `X-Tensorseed-Request-Id` (1 to 128
+characters of `A-Z a-z 0-9 . _ ~ : -`) is forwarded and echoed; an
+invalid one gets 400; a missing one is minted (32 random bytes, 64 hex).
+JSON responses (any status) get the six headers of 5.1, with the digest
+exactly as in 5.1. Other content types pass through unsigned with the
+request id echoed. The claim is served at
+`/.well-known/tensorseed/served-weights.json`, read from disk on each
+request so an attached wallet signature appears without a restart; if
+the file no longer hashes to the claim the proxy signs under, that path
+returns 503.
+
+**Streaming.** A `text/event-stream` response is passed through chunk by
+chunk as it arrives. Its headers carry the request id, claim hash,
+served model, and `X-Tensorseed-Signature-Mode: sse-trailer`. After the
+engine ends the stream, the proxy appends one SSE comment line:
+
+```
+: ts.response-sig/1 timestamp=<RFC 3339> body_sha256=<64 hex> signature=<128 hex>
+```
+
+`body_sha256` covers every streamed byte before that line, and the
+signature is over the same 5.1 digest. SSE parsers ignore comment lines,
+so clients need no change. A verifier keeps the raw stream (for example
+`curl -N -o`), splits off the final trailer, and checks it like a
+header signature. A stream cut short, or one whose upstream fails, has
+no trailer and is unsigned. This keeps latency unchanged and needs no
+buffering; HTTP trailers were not used because browsers, many clients,
+and reverse proxies drop them.
+
+**Verification.** `tensorseed verify-response --claim <file|URL>
+--headers <curl -D file> --body <file>` checks, in order: header
+presence and format, the claim hash, the served model (claim and
+`--model-id`), the echoed `--request-id`, the timestamp within
+`--max-skew` (300 s), the body hash, and the Ed25519 signature with the
+claim's key. A base URL as `--claim` fetches the well-known path. Exit 0
+valid, 1 invalid or unsigned, 2 error. Replay detection (step 7) needs
+state and is left to the marketplace.
+
+**check-endpoint.** With `--claim`, or when the endpoint serves a claim
+at its well-known path, every challenge carries a fresh request id and
+every answer must verify. An unsigned or badly signed answer fails the
+challenge outright (no repeats). The model id defaults to the claim's
+`served_model_id`. `--require-signatures` makes a missing claim an
+error (exit 2). The report gains a per-challenge `signature` (`status`
+`verified`, `invalid`, `absent`, or `unverifiable`, and a `detail`) and
+a `signatures` summary (claim source and hash, response key, the
+wallet when its signature verified, and counts).
+
+**Live smoke (one CPU host, llama.cpp build 12366).**
+`Qwen/Qwen2.5-1.5B-Instruct-GGUF` q2_k from the official catalog behind
+`serve-inference --sign`: a signed chat response verified; the same
+response with one body byte changed, the served model header changed,
+or the timestamp moved by one second failed; a streamed response with
+its trailer verified and failed with one event removed; `check-endpoint`
+through the proxy passed all 32 challenges with 32 signatures verified,
+and straight at the runtime with the claim it failed every challenge as
+unsigned. A restart kept the wallet-signed claim unchanged.
+
 ---
 
 ## 6. Secondary tool: full-generation checks for disputes
@@ -1006,20 +1124,23 @@ Tensorseed stays small, offline-verifiable, and token-neutral. It never
 holds a seller or marketplace private key. Response-signing secrets
 stay on the seller's machine.
 
-### 11.1 Tensorseed (proposed commands; two built in 0.3.0)
+### 11.1 Tensorseed (proposed commands; most built in 0.3.0)
 
 | Command | Role |
 |---|---|
-| `tensorseed claim-serving <dir\|repo_id>` | After a verified copy exists, write the unsigned `ts.served-weights/1` body (including `response_key`), compute `claim_sha256`, and print the exact EIP-191 message. `--wallet` sets `seller_wallet`. `--sig 0x...` verifies the signature and writes the signed file. `--response-key` names a local public key; Tensorseed can also generate a key pair on the seller's machine and refuse to print or upload the secret. |
+| `tensorseed response-key create\|show` | **Built in 0.3.0** (section 5.8). Create the Ed25519 response key in an owner-only file and print only the public key. |
+| `tensorseed claim-serving <dir\|repo_id>` | **Built in 0.3.0** (section 5.8). After a verified copy exists, write the unsigned `ts.served-weights/1` body (including `response_key`), compute `claim_sha256`, and print the exact EIP-191 message. `--wallet` sets `seller_wallet`. `--sig 0x...` verifies the signature and writes the signed file. `--response-key` names a local public key; Tensorseed can also generate a key pair on the seller's machine and refuse to print or upload the secret. |
 | `tensorseed attest-serving <claim.json>` | Check the claim, then print EAS calldata for Base (contract `0x4200...0021`, encoded `attest` data, and a human summary). `--broadcast` is out of scope; an external wallet or the marketplace submits the transaction. |
 | `tensorseed reference-logprobs <dir>` | **Built in 0.3.0** (section 5.7). From a verified local copy, generate `ts.reference-logprobs/1` for that entrypoint: the secret (or later revealed) challenge expectations. Prints `set_hash` so a marketplace can commit to the set without publishing the prompts yet. |
 | `tensorseed reference-answers <dir>` | Generate the longer `ts.reference-answers/1` file used for disputes and calibration, also offline and amortized. |
-| `tensorseed check-endpoint` | **Built in 0.3.0** for logprob challenges only (section 5.7); signed response checks, the dispute mode, and evidence bundles are not built. Default: verify signed responses and run logprob challenges against a claim and a `ts.reference-logprobs/1` file (or a revealed set). A flag runs the full-generation dispute mode instead. Writes an optional `ts.challenge-evidence/1` bundle. No stake is moved. |
-| `tensorseed serve-inference` (extension) or `tensorseed sign-responses` | Start (or run standalone) the loopback signing proxy in front of the runtime, using the local response key. The secret key never leaves the seller host and is never sent to Tensorseed developers or to a marketplace. |
+| `tensorseed check-endpoint` | **Built in 0.3.0** for logprob challenges (section 5.7) with signed response checks (section 5.8); the dispute mode and evidence bundles are not built. Default: verify signed responses and run logprob challenges against a claim and a `ts.reference-logprobs/1` file (or a revealed set). A flag runs the full-generation dispute mode instead. Writes an optional `ts.challenge-evidence/1` bundle. No stake is moved. |
+| `tensorseed verify-response` | **Built in 0.3.0** (section 5.8). Verify one saved response (headers and body, or a stream with its trailer) against a claim. |
+| `tensorseed serve-inference --sign` or `tensorseed sign-responses` | **Built in 0.3.0** (section 5.8). Start (or run standalone) the loopback signing proxy in front of the runtime, using the local response key. The secret key never leaves the seller host and is never sent to Tensorseed developers or to a marketplace. |
 
-`serve-inference` can later gain a flag to write a version 1 body and
-pause for a wallet signature, but version 0 stays the default until
-this schema is accepted.
+`serve-inference --sign` writes a version 1 claim and prints the wallet
+message; it does not pause, and the signature is attached later with
+`claim-serving --sig`. Version 0 stays the default until this schema is
+accepted.
 
 All of these use only the local catalog, the local copy, local keys,
 and public HTTP. None of them take a marketplace private key, talk to
@@ -1132,6 +1253,22 @@ marketplace developers.
 19. Should a checker that knows the engine (llama.cpp) send
     `cache_prompt: false` on challenges, given that it reduces honest
     noise but is a field ordinary clients rarely send?
+20. Is the SSE comment trailer (section 5.8) acceptable for streamed
+    responses, or should streams be signed per event, or not at all?
+    Gateways that rewrite or re-chunk streams must keep the raw bytes for
+    verification.
+21. Should `signed` stay outside `claim_sha256` (as built), and should
+    the claim gain an explicit expiry?
+22. Should the proxy sign error responses (it signs any JSON body
+    today), and should it refuse unsigned content types instead of
+    passing them through?
+23. Is the request id charset (1 to 128 of `A-Z a-z 0-9 . _ ~ : -`) wide
+    enough for marketplace ids, and how long should a marketplace keep
+    ids for replay checks?
+24. A TLS reverse proxy that compresses responses changes the bytes the
+    buyer sees. Should verifiers hash the decoded body (as built, the
+    signature covers the identity body), and should the guide require
+    compression off for these paths?
 
 ---
 

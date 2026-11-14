@@ -1935,7 +1935,14 @@ async fn reference_logprobs_then_check_endpoint() {
         rep["challenges"][0]["comparison"]["first_token_match"],
         false
     );
-    assert_eq!(other.received_requests().await.unwrap().len(), 4);
+    let posts = other
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|q| q.method.as_str() == "POST")
+        .count();
+    assert_eq!(posts, 4);
 
     // No logprobs: unsupported.
     let plain = MockServer::start().await;
@@ -2046,4 +2053,402 @@ async fn reference_logprobs_then_check_endpoint() {
     assert_eq!(code(&o), 1);
     assert!(stderr(&o).contains("failed verification"), "{}", stderr(&o));
     assert!(!bad.exists());
+}
+
+/// EIP-191 `personal_sign` with a well-known development key (Hardhat and
+/// Anvil account 0), standing in for the seller's own wallet.
+fn dev_wallet_sign(msg: &str) -> String {
+    use sha3::Digest as _;
+    let sk = k256::ecdsa::SigningKey::from_slice(
+        &hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80").unwrap(),
+    )
+    .unwrap();
+    let mut p = format!("\x19Ethereum Signed Message:\n{}", msg.len()).into_bytes();
+    p.extend_from_slice(msg.as_bytes());
+    let h = sha3::Keccak256::digest(&p);
+    let (sig, rid) = sk.sign_prehash_recoverable(&h).unwrap();
+    let mut b = sig.to_bytes().to_vec();
+    b.push(27 + rid.to_byte());
+    format!("0x{}", hex::encode(b))
+}
+const DEV_WALLET: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Write a response the way `curl -D headers -o body` would.
+async fn save_response(r: reqwest::Response, headers: &Path, body: &Path) {
+    let mut h = format!("HTTP/1.1 {}\r\n", r.status());
+    for (k, v) in r.headers() {
+        h.push_str(&format!("{k}: {}\r\n", v.to_str().unwrap()));
+    }
+    h.push_str("\r\n");
+    std::fs::write(headers, h).unwrap();
+    std::fs::write(body, r.bytes().await.unwrap()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn signed_serving_key_claim_proxy_verify_and_check() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let (cfg, dir, _) = pulled_gguf(tmp.path(), &server, "apache-2.0").await;
+    let dir_s = dir.to_str().unwrap();
+    mount_engine(
+        &server,
+        chat_logprobs("Hi", -0.2, REF_TOP),
+        legacy_logprobs(" blue", -0.4, REF_LEGACY),
+    )
+    .await;
+
+    // The response key: owner-only, secret never printed.
+    let o = run(&cfg, &["response-key", "create"], &[]).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let keyp = cfg.parent().unwrap().join("response-key.json");
+    let kv: serde_json::Value = serde_json::from_slice(&std::fs::read(&keyp).unwrap()).unwrap();
+    let secret = kv["secret"].as_str().unwrap().to_string();
+    let pubkey = kv["pubkey"].as_str().unwrap().to_string();
+    assert_eq!(kv["schema"], "ts.response-key/1");
+    assert!(stdout(&o).contains(&pubkey));
+    assert!(!stdout(&o).contains(&secret) && !stderr(&o).contains(&secret));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&keyp).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the key file is private");
+    }
+    let o = run(&cfg, &["response-key", "create"], &[]).await;
+    assert_ne!(code(&o), 0, "an existing key is not replaced");
+    let o = run(&cfg, &["response-key", "show"], &[]).await;
+    assert!(stdout(&o).contains(&pubkey) && !stdout(&o).contains(&secret));
+
+    // The claim, naming a wallet; the exact EIP-191 message is printed.
+    let port = free_port();
+    let proxy = format!("http://127.0.0.1:{port}");
+    let o = run(
+        &cfg,
+        &[
+            "claim-serving",
+            dir_s,
+            "--no-wait",
+            "--engine-version",
+            "llama.cpp b1-test",
+            "--base-url",
+            &format!("{proxy}/v1"),
+            "--public-url",
+            "https://llm.example.com/v1",
+            "--wallet",
+            "0xF39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        ],
+        &[("PATH", "")],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let claimp = dir.join(".tensorseed/served-weights.json");
+    let c: serde_json::Value = serde_json::from_slice(&std::fs::read(&claimp).unwrap()).unwrap();
+    assert_eq!(c["schema"], "ts.served-weights/1");
+    assert_eq!(c["signed"], false);
+    assert_eq!(c["seller_wallet"], DEV_WALLET);
+    assert_eq!(c["response_key"]["pubkey"], pubkey.as_str());
+    assert_eq!(c["entrypoint"]["path"], "tiny-q4.gguf");
+    assert_eq!(c["engine_version"], "llama.cpp b1-test");
+    let hash = c["claim_sha256"].as_str().unwrap().to_string();
+    let message = format!("tensorseed served-weights/1:\n{hash}");
+    assert!(stdout(&o).contains(&message), "{}", stdout(&o));
+    assert!(!stdout(&o).contains(&secret));
+
+    // A signature over another message is refused; the right one attaches.
+    let o = run(
+        &cfg,
+        &[
+            "claim-serving",
+            claimp.to_str().unwrap(),
+            "--sig",
+            &dev_wallet_sign("other"),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("recovers to"), "{}", stderr(&o));
+    let o = run(
+        &cfg,
+        &[
+            "claim-serving",
+            claimp.to_str().unwrap(),
+            "--sig",
+            &dev_wallet_sign(&message),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let c: serde_json::Value = serde_json::from_slice(&std::fs::read(&claimp).unwrap()).unwrap();
+    assert_eq!(c["signed"], true);
+    assert_eq!(
+        c["claim_sha256"],
+        hash.as_str(),
+        "the signature does not change the hash"
+    );
+    // Writing the same claim again keeps the signed one.
+    let o = run(
+        &cfg,
+        &[
+            "claim-serving",
+            dir_s,
+            "--no-wait",
+            "--engine-version",
+            "llama.cpp b1-test",
+            "--base-url",
+            &format!("{proxy}/v1"),
+            "--public-url",
+            "https://llm.example.com/v1",
+            "--wallet",
+            DEV_WALLET,
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stdout(&o).contains("kept it"), "{}", stdout(&o));
+    let c: serde_json::Value = serde_json::from_slice(&std::fs::read(&claimp).unwrap()).unwrap();
+    assert_eq!(c["signed"], true);
+
+    // The proxy in front of the mock engine.
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tensorseed"))
+        .arg("--config")
+        .arg(&cfg)
+        .args([
+            "sign-responses",
+            "--upstream",
+            &server.uri(),
+            "--claim",
+            claimp.to_str().unwrap(),
+            "--listen",
+            &format!("127.0.0.1:{port}"),
+        ])
+        .env("RUST_LOG", "warn")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let http = reqwest::Client::new();
+    let well_known = format!("{proxy}/.well-known/tensorseed/served-weights.json");
+    let mut up = false;
+    for _ in 0..100 {
+        if let Ok(r) = http.get(&well_known).send().await
+            && r.status().is_success()
+        {
+            up = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(up, "the proxy came up");
+
+    // A signed response verifies; tampering, a wrong id, or a wrong model fail.
+    let r = http
+        .post(format!("{proxy}/v1/chat/completions"))
+        .header("x-tensorseed-request-id", "buyer-1")
+        .json(&serde_json::json!({"model": "org/tiny", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["x-tensorseed-request-id"], "buyer-1");
+    assert_eq!(r.headers()["x-tensorseed-claim-sha256"], hash.as_str());
+    let hp = tmp.path().join("h.txt");
+    let bp = tmp.path().join("b.json");
+    save_response(r, &hp, &bp).await;
+    let verify = |claim: String, body: PathBuf, extra: Vec<String>| {
+        let cfg = cfg.clone();
+        let hp = hp.clone();
+        async move {
+            let mut a = vec![
+                "verify-response".to_string(),
+                "--claim".into(),
+                claim,
+                "--headers".into(),
+                hp.to_str().unwrap().into(),
+                "--body".into(),
+                body.to_str().unwrap().into(),
+            ];
+            a.extend(extra);
+            let a: Vec<&str> = a.iter().map(String::as_str).collect();
+            run(&cfg, &a, &[]).await
+        }
+    };
+    let o = verify(
+        proxy.clone(),
+        bp.clone(),
+        vec!["--request-id".into(), "buyer-1".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert!(stdout(&o).contains(DEV_WALLET), "{}", stdout(&o));
+    let o = verify(
+        claimp.to_str().unwrap().into(),
+        bp.clone(),
+        vec!["--json".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 0);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["valid"], true);
+    assert_eq!(v["seller_wallet"], DEV_WALLET);
+    let o = verify(
+        proxy.clone(),
+        bp.clone(),
+        vec!["--request-id".into(), "other".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    let o = verify(
+        proxy.clone(),
+        bp.clone(),
+        vec!["--model-id".into(), "org/else".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 1);
+    let tampered = tmp.path().join("t.json");
+    let mut b = std::fs::read(&bp).unwrap();
+    let i = b.iter().position(|&c| c == b'H').unwrap();
+    b[i] = b'J';
+    std::fs::write(&tampered, &b).unwrap();
+    let o = verify(proxy.clone(), tampered, vec!["--json".into()]).await;
+    assert_eq!(code(&o), 1);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["error"], "body_hash_mismatch");
+
+    // check-endpoint through the proxy finds the claim and verifies every
+    // response; straight at the engine with the claim, it fails unsigned.
+    let refp = tmp.path().join("ref.json");
+    let o = run(
+        &cfg,
+        &[
+            "reference-logprobs",
+            dir_s,
+            "--no-wait",
+            "--endpoint",
+            &format!("{}/v1", server.uri()),
+            "--count",
+            "4",
+            "--engine-version",
+            "llama.cpp b1-test",
+            "--out",
+            refp.to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let o = run(
+        &cfg,
+        &[
+            "check-endpoint",
+            &format!("{proxy}/v1"),
+            "-r",
+            refp.to_str().unwrap(),
+            "--sample",
+            "0",
+            "--require-signatures",
+            "--json",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["verdict"], "pass");
+    assert_eq!(v["signatures"]["verified"], 4);
+    assert_eq!(v["signatures"]["invalid"], 0);
+    assert_eq!(v["signatures"]["claim_sha256"], hash.as_str());
+    assert_eq!(v["signatures"]["seller_wallet"], DEV_WALLET);
+    assert_eq!(v["challenges"][0]["signature"]["status"], "verified");
+    let o = run(
+        &cfg,
+        &[
+            "check-endpoint",
+            &format!("{}/v1", server.uri()),
+            "-r",
+            refp.to_str().unwrap(),
+            "--claim",
+            claimp.to_str().unwrap(),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    assert!(stdout(&o).contains("signature absent"), "{}", stdout(&o));
+    let o = run(
+        &cfg,
+        &[
+            "check-endpoint",
+            &format!("{}/v1", server.uri()),
+            "-r",
+            refp.to_str().unwrap(),
+            "--require-signatures",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 2, "no claim served: an error, not a verdict");
+
+    let _ = child.kill().await;
+    let out = child.wait_with_output().await.unwrap();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!all.contains(&secret), "the proxy never prints the key");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_inference_sign_moves_the_runtime_behind_the_proxy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let (cfg, dir, _) = pulled_gguf(tmp.path(), &server, "apache-2.0").await;
+    let dir_s = dir.to_str().unwrap();
+    let args = [
+        "serve-inference",
+        dir_s,
+        "--no-wait",
+        "--sign",
+        "--print-command",
+    ];
+    let o = run(&cfg, &args, &[("PATH", "")]).await;
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("response-key create"), "{}", stderr(&o));
+    let o = run(&cfg, &["response-key", "create"], &[]).await;
+    assert_eq!(code(&o), 0);
+    let o = run(&cfg, &args, &[("PATH", "")]).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let s = stdout(&o);
+    assert!(s.contains("--host 127.0.0.1 --port "), "{s}");
+    assert!(!s.contains("--port 8090"), "the proxy keeps 8090: {s}");
+    assert!(
+        stderr(&o).contains("signing proxy listens on 127.0.0.1:8090"),
+        "{}",
+        stderr(&o)
+    );
+    let o = run(
+        &cfg,
+        &[
+            "serve-inference",
+            dir_s,
+            "--no-wait",
+            "--sign",
+            "--wallet",
+            "0x12",
+            "--print-command",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(code(&o), 1, "a malformed wallet is refused");
 }

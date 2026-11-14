@@ -1003,6 +1003,33 @@ impl ServedWeights {
         public_base_url: Option<String>,
         created_at: String,
     ) -> Self {
+        Self::from_parts(
+            copy,
+            plan.runtime,
+            plan.entrypoint.clone(),
+            plan.model_id.clone(),
+            plan.base_url(),
+            license,
+            rights_asserted,
+            public_base_url,
+            created_at,
+        )
+    }
+
+    /// Build the record for an engine Tensorseed did not start.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        copy: &VerifiedCopy,
+        runtime: Runtime,
+        entrypoint: Entrypoint,
+        served_model_id: String,
+        base_url: String,
+        license: &LicenseDecision,
+        rights_asserted: bool,
+        public_base_url: Option<String>,
+        created_at: String,
+    ) -> Self {
         Self {
             schema: SERVED_WEIGHTS_SCHEMA.into(),
             signed: false,
@@ -1022,10 +1049,10 @@ impl ServedWeights {
                 commercial_serving: license.assessment.value,
                 rights_asserted,
             },
-            runtime: plan.runtime,
-            entrypoint: plan.entrypoint.clone(),
-            served_model_id: plan.model_id.clone(),
-            base_url: plan.base_url(),
+            runtime,
+            entrypoint,
+            served_model_id,
+            base_url,
             public_base_url,
             files: copy.files.clone(),
             created_at,

@@ -14,9 +14,9 @@ use anyhow::{Context, bail};
 use tensorseed_app::challenge::{
     CHECK_SCHEMA, CheckOptions, CheckReference, CheckReport, CheckSample, Counts, Endpoint,
     GEN_FILE, GEN_METHOD, GENERATOR_NOTE, GENERATOR_TOOL, Generation, Generator, Outcome,
-    REFERENCE_SCHEMA, ReferenceFile, Sampling, Tolerance, Verdict, engine_version_line,
-    expected_from, generate_prompts, no_prompt_cache, overall, parse_prompt_file, parse_seed,
-    random_32, reference_request_extra, run_checks, sample_indexes,
+    REFERENCE_SCHEMA, ReferenceFile, Sampling, SigContext, SigStatus, SignatureSummary, Tolerance,
+    Verdict, engine_version_line, expected_from, generate_prompts, no_prompt_cache, overall,
+    parse_prompt_file, parse_seed, random_32, reference_request_extra, run_checks, sample_indexes,
 };
 use tensorseed_app::inference::{
     Entrypoint, LaunchPlan, PlanInput, Runtime, VerifyCopyOptions, check_extra_files,
@@ -31,7 +31,7 @@ use crate::inference::resolve_target;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Read an API key from the environment variable `var` (never from argv).
-fn api_key_from_env(var: Option<&str>) -> anyhow::Result<Option<String>> {
+pub(crate) fn api_key_from_env(var: Option<&str>) -> anyhow::Result<Option<String>> {
     let Some(var) = var else { return Ok(None) };
     if var.is_empty() || !var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         bail!("--api-key-env takes an environment variable name, not {var:?}");
@@ -44,7 +44,7 @@ fn api_key_from_env(var: Option<&str>) -> anyhow::Result<Option<String>> {
 }
 
 /// Write `data` to `path`, readable only by the owner on Unix.
-fn write_private(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
@@ -69,7 +69,7 @@ fn pretty(v: &impl serde::Serialize) -> anyhow::Result<Vec<u8>> {
 }
 
 /// `program --version`, first version line.
-async fn runtime_version(program: &Path) -> Option<String> {
+pub(crate) async fn runtime_version(program: &Path) -> Option<String> {
     let out = tokio::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::new(program)
@@ -89,7 +89,7 @@ async fn runtime_version(program: &Path) -> Option<String> {
 }
 
 /// llama.cpp `/props` build info of an endpoint, best effort.
-async fn endpoint_version(base_url: &str, api_key: Option<&str>) -> Option<String> {
+pub(crate) async fn endpoint_version(base_url: &str, api_key: Option<&str>) -> Option<String> {
     let root = base_url.trim_end_matches('/');
     let root = root.strip_suffix("/v1").unwrap_or(root);
     let http = reqwest::Client::builder()
@@ -107,7 +107,7 @@ async fn endpoint_version(base_url: &str, api_key: Option<&str>) -> Option<Strin
 }
 
 /// A free loopback port for a private runtime.
-fn free_port() -> anyhow::Result<u16> {
+pub(crate) fn free_port() -> anyhow::Result<u16> {
     let l = std::net::TcpListener::bind(("127.0.0.1", 0)).context("finding a free port")?;
     Ok(l.local_addr()?.port())
 }
@@ -450,10 +450,45 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
         Some(s) => parse_seed(s)?,
         None => random_32()?,
     };
-    let model_id = args
-        .model_id
-        .clone()
-        .unwrap_or_else(|| reference.repo.clone());
+    let claim = match &args.claim {
+        Some(src) => Some(crate::signing::fetch_claim(src).await?),
+        None => crate::signing::discover_claim(&args.base_url).await?,
+    };
+    if claim.is_none() && args.require_signatures {
+        bail!(
+            "the endpoint serves no claim at its well-known path; pass --claim or drop --require-signatures"
+        );
+    }
+    if let Some((c, _, src)) = &claim {
+        if c.catalog.manifest_sha256 != reference.manifest_sha256 {
+            bail!(
+                "the claim at {src} is for manifest {}, the reference for {}",
+                c.catalog.manifest_sha256,
+                reference.manifest_sha256
+            );
+        }
+        if c.entrypoint != reference.entrypoint {
+            bail!(
+                "the claim at {src} serves {:?}, the reference is for {:?}",
+                c.entrypoint,
+                reference.entrypoint
+            );
+        }
+        if let Some(m) = &args.model_id
+            && *m != c.served_model_id
+        {
+            bail!(
+                "--model-id {m} differs from the claim's served_model_id {}",
+                c.served_model_id
+            );
+        }
+    }
+    let model_id = args.model_id.clone().unwrap_or_else(|| {
+        claim.as_ref().map_or_else(
+            || reference.repo.clone(),
+            |(c, _, _)| c.served_model_id.clone(),
+        )
+    });
     let idx = sample_indexes(&reference.prompts, args.sample, &seed);
     let chosen: Vec<_> = idx.iter().map(|&i| &reference.prompts[i]).collect();
     let mut ep = Endpoint::new(
@@ -464,6 +499,14 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
     )?;
     if args.no_prompt_cache {
         ep.extra = Some(no_prompt_cache());
+    }
+    if let Some((c, _, _)) = &claim {
+        ep.sig = Some(SigContext {
+            pubkey: c.response_pubkey()?,
+            claim_sha256: c.claim_sha256.clone(),
+            served_model_id: c.served_model_id.clone(),
+            max_skew_secs: args.max_skew,
+        });
     }
     let opts = CheckOptions {
         tolerance,
@@ -490,6 +533,12 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             "  tolerance mean <= {} nats, token <= {} nats, {} attempt(s)",
             tolerance.max_mean_abs, tolerance.max_token_abs, args.repeats
         );
+        if let Some((c, _, src)) = &claim {
+            println!(
+                "  signatures required: claim {} from {src}",
+                &c.claim_sha256[..16]
+            );
+        }
     }
     let results = tokio::select! {
         r = run_checks(&ep, &chosen, &reference.sampling, &opts) => r,
@@ -497,6 +546,22 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
     };
     let verdict = overall(&results);
     let counts = Counts::of(&results);
+    let (verified, invalid, absent, unverifiable) = SignatureSummary::count(&results);
+    let signatures = (claim.is_some() || unverifiable > 0).then(|| SignatureSummary {
+        claim_source: claim.as_ref().map(|(_, _, s)| s.clone()),
+        claim_sha256: claim.as_ref().map(|(c, _, _)| c.claim_sha256.clone()),
+        response_pubkey: claim
+            .as_ref()
+            .map(|(c, _, _)| c.response_key.pubkey.clone()),
+        seller_wallet: claim.as_ref().and_then(|(_, k, _)| match &k.wallet {
+            tensorseed_app::signing::WalletStatus::Verified(a) => Some(a.clone()),
+            tensorseed_app::signing::WalletStatus::NotSigned => None,
+        }),
+        verified,
+        invalid,
+        absent,
+        unverifiable,
+    });
     if args.json {
         let report = CheckReport {
             schema: CHECK_SCHEMA.into(),
@@ -516,6 +581,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             },
             verdict,
             counts,
+            signatures,
             challenges: results,
             checked_at: tensorseed_core::time::now_rfc3339(),
         };
@@ -535,8 +601,15 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
                     }
                 )
             });
+            let sig = match r.signature.as_ref().map(|s| s.status) {
+                Some(SigStatus::Verified) => "  sig ok",
+                Some(SigStatus::Invalid) => "  sig BAD",
+                Some(SigStatus::Absent) => "  sig none",
+                Some(SigStatus::Unverifiable) => "  sig ?",
+                None => "",
+            };
             println!(
-                "  {:<w$}  {:<12}  {:>2}x  {metrics}{}",
+                "  {:<w$}  {:<12}  {:>2}x  {metrics}{sig}{}",
                 r.id,
                 r.verdict.label(),
                 r.attempts,
@@ -555,6 +628,19 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             counts.inconclusive,
             counts.unsupported
         );
+        if let Some(s) = &signatures {
+            println!(
+                "signatures: {} verified, {} invalid, {} absent, {} unverifiable{}",
+                s.verified,
+                s.invalid,
+                s.absent,
+                s.unverifiable,
+                s.seller_wallet
+                    .as_deref()
+                    .map(|w| format!(" (claim signed by wallet {w})"))
+                    .unwrap_or_default()
+            );
+        }
     }
     Ok(verdict)
 }

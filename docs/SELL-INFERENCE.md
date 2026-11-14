@@ -151,6 +151,12 @@ with a marketplace partner and is not decided yet; the `/0` version and
 prove what the seller claims to serve, not what actually runs; nothing in
 this file is proof.
 
+With `--sign` (see [Sign responses](#sign-responses)), the same path holds
+a `ts.served-weights/1` claim instead: the same facts plus the engine
+version, the response signing public key, an optional seller wallet, and
+`claim_sha256`, which your wallet can sign. It is a statement you make and
+can be held to, not proof of what runs.
+
 ## 5. Expose it safely
 
 Never put the runtime itself on the internet. Keep `host = "127.0.0.1"` and
@@ -233,9 +239,9 @@ list that contains your model id. If the offer never turns healthy, check
 `curl https://llm.example.com/v1/models` from another network first.
 
 Use a model id buyers will search for. If another seller already offers the
-same weights, matching their id puts you in the same order book. When the
-signed weights statement exists, a buyer will be able to tell which offers
-run the exact catalog revision you verified.
+same weights, matching their id puts you in the same order book. With
+signed responses (below), a buyer can tell which offers claim the exact
+catalog revision you verified, and tie every answer to that claim.
 
 ### Publish reference logprobs and check yourself
 
@@ -302,6 +308,116 @@ cache and batching change the arithmetic. For a self-check against your
 own llama.cpp server, `--no-prompt-cache` sends llama.cpp's
 `cache_prompt: false`; a marketplace should leave it off so challenges
 look like normal traffic.
+
+### Sign responses
+
+Signed responses tie every answer to a claim about the exact weights you
+serve (design: [plans/verified-serving.md](plans/verified-serving.md),
+sections 3, 5.1, and 5.8). They do not prove which model produced an
+answer; logprob challenges do that. They make the claim attributable to
+you. Tensorseed never holds your wallet key or any marketplace key.
+
+1. Create a response key once. It is written owner-only next to your
+   config file; the secret is never printed, and only the public key is
+   shown:
+
+   ```sh
+   tensorseed response-key create
+   tensorseed response-key show
+   ```
+
+2. Serve with the signing proxy in front of the runtime. The runtime moves
+   to a private loopback port, the proxy takes `127.0.0.1:8090` (so the
+   reverse proxy setup above does not change), and a signed-format claim
+   `ts.served-weights/1` is written to `.tensorseed/served-weights.json`
+   with the response public key, the manifest hash, repo, revision, file,
+   engine and version, and endpoint:
+
+   ```sh
+   tensorseed serve-inference Qwen/Qwen2.5-1.5B-Instruct-GGUF \
+     --file qwen2.5-1.5b-instruct-q4_k_m.gguf --model-id qwen2.5-1.5b-instruct \
+     --public-url https://llm.example.com/v1 \
+     --sign --wallet 0xYourSellerWallet
+   ```
+
+   If you run your own engine, write the claim and run the proxy
+   yourself:
+
+   ```sh
+   tensorseed claim-serving Qwen/Qwen2.5-1.5B-Instruct-GGUF \
+     --file qwen2.5-1.5b-instruct-q4_k_m.gguf --model-id qwen2.5-1.5b-instruct \
+     --public-url https://llm.example.com/v1 --wallet 0xYourSellerWallet
+   tensorseed sign-responses --upstream http://127.0.0.1:8081 \
+     --claim ~/.local/share/tensorseed/downloads/Qwen/Qwen2.5-1.5B-Instruct-GGUF/.tensorseed/served-weights.json
+   ```
+
+   `--upstream` is the engine root, without `/v1`. The proxy listens on
+   `127.0.0.1:8090` unless you pass `--listen`.
+
+3. Bind the claim to your wallet (optional, but marketplaces will want
+   it). Both commands print the exact message, for example:
+
+   ```
+   tensorseed served-weights/1:
+   0ede3bbbbaf3d449e0ebc66470d2646ccf6033805120dcc077cf555a3d2bef70
+   ```
+
+   Sign it with EIP-191 (`personal_sign`) in your own wallet, then attach
+   the signature. Tensorseed checks that it recovers to the wallet in the
+   claim:
+
+   ```sh
+   tensorseed claim-serving <path to served-weights.json> --sig 0x...
+   ```
+
+   Restarting `serve-inference --sign` with the same settings keeps the
+   signed claim. Changing the file, model id, endpoint, engine version,
+   wallet, or key writes a new claim that needs a new signature.
+
+What the proxy does:
+
+- Forwards every request with its headers unchanged (your
+  `Authorization` check still happens at the reverse proxy and, with
+  `api_key_env`, at the runtime).
+- Uses the buyer's `X-Tensorseed-Request-Id` (1 to 128 of
+  `A-Z a-z 0-9 . _ ~ : -`), or mints one, and echoes it.
+- Adds `X-Tensorseed-Claim-SHA256`, `-Served-Model`, `-Timestamp`,
+  `-Body-SHA256`, and `-Signature` to every JSON response.
+- Streams (`"stream": true`) pass through as they arrive and end with
+  one extra SSE comment line, `: ts.response-sig/1 timestamp=...
+  body_sha256=... signature=...`, which SSE clients ignore. The headers
+  say `X-Tensorseed-Signature-Mode: sse-trailer`.
+- Serves the claim at
+  `https://llm.example.com/.well-known/tensorseed/served-weights.json`
+  once your reverse proxy forwards that path too (the Caddy example
+  above needs a `handle /.well-known/tensorseed/*` block without the key
+  check; the claim holds no secrets).
+
+Do not let the reverse proxy compress or rewrite these responses (no
+Caddy `encode`, no nginx `gzip` for JSON or event streams on these
+paths): the signature covers the exact bytes the engine returned.
+
+Check a signed response, or your whole endpoint, from anywhere:
+
+```sh
+curl -s -D h.txt -o b.json https://llm.example.com/v1/chat/completions \
+  -H "Authorization: Bearer $TS_UPSTREAM_KEY" -H 'content-type: application/json' \
+  -H 'X-Tensorseed-Request-Id: test-1' \
+  -d '{"model":"qwen2.5-1.5b-instruct","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+tensorseed verify-response --claim https://llm.example.com/v1 \
+  --headers h.txt --body b.json --request-id test-1
+TS_CHECK_KEY=... tensorseed check-endpoint https://llm.example.com/v1 \
+  --reference ref-q4_k_m.json --api-key-env TS_CHECK_KEY --require-signatures
+```
+
+`verify-response` exits 0 when the signature, body hash, model, request
+id, claim hash, and timestamp (within `--max-skew`, 300 s) all check
+out, 1 when anything fails, and 2 on an error. For a stream, save it with
+`curl -N` and pass the raw file as `--body`. `check-endpoint` finds the
+claim at the well-known path (or takes `--claim`), sends a fresh request
+id with every challenge, and fails any challenge whose answer is
+unsigned or badly signed; the report lists the signature status of each
+challenge and a summary.
 
 ## 7. License duties when you sell access
 

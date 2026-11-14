@@ -779,6 +779,109 @@ pub enum Outcome {
     Error(String),
 }
 
+/// What a signed endpoint must sign with (from its `ts.served-weights/1` claim).
+#[derive(Debug, Clone)]
+pub struct SigContext {
+    /// `response_key.pubkey`.
+    pub pubkey: [u8; 32],
+    /// `claim_sha256`.
+    pub claim_sha256: String,
+    /// `served_model_id`.
+    pub served_model_id: String,
+    /// Allowed timestamp skew (seconds).
+    pub max_skew_secs: u64,
+}
+
+/// Signature status of one response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigStatus {
+    /// Verified against the claim.
+    Verified,
+    /// A claim was given but the response is not signed.
+    Absent,
+    /// Signed, but the signature does not verify.
+    Invalid,
+    /// Signed, but there is no claim to check it against.
+    Unverifiable,
+}
+
+/// Signature result of one response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SigResult {
+    /// Status.
+    pub status: SigStatus,
+    /// Why, when not verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// One response: the parsed outcome and, when checked, its signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Answer {
+    /// Logprob outcome.
+    pub outcome: Outcome,
+    /// Signature result (`None` when unsigned and no claim was given).
+    pub signature: Option<SigResult>,
+}
+
+/// Check the signature headers of a response.
+#[must_use]
+pub fn check_signature(
+    ctx: Option<&SigContext>,
+    headers: &[(String, String)],
+    body: &[u8],
+    request_id: Option<&str>,
+    requested_model: &str,
+    now_unix: i64,
+) -> Option<SigResult> {
+    use crate::signing::{Expect, SigError, extract_signed, verify_fields};
+    let fields = extract_signed(headers, body);
+    let Some(ctx) = ctx else {
+        return match fields {
+            Err(SigError::Absent) => None,
+            _ => Some(SigResult {
+                status: SigStatus::Unverifiable,
+                detail: Some("signed, but no claim was given or found".into()),
+            }),
+        };
+    };
+    let (f, body) = match fields {
+        Ok(x) => x,
+        Err(SigError::Absent) => {
+            return Some(SigResult {
+                status: SigStatus::Absent,
+                detail: Some("the response is not signed".into()),
+            });
+        }
+        Err(e) => {
+            return Some(SigResult {
+                status: SigStatus::Invalid,
+                detail: Some(e.to_string()),
+            });
+        }
+    };
+    let e = Expect {
+        pubkey: ctx.pubkey,
+        claim_sha256: &ctx.claim_sha256,
+        served_model_id: &ctx.served_model_id,
+        request_id,
+        requested_model: Some(requested_model),
+        now_unix,
+        max_skew_secs: ctx.max_skew_secs,
+    };
+    Some(match verify_fields(&f, body, &e) {
+        Ok(()) => SigResult {
+            status: SigStatus::Verified,
+            detail: None,
+        },
+        Err(err) => SigResult {
+            status: SigStatus::Invalid,
+            detail: Some(err.to_string()),
+        },
+    })
+}
+
 /// An OpenAI compatible endpoint.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
@@ -792,6 +895,9 @@ pub struct Endpoint {
     pub http: reqwest::Client,
     /// Extra request fields (never overriding the standard ones).
     pub extra: Option<serde_json::Map<String, serde_json::Value>>,
+    /// When set, every request carries a fresh `X-Tensorseed-Request-Id`
+    /// and every response must be signed with this claim's key.
+    pub sig: Option<SigContext>,
 }
 
 impl Endpoint {
@@ -815,40 +921,75 @@ impl Endpoint {
                 .user_agent(concat!("tensorseed/", env!("CARGO_PKG_VERSION")))
                 .build()?,
             extra: None,
+            sig: None,
         })
     }
 
     /// Send one challenge.
     pub async fn ask(&self, p: &ChallengePrompt, s: &Sampling) -> Outcome {
+        self.ask_signed(p, s).await.outcome
+    }
+
+    /// Send one challenge and check its signature.
+    pub async fn ask_signed(&self, p: &ChallengePrompt, s: &Sampling) -> Answer {
+        let err = |e: String| Answer {
+            outcome: Outcome::Error(e),
+            signature: None,
+        };
         let (path, body) = request_body(p, &self.model, s, self.extra.as_ref());
         let url = format!("{}/{path}", self.base_url);
         let mut req = self.http.post(&url).json(&body);
         if let Some(k) = &self.api_key {
             req = req.bearer_auth(k);
         }
+        let request_id = if self.sig.is_some() {
+            match crate::signing::mint_request_id() {
+                Ok(id) => Some(id),
+                Err(e) => return err(format!("{e:#}")),
+            }
+        } else {
+            None
+        };
+        if let Some(id) = &request_id {
+            req = req.header(crate::signing::H_REQUEST_ID, id);
+        }
         let resp = match req.send().await {
             Ok(r) => r,
-            Err(e) if e.is_timeout() => return Outcome::Error(format!("{path}: timed out")),
-            Err(e) => return Outcome::Error(format!("{path}: {}", without_url(&e))),
+            Err(e) if e.is_timeout() => return err(format!("{path}: timed out")),
+            Err(e) => return err(format!("{path}: {}", without_url(&e))),
         };
         let status = resp.status();
+        let headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
+            .collect();
         let bytes = match resp.bytes().await {
             Ok(b) => b,
-            Err(e) => return Outcome::Error(format!("{path}: reading body: {}", without_url(&e))),
+            Err(e) => return err(format!("{path}: reading body: {}", without_url(&e))),
         };
         if !status.is_success() {
             let snippet: String = String::from_utf8_lossy(&bytes).chars().take(200).collect();
-            return Outcome::Error(format!("{path}: HTTP {status}: {snippet}"));
+            return err(format!("{path}: HTTP {status}: {snippet}"));
         }
+        let signature = check_signature(
+            self.sig.as_ref(),
+            &headers,
+            &bytes,
+            request_id.as_deref(),
+            &self.model,
+            i64::try_from(tensorseed_core::time::unix_now()).unwrap_or(i64::MAX),
+        );
         let v: serde_json::Value = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
-            Err(_) => return Outcome::Error(format!("{path}: response is not JSON")),
+            Err(_) => return err(format!("{path}: response is not JSON")),
         };
-        match parse_logprobs(&v) {
+        let outcome = match parse_logprobs(&v) {
             Ok(Some(steps)) => Outcome::Steps(steps),
             Ok(None) => Outcome::NoLogprobs,
             Err(e) => Outcome::Error(format!("{path}: {e:#}")),
-        }
+        };
+        Answer { outcome, signature }
     }
 }
 
@@ -1040,6 +1181,10 @@ pub struct ChallengeResult {
     /// Why the verdict is not pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Signature of the last response, when signatures were checked or
+    /// present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<SigResult>,
     /// Time across all attempts (milliseconds).
     pub elapsed_ms: u64,
 }
@@ -1071,9 +1216,39 @@ pub async fn check_one(
     let mut fails = 0u32;
     let mut errors = Vec::new();
     let mut unsupported = 0u32;
+    let mut signature: Option<SigResult> = None;
     while attempts < repeats {
         attempts += 1;
-        match ep.ask(p, s).await {
+        let answer = ep.ask_signed(p, s).await;
+        if !matches!(answer.outcome, Outcome::Error(_)) {
+            signature.clone_from(&answer.signature);
+            // A claimed signer that answers unsigned or with a bad signature
+            // fails outright: retrying cannot make it honest.
+            if ep.sig.is_some()
+                && let Some(sr) = &answer.signature
+                && matches!(sr.status, SigStatus::Absent | SigStatus::Invalid)
+            {
+                return ChallengeResult {
+                    id: p.id.clone(),
+                    verdict: Verdict::Fail,
+                    attempts,
+                    comparison: last_cmp,
+                    attempt_mean_abs_dev: means,
+                    reason: Some(format!(
+                        "signature {}: {}",
+                        if sr.status == SigStatus::Absent {
+                            "absent"
+                        } else {
+                            "invalid"
+                        },
+                        sr.detail.as_deref().unwrap_or("")
+                    )),
+                    signature,
+                    elapsed_ms: elapsed_ms(start),
+                };
+            }
+        }
+        match answer.outcome {
             Outcome::Steps(steps) => {
                 let c = compare(&p.expected, &steps);
                 means.push(c.mean_abs_dev);
@@ -1093,6 +1268,7 @@ pub async fn check_one(
                             "attempts disagree: an earlier attempt was outside tolerance or failed"
                                 .to_string()
                         }),
+                        signature,
                         elapsed_ms: elapsed_ms(start),
                     };
                 }
@@ -1140,6 +1316,7 @@ pub async fn check_one(
         comparison: last_cmp,
         attempt_mean_abs_dev: means,
         reason: Some(reason),
+        signature,
         elapsed_ms: elapsed_ms(start),
     }
 }
@@ -1323,10 +1500,55 @@ pub struct CheckReport {
     pub verdict: Verdict,
     /// Counts.
     pub counts: Counts,
+    /// Signature summary, when a claim was used or signatures were seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signatures: Option<SignatureSummary>,
     /// Per challenge, in set order.
     pub challenges: Vec<ChallengeResult>,
     /// When the check finished (RFC 3339 UTC).
     pub checked_at: String,
+}
+
+/// Signature summary across a check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignatureSummary {
+    /// Where the claim came from (path or URL), when one was used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_source: Option<String>,
+    /// The claim's `claim_sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_sha256: Option<String>,
+    /// The claim's response public key (hex).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_pubkey: Option<String>,
+    /// The seller wallet, when the claim's wallet signature verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller_wallet: Option<String>,
+    /// Responses verified.
+    pub verified: u32,
+    /// Responses with an invalid signature.
+    pub invalid: u32,
+    /// Responses that were not signed.
+    pub absent: u32,
+    /// Signed responses with no claim to check against.
+    pub unverifiable: u32,
+}
+
+impl SignatureSummary {
+    /// Count the per challenge statuses.
+    #[must_use]
+    pub fn count(results: &[ChallengeResult]) -> (u32, u32, u32, u32) {
+        let mut c = (0, 0, 0, 0);
+        for s in results.iter().filter_map(|r| r.signature.as_ref()) {
+            match s.status {
+                SigStatus::Verified => c.0 += 1,
+                SigStatus::Invalid => c.1 += 1,
+                SigStatus::Absent => c.2 += 1,
+                SigStatus::Unverifiable => c.3 += 1,
+            }
+        }
+        c
+    }
 }
 
 impl CheckReference {
@@ -1639,6 +1861,7 @@ mod tests {
             comparison: None,
             attempt_mean_abs_dev: vec![],
             reason: None,
+            signature: None,
             elapsed_ms: 0,
         };
         use Verdict::*;
@@ -1711,5 +1934,61 @@ mod tests {
         );
         assert_eq!(engine_version_line("0.6.3\n").unwrap(), "0.6.3");
         assert_eq!(engine_version_line("\n"), None);
+    }
+
+    #[test]
+    fn signature_statuses() {
+        let k = crate::signing::ResponseKey::from_seed(&[7; 32]);
+        let claim = "1".repeat(64);
+        let body = br#"{"ok":true}"#;
+        let f = k.sign_response(
+            &claim,
+            "r1",
+            "org/tiny",
+            &tensorseed_core::time::now_rfc3339(),
+            body,
+        );
+        let signed: Vec<(String, String)> = f
+            .headers()
+            .iter()
+            .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
+            .collect();
+        let ctx = SigContext {
+            pubkey: k.pubkey(),
+            claim_sha256: claim.clone(),
+            served_model_id: "org/tiny".into(),
+            max_skew_secs: 300,
+        };
+        let now = i64::try_from(tensorseed_core::time::unix_now()).unwrap();
+        let st = |c: Option<&SigContext>, h: &[(String, String)], b: &[u8], m: &str| {
+            check_signature(c, h, b, Some("r1"), m, now).map(|r| r.status)
+        };
+        assert_eq!(st(None, &[], body, "org/tiny"), None);
+        assert_eq!(
+            st(None, &signed, body, "org/tiny"),
+            Some(SigStatus::Unverifiable)
+        );
+        assert_eq!(
+            st(Some(&ctx), &[], body, "org/tiny"),
+            Some(SigStatus::Absent)
+        );
+        assert_eq!(
+            st(Some(&ctx), &signed, body, "org/tiny"),
+            Some(SigStatus::Verified)
+        );
+        assert_eq!(
+            st(Some(&ctx), &signed, b"{}", "org/tiny"),
+            Some(SigStatus::Invalid)
+        );
+        assert_eq!(
+            st(Some(&ctx), &signed, body, "org/other"),
+            Some(SigStatus::Invalid)
+        );
+        let mut wrong = ctx.clone();
+        wrong.pubkey = crate::signing::ResponseKey::from_seed(&[8; 32]).pubkey();
+        assert_eq!(
+            st(Some(&wrong), &signed, body, "org/tiny"),
+            Some(SigStatus::Invalid)
+        );
     }
 }

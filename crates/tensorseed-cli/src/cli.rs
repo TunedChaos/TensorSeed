@@ -214,6 +214,33 @@ pub enum Command {
     /// Exit status: 0 pass, 1 fail, 2 inconclusive or unsupported (also
     /// for errors that prevent a verdict).
     CheckEndpoint(CheckEndpointArgs),
+    /// Create or show the Ed25519 response signing key.
+    ///
+    /// The key lives in an owner-only file next to the config file
+    /// (`response-key.json`). The secret is never printed or taken on the
+    /// command line; only the public key is shown.
+    #[command(subcommand)]
+    ResponseKey(ResponseKeyCmd),
+    /// Write the `ts.served-weights/1` claim for an engine you run
+    /// yourself, or attach a wallet signature to an existing claim.
+    ///
+    /// The copy is verified against the signed manifest first. With
+    /// `--wallet` the claim names your wallet and the command prints the
+    /// exact message to sign with EIP-191 (personal_sign) in your own
+    /// wallet; Tensorseed never holds wallet keys. Run again with `--sig`
+    /// to check and attach the signature.
+    ClaimServing(ClaimServingArgs),
+    /// Run the signing proxy in front of an OpenAI compatible engine.
+    ///
+    /// Requests and headers pass through unchanged. JSON responses get
+    /// `X-Tensorseed-*` signature headers; event streams end with a signed
+    /// SSE comment. The claim is served at
+    /// `/.well-known/tensorseed/served-weights.json`.
+    SignResponses(SignResponsesArgs),
+    /// Verify a signed response against a `ts.served-weights/1` claim.
+    ///
+    /// Exit status: 0 valid, 1 invalid or unsigned, 2 error.
+    VerifyResponse(VerifyResponseArgs),
     /// List catalog entries.
     ///
     /// Each row shows a commercial serving mark derived from the license id
@@ -750,10 +777,159 @@ pub struct ServeInferenceArgs {
     /// Hashing threads for verification.
     #[arg(long, default_value_t = 4)]
     pub threads: usize,
+    /// Put the signing proxy in front of the runtime: the runtime moves to
+    /// a private loopback port, the proxy listens on host:port, and a
+    /// signed-format claim (`ts.served-weights/1`) is written.
+    #[arg(long)]
+    pub sign: bool,
+    /// Response key file (default: response-key.json next to the config).
+    #[arg(long, value_name = "PATH", requires = "sign")]
+    pub response_key: Option<PathBuf>,
+    /// Seller wallet named in the claim (plain data; sign the printed
+    /// message in your wallet and attach it with `claim-serving --sig`).
+    #[arg(long, value_name = "0x...", requires = "sign")]
+    pub wallet: Option<String>,
+    /// Logprob tier recorded in the claim.
+    #[arg(long, value_enum, default_value_t = LogprobsArg::Required, requires = "sign")]
+    pub logprobs: LogprobsArg,
     /// Extra arguments passed to the runtime after the configured ones
     /// (after `--`).
     #[arg(last = true, value_name = "ARGS")]
     pub extra: Vec<String>,
+}
+
+/// Logprob tier of an offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LogprobsArg {
+    /// Responses carry logprobs (the logprob-verified tier).
+    Required,
+    /// The engine cannot return logprobs.
+    None,
+}
+
+/// `response-key` subcommands.
+#[derive(Debug, Clone, Subcommand)]
+pub enum ResponseKeyCmd {
+    /// Create a new key (refuses to replace one without --force).
+    Create {
+        /// Key file (default: response-key.json next to the config).
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// Replace an existing key. Claims and buyers pinned to the old
+        /// public key stop verifying.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the public key and the key file path.
+    Show {
+        /// Key file (default: response-key.json next to the config).
+        #[arg(long, value_name = "PATH")]
+        key: Option<PathBuf>,
+    },
+}
+
+/// `claim-serving` arguments.
+#[derive(Debug, Args)]
+pub struct ClaimServingArgs {
+    /// A directory written by `pull`, or a repo id `org/name[@rev]`. With
+    /// `--sig`, also a claim file.
+    pub target: String,
+    /// Directory when the target is a repo id.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+    /// Inference runtime the engine is.
+    #[arg(long, value_enum, default_value_t = RuntimeArg::Auto)]
+    pub runtime: RuntimeArg,
+    /// GGUF file the engine loads, relative to the directory.
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+    /// Model id the engine serves (default: the repo id).
+    #[arg(long, value_name = "ID")]
+    pub model_id: Option<String>,
+    /// Base URL of the signing proxy in front of the engine.
+    #[arg(long, value_name = "URL", default_value = "http://127.0.0.1:8090/v1")]
+    pub base_url: String,
+    /// Public base URL buyers reach (https).
+    #[arg(long, value_name = "URL")]
+    pub public_url: Option<String>,
+    /// Seller wallet named in the claim (plain data).
+    #[arg(long, value_name = "0x...")]
+    pub wallet: Option<String>,
+    /// Response key file (default: response-key.json next to the config).
+    #[arg(long, value_name = "PATH")]
+    pub response_key: Option<PathBuf>,
+    /// Logprob tier.
+    #[arg(long, value_enum, default_value_t = LogprobsArg::Required)]
+    pub logprobs: LogprobsArg,
+    /// Engine version string (default: the runtime's `--version`).
+    #[arg(long, value_name = "TEXT")]
+    pub engine_version: Option<String>,
+    /// Serve a model whose license is marked forbidden for commercial
+    /// serving, because you hold a separate license or will not charge.
+    #[arg(long = "i-have-rights")]
+    pub i_have_rights: bool,
+    /// Use the local catalog copy without syncing.
+    #[arg(long)]
+    pub no_wait: bool,
+    /// Use this subscribed catalog for the manifest.
+    #[arg(long, value_name = "NAME")]
+    pub catalog: Option<String>,
+    /// Hashing threads for verification.
+    #[arg(long, default_value_t = 4)]
+    pub threads: usize,
+    /// Claim file to write (default: `.tensorseed/served-weights.json` in
+    /// the directory).
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub out: Option<PathBuf>,
+    /// Attach this EIP-191 wallet signature (0x and 130 hex) to the
+    /// existing claim after checking it recovers to the claim's wallet.
+    #[arg(long, value_name = "0x...")]
+    pub sig: Option<String>,
+}
+
+/// `sign-responses` arguments.
+#[derive(Debug, Args)]
+pub struct SignResponsesArgs {
+    /// Engine root URL, without `/v1` (for example `http://127.0.0.1:8081`).
+    #[arg(long, value_name = "URL")]
+    pub upstream: String,
+    /// The `ts.served-weights/1` claim to sign under.
+    #[arg(long, value_name = "PATH")]
+    pub claim: PathBuf,
+    /// Listen address.
+    #[arg(long, default_value = "127.0.0.1:8090")]
+    pub listen: String,
+    /// Response key file (default: response-key.json next to the config).
+    #[arg(long, value_name = "PATH")]
+    pub response_key: Option<PathBuf>,
+}
+
+/// `verify-response` arguments.
+#[derive(Debug, Args)]
+pub struct VerifyResponseArgs {
+    /// The claim: a file, or an http(s) URL (a base URL fetches the
+    /// well-known path).
+    #[arg(long, value_name = "PATH|URL")]
+    pub claim: String,
+    /// Response headers (as written by `curl -D`).
+    #[arg(long, value_name = "PATH")]
+    pub headers: PathBuf,
+    /// Response body exactly as received (`curl -o`; for streams, with
+    /// `--no-buffer`).
+    #[arg(long, value_name = "PATH")]
+    pub body: PathBuf,
+    /// The request id you sent; the response must echo it.
+    #[arg(long, value_name = "ID")]
+    pub request_id: Option<String>,
+    /// The model id you requested.
+    #[arg(long, value_name = "ID")]
+    pub model_id: Option<String>,
+    /// Allowed timestamp skew in seconds.
+    #[arg(long, default_value_t = 300)]
+    pub max_skew: u64,
+    /// Print a JSON result.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `reference-logprobs` arguments.
@@ -884,6 +1060,18 @@ pub struct CheckEndpointArgs {
     /// requests.
     #[arg(long)]
     pub no_prompt_cache: bool,
+    /// Check response signatures against this `ts.served-weights/1` claim
+    /// (a file or an http(s) URL). Without it, the claim is fetched from
+    /// the endpoint's well-known path when one is served there. With a
+    /// claim, an unsigned or badly signed response fails its challenge.
+    #[arg(long, value_name = "PATH|URL")]
+    pub claim: Option<String>,
+    /// Fail when the endpoint serves no claim (no signed responses).
+    #[arg(long)]
+    pub require_signatures: bool,
+    /// Allowed signature timestamp skew in seconds.
+    #[arg(long, default_value_t = 300)]
+    pub max_skew: u64,
     /// Print one JSON document (`ts.check-endpoint/1`) on stdout.
     #[arg(long)]
     pub json: bool,
@@ -981,6 +1169,11 @@ impl Command {
             Self::ServeInference(_) => "serve-inference",
             Self::ReferenceLogprobs(_) => "reference-logprobs",
             Self::CheckEndpoint(_) => "check-endpoint",
+            Self::ResponseKey(ResponseKeyCmd::Create { .. }) => "response-key create",
+            Self::ResponseKey(ResponseKeyCmd::Show { .. }) => "response-key show",
+            Self::ClaimServing(_) => "claim-serving",
+            Self::SignResponses(_) => "sign-responses",
+            Self::VerifyResponse(_) => "verify-response",
             Self::List { .. } => "list",
             Self::Show { .. } => "show",
             Self::Takedown { .. } => "takedown",
