@@ -78,13 +78,13 @@ model id, the local and public base URLs, every verified file hash, and
 
 The guide in [SELL-INFERENCE.md](../SELL-INFERENCE.md) shows how to put a
 TLS reverse proxy in front of the runtime and list the endpoint on an
-OpenAI compatible marketplace. [Kompute](https://kompute.gg/docs) is the
-worked example there: a seller lists a model id, a public `base_url`, and
-a price; the marketplace health-checks the seller's `/models` endpoint
-and, when several sellers list the same id, routes to a healthy offer.
-Buyers get one base URL. Prepaid funds sit in on-chain escrow (USDC on
-Base, and a separate rail on Robinhood Chain); agents can also pay
-per call with x402 on Base. Tensorseed has no marketplace code, no
+OpenAI compatible marketplace. A typical marketplace works like this: a
+seller lists a model id, a public `base_url`, and a price; the
+marketplace health-checks the seller's `/models` endpoint and, when
+several sellers list the same id, routes to a healthy offer. Buyers get
+one base URL. Prepaid funds may sit in on-chain escrow (for example USDC
+on Base, or a separate rail on another chain such as Robinhood Chain);
+agents may also pay per call with x402 on Base. Tensorseed has no marketplace code, no
 wallet, and no token in that flow, and this draft keeps it that way.
 
 Version 1, defined below, replaces the placeholder. Version 0 remains
@@ -316,9 +316,9 @@ attestation is revoked.
 
 ### 4.4 Robinhood Chain
 
-Base is the default chain for this design. Kompute's public docs already
-settle prepaid USDC and x402 on Base, so a Base attestation sits next to
-the money rail most agents already use.
+Base is the default chain for this design. Several OpenAI compatible
+marketplaces already settle prepaid USDC and x402 on Base, so a Base
+attestation sits next to the money rail most agents already use.
 
 Whether EAS is deployed on Robinhood Chain is not established by the
 official EAS or official Robinhood Chain documentation:
@@ -658,8 +658,8 @@ API keys and upstream keys never appear in evidence.
 Tensorseed does not hold deposits, does not slash, and does not decide
 disputes. If a marketplace wants a financial backstop, it defines that
 separately from its existing buyer prepaid escrow and seller settlement
-of earnings. Kompute's public docs today describe those buyer and
-settlement rails, not a seller listing bond. A seller deposit for
+of earnings. Marketplaces that publish their rails today typically
+describe those buyer and settlement rails, not a seller listing bond. A seller deposit for
 verified serving would be new marketplace work, not a change to those
 rails, and not something Tensorseed can do on its own.
 
@@ -1168,13 +1168,12 @@ The marketplace, not Tensorseed, would:
   reworking existing buyer escrow or settlement rails;
 - optionally, accept a section 8 hardware attestation as a higher tier.
 
-Kompute is the intended first partner for that work. The public product
-shape this draft assumes is the one in [kompute.gg/docs](https://kompute.gg/docs):
-sellers list model id, `base_url`, and price; offers are health-checked
-at `/models`; the router picks a healthy offer; buyers call
-`https://kompute.gg/v1`. Source-level hook points are out of scope for
-this public document and will be discussed directly with the
-marketplace developers.
+The product shape this draft assumes is a common one for OpenAI
+compatible marketplaces: sellers list model id, `base_url`, and price;
+offers are health-checked at `/models`; the router picks a healthy offer;
+buyers call one marketplace base URL. Source-level hook points are out of
+scope for this public document and are left to each marketplace's
+developers.
 
 ---
 
@@ -1277,8 +1276,7 @@ marketplace developers.
 - Tensorseed SPEC sections 6.4 (canonical JSON), 6.9 (signatures), 11.1
   (commercial serving marks), 19.1 (`serve-inference` and
   `ts.served-weights/0`).
-- [SELL-INFERENCE.md](../SELL-INFERENCE.md) and
-  [Kompute docs](https://kompute.gg/docs).
+- [SELL-INFERENCE.md](../SELL-INFERENCE.md).
 - EAS contracts and concepts:
   [contracts.md](https://github.com/ethereum-attestation-service/eas-docs-site/blob/main/docs/quick--start/contracts.md),
   [How EAS Works](https://github.com/ethereum-attestation-service/eas-docs-site/blob/main/docs/core--concepts/how-eas-works.md),

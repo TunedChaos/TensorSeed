@@ -16,8 +16,8 @@ code. You install the engine separately (llama.cpp for GGUF files, vLLM
 for safetensors; see [section 3](#3-install-an-inference-engine)).
 Tensorseed verifies the weights, starts that engine, waits until it
 answers, and prints the values a marketplace asks for. Any OpenAI
-compatible marketplace or your own gateway works the same way. [Kompute](https://kompute.gg) is the
-worked example below.
+compatible marketplace or your own gateway works the same way; the
+example below uses the fields most marketplaces ask for.
 
 > **Not legal advice.** The commercial serving marks in this guide come from
 > the license id only. A license can carry terms the id does not show, and
@@ -292,22 +292,22 @@ curl -s https://llm.example.com/v1/chat/completions \
   -d '{"model":"qwen2.5-1.5b-instruct","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
 ```
 
-## 6. List it on a marketplace (Kompute example)
+## 6. List it on a marketplace
 
 Most OpenAI compatible marketplaces ask for the same three things: a model
-id, a base URL, and a price. On Kompute (see https://kompute.gg/docs), sign
-in and open **Sell**, then fill in:
+id, a base URL, and a price, usually on a seller or provider page. Field
+names vary; a typical form looks like this:
 
 | Field | Value |
 |---|---|
 | Model | the `model id` that `serve-inference` printed, e.g. `qwen2.5-1.5b-instruct` |
 | base_url | your public URL, e.g. `https://llm.example.com/v1` |
-| $/M input | your price per million input tokens (Kompute bills output at 3x that rate) |
-| Upstream key (optional) | the `TS_UPSTREAM_KEY` value; the marketplace stores it and sends it as a bearer token when it proxies calls |
+| Price | your price, often per million input tokens; some marketplaces set the output price from it |
+| Upstream key (optional, where offered) | the `TS_UPSTREAM_KEY` value; the marketplace stores it and sends it as a bearer token when it proxies calls |
 
-Kompute health checks offers against the seller's `/models` endpoint
-(`<base_url>/models`), so that URL must answer from the internet with a
-list that contains your model id. If the offer never turns healthy, check
+Many marketplaces health check offers against the seller's `/models`
+endpoint (`<base_url>/models`), so that URL must answer from the internet
+with a list that contains your model id. If the offer never turns healthy, check
 `curl https://llm.example.com/v1/models` from another network first.
 
 Use a model id buyers will search for. If another seller already offers the
