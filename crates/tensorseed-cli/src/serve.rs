@@ -425,6 +425,11 @@ impl Daemon {
                 signal(SignalKind::interrupt())?,
             )
         };
+        // Ctrl-Break is the console signal another process can send to a
+        // process group (Ctrl-C cannot be), so service wrappers and
+        // scripts can stop serve cleanly with it.
+        #[cfg(windows)]
+        let mut brk = tokio::signal::windows::ctrl_break()?;
         let deadline = duration.map(|d| tokio::time::Instant::now() + d);
         let mut sync_tick =
             tokio::time::interval(Duration::from_secs(self.cfg.serve.sync_interval_secs));
@@ -441,7 +446,14 @@ impl Daemon {
                     _ = int.recv() => "SIGINT",
                 }
             };
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            let signalled = async {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => "Ctrl-C",
+                    _ = brk.recv() => "Ctrl-Break",
+                }
+            };
+            #[cfg(not(any(unix, windows)))]
             let signalled = async {
                 let _ = tokio::signal::ctrl_c().await;
                 "Ctrl-C"

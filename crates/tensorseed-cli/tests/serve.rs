@@ -293,6 +293,13 @@ impl Daemon {
             .env_remove("HF_TOKEN")
             .env("RUST_LOG", "warn")
             .stdout(std::process::Stdio::piped());
+        // Its own process group, so Ctrl-Break reaches only serve.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            c.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
         let mut child = c.spawn().unwrap();
         let out = child.stdout.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -333,13 +340,31 @@ impl Daemon {
         rest.split('/').next().unwrap().to_owned()
     }
 
+    /// Ask serve to shut down: SIGTERM on Unix, Ctrl-Break on Windows.
     fn sigterm(&mut self) -> std::process::ExitStatus {
-        let pid = self.child.id().to_string();
-        let ok = std::process::Command::new("kill")
-            .args(["-TERM", &pid])
-            .status()
-            .unwrap();
-        assert!(ok.success());
+        #[cfg(unix)]
+        {
+            let pid = self.child.id().to_string();
+            let ok = std::process::Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap();
+            assert!(ok.success());
+        }
+        #[cfg(windows)]
+        {
+            // Unsafe code is forbidden here, so PowerShell, which shares
+            // this console, makes the Win32 call.
+            let script = format!(
+                "Add-Type -Namespace W -Name C -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool GenerateConsoleCtrlEvent(uint e, uint g);'; if (-not [W.C]::GenerateConsoleCtrlEvent(1, {})) {{ exit 1 }}",
+                self.child.id()
+            );
+            let ok = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .status()
+                .unwrap();
+            assert!(ok.success(), "Ctrl-Break not sent");
+        }
         let end = Instant::now() + Duration::from_secs(30);
         loop {
             if let Some(s) = self.child.try_wait().unwrap() {
@@ -561,7 +586,12 @@ async fn serve_fetches_seeds_serves_and_drops_takedowns() {
 
     let st = d.sigterm();
     assert!(st.success(), "{st:?}\n{}", d.seen);
-    assert!(d.seen.contains("SIGTERM: shutting down"), "{}", d.seen);
+    let stopped = if cfg!(windows) {
+        "Ctrl-Break: shutting down"
+    } else {
+        "SIGTERM: shutting down"
+    };
+    assert!(d.seen.contains(stopped), "{}", d.seen);
     let state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(srv.join("serve/serve-state.json")).unwrap())
             .unwrap();
