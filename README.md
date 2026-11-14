@@ -58,7 +58,10 @@ Read the full design in [docs/SPEC.md](docs/SPEC.md), the plan in
 [docs/MILESTONES.md](docs/MILESTONES.md), the volunteer guide in
 [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md), and how to run an
 independent catalog in
-[docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md). API docs: `cargo doc
+[docs/PUBLISH-A-CATALOG.md](docs/PUBLISH-A-CATALOG.md). Sellers of inference
+start with [docs/SELL-INFERENCE.md](docs/SELL-INFERENCE.md); marketplaces and
+gateways that list and check sellers read
+[docs/INTEGRATE-A-MARKETPLACE.md](docs/INTEGRATE-A-MARKETPLACE.md). API docs: `cargo doc
 --workspace --no-deps --open` (or `just doc-open`).
 
 ## Install
@@ -253,7 +256,9 @@ SSE comment, and the claim is served at
 `/.well-known/tensorseed/served-weights.json`. Your wallet can sign the
 claim outside Tensorseed; Tensorseed holds no wallet keys.
 `verify-response` and `check-endpoint` verify the signatures. See the
-guide and [docs/plans/verified-serving.md](docs/plans/verified-serving.md).
+guide and [docs/plans/verified-serving.md](docs/plans/verified-serving.md);
+the checking side is in
+[docs/INTEGRATE-A-MARKETPLACE.md](docs/INTEGRATE-A-MARKETPLACE.md).
 
 Every entry in `list`, `show`, the explorer, and Desktop carries a
 commercial serving mark derived from its license id: `allowed`,

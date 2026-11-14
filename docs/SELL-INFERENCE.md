@@ -315,6 +315,11 @@ same weights, matching their id puts you in the same order book. With
 signed responses (below), a buyer can tell which offers claim the exact
 catalog revision you verified, and tie every answer to that claim.
 
+Marketplaces and gateways: the checks you can run on a listing (claim
+discovery and hashing, catalog matching, response signatures, logprob
+challenges, and suggested trust tiers) are in
+[INTEGRATE-A-MARKETPLACE.md](INTEGRATE-A-MARKETPLACE.md).
+
 ### Publish reference logprobs and check yourself
 
 A marketplace that wants to see that your endpoint really runs the

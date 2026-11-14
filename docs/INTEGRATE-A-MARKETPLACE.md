@@ -1,0 +1,1512 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright 2026 Tuned Chaos -->
+
+# Integrate Tensorseed into a marketplace or gateway
+
+This guide is for the other side of
+[SELL-INFERENCE.md](SELL-INFERENCE.md): an inference marketplace, a
+router, or an API gateway that lists sellers and wants to check what they
+claim to serve. It covers only what ships in Tensorseed 0.3.0. Every
+command, field, header, and path below was checked against the 0.3.0
+code, and the example outputs come from real runs against the official
+catalog and a llama.cpp seller behind `serve-inference --sign`. Formats
+are versioned `/1` and may still change before 1.0. Ideas that are not
+built yet are listed under [Planned](#13-planned-not-in-030).
+
+Tensorseed has no marketplace code, holds no wallet keys, and has no
+dependency on any payment rail. You keep listings, routing, billing,
+deposits, and dispute decisions. Tensorseed gives you formats and tools
+to check four things: that a catalog is genuine, that a seller made a
+specific signed claim about the weights behind an endpoint, that a given
+answer came from the holder of that claim's key, and that the endpoint
+behaves like those weights on rare spot challenges.
+
+Contents:
+
+1. [What you can verify, and what you cannot](#1-what-you-can-verify-and-what-you-cannot)
+2. [The pieces](#2-the-pieces)
+3. [Trust catalogs](#3-trust-catalogs)
+4. [Check a seller's served-weights claim](#4-check-a-sellers-served-weights-claim)
+5. [Verify signed responses](#5-verify-signed-responses)
+6. [Run logprob spot challenges](#6-run-logprob-spot-challenges)
+7. [Suggested trust tiers](#7-suggested-trust-tiers)
+8. [Health checks, `/v1/models`, and upstream keys](#8-health-checks-v1models-and-upstream-keys)
+9. [Desktop and seeding](#9-desktop-and-seeding)
+10. [Security notes](#10-security-notes)
+11. [Integration checklist](#11-integration-checklist)
+12. [Reference: exit codes and limits](#12-reference-exit-codes-and-limits)
+13. [Planned (not in 0.3.0)](#13-planned-not-in-030)
+
+## 1. What you can verify, and what you cannot
+
+| Question | Can you check it in 0.3.0? | How |
+|---|---|---|
+| Is this catalog revision really from the publisher I pinned, and is it the latest one anchored on chain? | Yes | Minisign signatures, the file catalog hash chain, and the Chia anchor ([section 3](#3-trust-catalogs)) |
+| Does the model, revision, and file a seller names exist, with these exact hashes, in a catalog I trust? | Yes | Match the claim's `manifest_sha256` and `files` to the signed manifest ([4.5](#45-match-the-claim-to-a-catalog-you-trust)) |
+| Did the seller (and optionally the seller's wallet) put their name to that claim? | Yes | `claim_sha256` and an optional EIP-191 wallet signature ([4.3](#43-the-canonical-hash-claim_sha256), [4.4](#44-the-wallet-signature)) |
+| Did this specific answer come from the holder of the claim's response key, unmodified? | Yes | Ed25519 signed responses ([section 5](#5-verify-signed-responses)) |
+| Does the live endpoint behave like those weights? | Statistically, on rare challenges | Logprob spot challenges with tolerances ([section 6](#6-run-logprob-spot-challenges)) |
+| Is every request served by those weights, all the time? | No | Nothing short of hardware attestation can show that, and Tensorseed 0.3.0 has none |
+| Is the publisher of a catalog honest? | No | A catalog proves what *that* publisher signed. Trust in the files comes from the recorded Hugging Face commit and hashes, which anyone can re-check against the Hub |
+| Is a license safe for your use? | No | The commercial serving mark is derived from the license id only and is **not legal advice** |
+
+Be honest with buyers about the gap. A claim is a statement the seller
+makes and can be held to, not proof of what runs. A seller can hold the
+real weights, pass every hash check, and still route traffic to a
+cheaper model. Signed responses make that attributable to the seller's
+key. Logprob challenges make it detectable at a low, tunable rate. They
+do not make it impossible.
+
+## 2. The pieces
+
+| Format or path | What it is | Who writes it | Who checks it |
+|---|---|---|---|
+| Catalog files (`head.json`, `deltas/`, `snapshots/`, `chain-proof.json`) | The signed, anchored list of mirrored revisions | A catalog publisher | Everyone ([section 3](#3-trust-catalogs)) |
+| `ts.signed/1` entry with a `ts.manifest/1` value | One signed catalog document, for example a revision's manifest | A catalog publisher | Everyone |
+| `ts.served-weights/1` | The seller's claim: catalog, manifest hash, repo, revision, file, engine, model id, endpoint, response key, optional wallet | The seller (`serve-inference --sign` or `claim-serving`) | You ([section 4](#4-check-a-sellers-served-weights-claim)) |
+| `/.well-known/tensorseed/served-weights.json` | Where the signing proxy serves the claim | The seller's proxy | You |
+| `X-Tensorseed-*` headers and the SSE trailer (`ts.response-sig/1`) | Per response Ed25519 signature | The seller's proxy | You ([section 5](#5-verify-signed-responses)) |
+| `ts.reference-logprobs/1` | Secret challenge prompts and expected logprobs for one file | You, from your own verified copy | You ([section 6](#6-run-logprob-spot-challenges)) |
+| `ts.reference-logprobs-commitment/1` | The public part of a reference set: `set_hash` and bindings, no prompts | You | Anyone, after you reveal the set |
+| `ts.check-endpoint/1` | JSON report of a challenge run, without prompts or keys | `tensorseed check-endpoint --json` | You |
+
+The `tensorseed` CLI does all of this. Rust code can call the same
+functions in the `tensorseed-app` crate. The `tensorseed-wasm` crate
+(used by the browser explorer) verifies catalogs and chain anchors from
+JavaScript. Every format is also specified below precisely enough to
+reimplement in another language.
+
+## 3. Trust catalogs
+
+### 3.1 Pin the official catalog
+
+A catalog is identified by four values. Pin them in your own config.
+Never take them from a seller, a claim, or a catalog file.
+
+| Value | Official Tensorseed catalog |
+|---|---|
+| Catalog name (bound into every signature) | `tensorseed` |
+| Publisher public key (minisign) | `RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd` (key id `CE1E0E3D543DFFB8`) |
+| Chia DataLayer store id | `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76` |
+| File catalog base URL | `https://catalog.tensorseed.dev/` |
+
+The same values are in `config/tensorseed.example.toml`. A minimal
+verifier config (no publishing keys, no Chia software):
+
+```toml
+[catalog]
+backend = "file"
+name = "tensorseed"
+publisher_pubkey = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd"
+chain_check = "strict"
+
+[file]
+base_url = "https://catalog.tensorseed.dev/"
+
+[chia]
+catalog_store_id = "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76"
+chain_source = "light"
+coin_api_urls = ["https://api.coinset.org"]   # add more endpoints, or your own full node
+```
+
+### 3.2 Verify a catalog head with the CLI
+
+`catalog info` syncs (head, snapshot, deltas, every entry signature)
+and runs the chain check. `catalog chain-status` runs the chain check
+whatever `chain_check` says, prints every value, and exits non-zero on a
+mismatch:
+
+```text
+$ tensorseed --config verifier.toml catalog info
+catalog:   tensorseed
+publisher: RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd (key id CE1E0E3D543DFFB8)
+backend:   file
+revision:  4
+root:      206d7047c1f0e7cdb3abd8cf097c6bb7979f8bcd2e8471bbb460e9c6b164e101
+entries:   28
+snapshot:  revision 1 (snapshots/0000000001.json)
+sources:   https://catalog.tensorseed.dev/, https://mirror.tensorseed.dev/
+chain:     Strict
+anchored:  revision 4 in Chia store 3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76 (coin current, checked 2026-11-14T21:46:53Z)
+published by: Tuned Chaos <>
+
+$ tensorseed --config verifier.toml catalog chain-status
+mode:       Strict
+source:     light
+store:      3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76
+file:       revision 4 root 206d7047c1f0e7cdb3abd8cf097c6bb7979f8bcd2e8471bbb460e9c6b164e101
+chain:      revision 4 root 206d7047c1f0e7cdb3abd8cf097c6bb7979f8bcd2e8471bbb460e9c6b164e101
+datalayer:  root 16876aad99eb60d2fc5038af1a6cdb341df4c27f73a67e973b8a30c08b77c636 coin 870eb4fc8dc261d25dffa3a45be7cae0a23ca7af0d49fc9053b5aa4cd177ac28
+coin:       Current (created at height 9568842)
+proof from: https://catalog.tensorseed.dev/tensorseed/chain-proof.json
+checked by: https://api.coinset.org
+result:     OK, the file catalog matches the chain
+```
+
+(Log lines on stderr are omitted.) The verified state is kept in
+`<file.state_dir>/<catalog>/state.json` and is re-verified on load. A
+client never accepts a head below the revision it already accepted, so
+run your verifier with a persistent state directory.
+
+Signed heads expire (`expires_unix`; the official catalog uses one week)
+and the publisher re-signs them on a schedule. A strict client refuses
+an expired head. Treat "head expired" as "catalog unavailable", not as
+"seller failed".
+
+To get every verified entry as one file for your own tooling:
+
+```sh
+tensorseed --config verifier.toml catalog export --out catalog.ts-export.json
+```
+
+The `ts.export/1` bundle has `catalog`, `publisher_pubkey`
+(informational), `source_kind`, `source_id`, and `entries`, a list of
+`ts.signed/1` envelopes sorted by key. It is not signed as a whole;
+every entry already is, and the export only contains entries that
+verified against the key pinned in your config.
+
+### 3.3 Accept other publishers' catalogs
+
+Anyone can publish an independent catalog
+([PUBLISH-A-CATALOG.md](PUBLISH-A-CATALOG.md)). To follow one next to
+the official catalog, add a `[[catalogs]]` subscription with that
+publisher's four values:
+
+```sh
+tensorseed catalog add --name example-catalog \
+  --publisher-pubkey RW... --base-url https://catalog.example.org/ \
+  --store-id <64 hex> --label "Example publisher" --chain-check strict --priority 20
+```
+
+which writes:
+
+```toml
+[[catalogs]]
+name = "example-catalog"
+label = "Example publisher"
+publisher_pubkey = "RW..."
+store_id = "<64 hex>"
+base_url = "https://catalog.example.org/"
+chain_check = "strict"
+priority = 20
+```
+
+`tensorseed catalog list` shows each subscription with its chain mode
+and head, and `catalog remove <name>` drops one. The same name with a
+different key is a config error, so one catalog cannot silently replace
+another. `list` and `show` report when catalogs agree on a revision's
+hashes, and a hash conflict is an error unless you pick a catalog with
+`--catalog <name>`.
+
+Two things to decide as a marketplace:
+
+- **Which publishers you accept.** A claim names its catalog by `name`
+  and `publisher_key_id`. Only accept claims whose catalog is one you
+  pinned. The key id in a claim is what the seller wrote, so always
+  check the claim against your own verified copy of that catalog, never
+  against a key the seller supplies.
+- **Whether agreement matters to you.** When several independent
+  catalogs list the same Hugging Face commit with the same file hashes,
+  that is extra evidence. Requiring it is your policy, not Tensorseed's.
+
+`catalog export` exports the catalog in the `[catalog]` block. To export
+another publisher's catalog, give it its own config file (its four
+values in `[catalog]`, `[file]`, and `[chia]`) and pass `--config`.
+
+Tensorseed 0.3.0 has no signed list of trusted catalog publishers. You
+configure the publishers you accept yourself. A neutral, signed follow
+list is a proposal under [Planned](#13-planned-not-in-030).
+
+### 3.4 Check catalog signatures without Tensorseed code
+
+Every catalog signature is a standard
+[minisign](https://jedisct1.github.io/minisign/) signature, so you can
+check it with the stock `minisign` tool or reimplement it.
+
+**Key format.** The public key line (`RW...`) is base64 of 42 bytes:
+`"Ed"` (2 bytes), the key id (8 bytes), and the Ed25519 public key (32
+bytes). The key id is shown as 16 uppercase hex digits of those 8 bytes
+read as a little endian number: the official key's id bytes are
+`b8ff3d543d0e1ece`, shown as `CE1E0E3D543DFFB8`.
+
+**Signature format.** A `.minisig` file, or an entry's `sig` string, has
+four lines:
+
+```text
+untrusted comment: signature from tensorseed key CE1E0E3D543DFFB8
+<base64 of "ED" || key id[8] || ed25519 signature[64]>
+trusted comment: <context line>
+<base64 of global signature[64]>
+```
+
+- The signature on line 2 is Ed25519 over **BLAKE2b-512 of the signed
+  bytes** (minisign's prehashed `ED` mode). Tensorseed writes `ED` only.
+  When verifying it also accepts legacy `Ed` (Ed25519 over the raw
+  bytes), as minisign does.
+- The global signature on line 4 is Ed25519 over the 64 signature bytes
+  from line 2 followed by the trusted comment text (without the
+  `trusted comment: ` prefix and without the newline).
+- The key id on line 2 must equal the pinned key's id.
+- The untrusted comment is not covered by anything. Ignore it.
+
+**What is signed, and the required trusted comment.** A valid signature
+is not enough: also compare the trusted comment with the exact string
+below. That is what binds a document to its catalog, key, revision, and
+root.
+
+| Artifact | Signed bytes | Trusted comment, exactly |
+|---|---|---|
+| Catalog entry (`ts.signed/1`) | The UTF-8 bytes of the envelope's `value` string | `ts.entry/1 catalog=<name> key=<key> sha256=<SHA-256 of value, 64 lowercase hex>` |
+| `head.json`, a delta, or a snapshot | The exact file bytes | `ts.file/1 kind=<head\|delta\|snapshot> catalog=<name> rev=<n> root=<64 hex>` |
+
+An entry envelope looks like
+`{"key":"ts/v1/...","schema":"ts.signed/1","sig":"<four line minisig>","value":"<canonical JSON document as a string>"}`.
+Tensorseed also rejects an entry whose `value` is not canonical JSON, a
+`schema` other than `ts.signed/1`, and a key that does not start with
+`ts/` or contains whitespace. Every entry inside a delta or snapshot is
+verified on its own, so a correctly signed delta cannot carry an entry
+signed by another key.
+
+**Canonical JSON** (used for entry values, catalog files, and the
+claim hash in [4.3](#43-the-canonical-hash-claim_sha256)): UTF-8; object
+keys sorted by byte order at every level; no whitespace between tokens;
+strings escaped as `serde_json` does (`\"`, `\\`, `\b`, `\f`, `\n`,
+`\r`, `\t`, other control characters as `\u00XX`, everything else,
+including `/` and non-ASCII, written as is); integers in plain decimal;
+floats in shortest round trip form (for example `0.0` or `-0.553258`).
+Python's
+`json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`
+produces the same bytes for these documents. So does a recursive key
+sort plus `JSON.stringify` in JavaScript, as long as keys are ASCII
+(true for every Tensorseed schema) and integers stay below 2^53.
+
+Example with the stock tool, on the live head and on the manifest entry
+used later in this guide:
+
+```text
+$ curl -sO https://catalog.tensorseed.dev/tensorseed/head.json
+$ curl -sO https://catalog.tensorseed.dev/tensorseed/head.json.minisig
+$ minisign -Vm head.json -P RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd
+Signature and comment signature verified
+Trusted comment: ts.file/1 kind=head catalog=tensorseed rev=4 root=206d7047c1f0e7cdb3abd8cf097c6bb7979f8bcd2e8471bbb460e9c6b164e101
+
+# value.json holds the manifest entry's "value" string, value.json.minisig its "sig"
+$ minisign -Vm value.json -P RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd
+Signature and comment signature verified
+Trusted comment: ts.entry/1 catalog=tensorseed key=ts/v1/repo/model/Qwen/Qwen2.5-1.5B-Instruct-GGUF/rev/91cad51170dc346986eccefdc2dd33a9da36ead9 sha256=7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2
+$ sha256sum value.json
+7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2  value.json
+```
+
+`minisign` checks both signatures; comparing the trusted comment with
+the expected string is your job. The file layout, the `state_hash` and
+`root` hash chain, and the client rules (rollback, fork, gap, expiry)
+are specified in [SPEC.md](SPEC.md) section 6.8, key names in section
+6.3, and document schemas in section 6.4.
+
+### 3.5 Check catalogs from JavaScript (`tensorseed-wasm`)
+
+`crates/tensorseed-wasm` wraps the same Rust verifier for JavaScript.
+It is not published to npm; build it from a tagged checkout:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --locked --version 0.2.130
+cargo build -p tensorseed-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/tensorseed_wasm.wasm \
+  --out-dir pkg --target nodejs     # or --target web, as the explorer does
+```
+
+It exports `CatalogVerifier` (`verify_head`, `load_snapshot`,
+`apply_delta`, `verify_chain_proof`, `get_entry`, `list_keys`, and the
+`catalog`, `revision`, `root`, and `entry_count` getters),
+`check_coin_rpc`, `coin_id_hex`, `parse_manifest`, `commercial_serving`,
+and `commercial_disclaimer`. It does **not** verify served-weights
+claims or signed responses in 0.3.0 (see [5.6](#56-verify-in-javascript)
+for those). A Node example that verifies the official catalog and its
+Chia anchor, then matches a claim against it
+([4.5](#45-match-the-claim-to-a-catalog-you-trust)):
+
+```js
+import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+const require = createRequire(import.meta.url);
+const { CatalogVerifier, check_coin_rpc } = require("./pkg/tensorseed_wasm.js");
+
+// What you pin: never take these from the seller.
+const PIN = {
+  name: "tensorseed",
+  pubkey: "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd",
+  baseUrl: "https://catalog.tensorseed.dev/",
+  storeId: "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76",
+  coinApi: "https://api.coinset.org",
+};
+const dir = new URL(`${PIN.name}/`, PIN.baseUrl);
+const pad = (n) => String(n).padStart(10, "0");
+const bytes = async (rel) => {
+  const r = await fetch(new URL(rel, dir));
+  if (!r.ok) throw new Error(`${rel}: HTTP ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+};
+const signed = async (rel) => ({ body: await bytes(rel), sig: new TextDecoder().decode(await bytes(`${rel}.minisig`)) });
+const rpc = async (method, body) =>
+  (await fetch(`${PIN.coinApi}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
+
+const v = new CatalogVerifier(PIN.name, PIN.pubkey);
+const head = await signed("head.json");
+const info = JSON.parse(v.verify_head(head.body, head.sig, Date.now() / 1000));
+if (info.snapshot) {
+  const s = await signed(info.snapshot.path);
+  v.load_snapshot(s.body, s.sig);
+}
+for (let rev = Number(v.revision) + 1; rev <= info.revision; rev++) {
+  const d = await signed(`deltas/${pad(rev)}.json`);
+  v.apply_delta(d.body, d.sig);
+}
+// A persistent verifier must also refuse a head below the revision it
+// accepted last time (keep revision and root between runs).
+const proof = JSON.parse(v.verify_chain_proof(await bytes("chain-proof.json"), PIN.storeId));
+const rec = await rpc("get_coin_record_by_name", { name: `0x${proof.coin_id}` });
+let peak;
+if (rec.coin_record?.spent) peak = BigInt((await rpc("get_blockchain_state", {})).blockchain_state.peak.height);
+const coin = JSON.parse(check_coin_rpc(JSON.stringify(proof), JSON.stringify(rec), peak, 192n));
+console.log(`catalog ${v.catalog} revision ${v.revision} root ${v.root}, ${v.entry_count} entries`);
+console.log(`anchored: ${JSON.stringify(coin.state)} (expires ${new Date(info.expires_unix * 1000).toISOString()})`);
+
+// Match a claim (already checked for claim_sha256 and its wallet signature).
+const claim = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const value = v.get_entry(claim.catalog.manifest_key);
+if (!value) throw new Error("manifest_key is not in the pinned catalog");
+const sha = createHash("sha256").update(value, "utf8").digest("hex");
+if (sha !== claim.catalog.manifest_sha256) throw new Error("manifest_sha256 does not match the signed manifest");
+if (v.get_entry(`ts/v1/repo/${claim.type}/${claim.repo}/tombstone`)) throw new Error("taken down");
+const m = JSON.parse(value);
+const files = new Map(m.files.map((f) => [f.path, `${f.size}:${f.sha256}`]));
+for (const f of claim.files) {
+  if (files.get(f.path) !== `${f.size}:${f.sha256}`) throw new Error(`${f.path} differs from the signed manifest`);
+}
+console.log(`claim matches ${m.repo.id}@${m.hf_commit} (${claim.entrypoint.path ?? "directory"})`);
+```
+
+```text
+$ node verify-catalog.mjs served-weights.json
+catalog tensorseed revision 4 root 206d7047c1f0e7cdb3abd8cf097c6bb7979f8bcd2e8471bbb460e9c6b164e101, 28 entries
+anchored: "Current" (expires 2026-11-20T13:53:03.000Z)
+claim matches Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 (qwen2.5-1.5b-instruct-q2_k.gguf)
+```
+
+With a claim whose GGUF hash was changed, the same script stops with
+`qwen2.5-1.5b-instruct-q2_k.gguf differs from the signed manifest`.
+`check_coin_rpc` takes the same grace window as the CLI (192 blocks).
+
+### 3.6 What the chain anchor proves
+
+Every Chia update of a catalog store carries a signed anchor naming the
+file catalog revision and root. Clients verify the anchor signature and
+the DataLayer inclusion proof locally, and ask coin endpoints only
+whether the store's coin exists and whether it is spent. So:
+
+- A host, mirror, or seeder cannot get a validly signed head accepted
+  unless the chain anchors it. That blocks split views, and blocks a
+  stolen publisher signing key from publishing without the store
+  owner's wallet.
+- A lying coin endpoint can hold you on an older but genuine revision,
+  or refuse to answer. List several independent endpoints, or your own
+  node.
+- The anchor proves the latest state of *that publisher's* catalog. It
+  says nothing about whether the publisher is honest.
+
+Details and limits: [SPEC.md](SPEC.md) section 6.14.
+
+## 4. Check a seller's served-weights claim
+
+### 4.1 Where to find the claim
+
+A seller running `serve-inference --sign` or `sign-responses` serves
+the claim at a fixed path on the same host as the API:
+
+```text
+<scheme>://<host>/.well-known/tensorseed/served-weights.json
+```
+
+Tensorseed's tools build that URL from a base URL by removing a trailing
+`/` and then a trailing `/v1`, and appending the path. So
+`https://llm.example.com/v1` maps to
+`https://llm.example.com/.well-known/tensorseed/served-weights.json`.
+The proxy reads the file from disk on each request, so an attached
+wallet signature appears without a restart, and it answers 503 if the
+file no longer hashes to the claim it signs under. The claim holds no
+secrets, so sellers expose this path without the API key
+([SELL-INFERENCE.md](SELL-INFERENCE.md) section 6). A seller can also
+hand you the file directly when listing.
+
+Fetch it with a size cap. The CLI caps claims at 1 MiB, follows at most
+3 redirects, refuses URLs with credentials in them, and times out after
+10 seconds.
+
+### 4.2 Fields
+
+A real claim, written by `serve-inference --sign --wallet ...` and then
+signed with a throwaway wallet:
+
+```json
+{
+  "schema": "ts.served-weights/1",
+  "signed": true,
+  "catalog": {
+    "name": "tensorseed",
+    "publisher_key_id": "CE1E0E3D543DFFB8",
+    "manifest_key": "ts/v1/repo/model/Qwen/Qwen2.5-1.5B-Instruct-GGUF/rev/91cad51170dc346986eccefdc2dd33a9da36ead9",
+    "manifest_sha256": "7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2"
+  },
+  "type": "model",
+  "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+  "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9",
+  "license": {
+    "id": "apache-2.0",
+    "class": "open",
+    "commercial_serving": "allowed",
+    "rights_asserted": false
+  },
+  "runtime": "llama-cpp",
+  "engine_version": "version: 1.0.0-dev (build 12366, commit 31953bcf7)",
+  "entrypoint": {
+    "kind": "gguf",
+    "path": "qwen2.5-1.5b-instruct-q2_k.gguf"
+  },
+  "served_model_id": "qwen2.5-1.5b-instruct",
+  "base_url": "http://127.0.0.1:18090/v1",
+  "public_base_url": "https://llm.example.com/v1",
+  "files": [
+    {
+      "path": "LICENSE",
+      "size": 11343,
+      "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+    },
+    {
+      "path": "README.md",
+      "size": 4856,
+      "sha256": "57c72d4010fb11a98fc8e62dc8ef112b23a7a7525b71e571ca978d35cb3b2eec"
+    },
+    {
+      "path": "qwen2.5-1.5b-instruct-q2_k.gguf",
+      "size": 752880160,
+      "sha256": "5ede348e91ce1e7a330926ec5b202c27b864d065149dc463257fde1f98865b3a"
+    }
+  ],
+  "seller_wallet": "0x6c72521c15d87eedebe623c63e5ae10dc05da50d",
+  "response_key": {
+    "alg": "ed25519",
+    "pubkey": "b263675c2621c515f3e8299ec1bea216c4c6b9269a6bf83f109e0af86a084bb5"
+  },
+  "logprobs": "required",
+  "started_at": "2026-11-14T21:48:28Z",
+  "created_at": "2026-11-14T21:48:28Z",
+  "claim_sha256": "0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185",
+  "sig": {
+    "alg": "eip191",
+    "value": "0x0827ede1b1a4eafb86ae2c3c05d6902ec07d04bc1d94f974f3275fdcc4f947c807419753006d117e1e90d706790b0b2b907f1d9e8cd6460a01bd04023f857c421b"
+  }
+}
+```
+
+| Field | Meaning | Always present |
+|---|---|---|
+| `schema` | `ts.served-weights/1`. Reject anything else. `ts.served-weights/0` is an unsigned placeholder written by `serve-inference` without `--sign`; never treat it as evidence | yes |
+| `signed` | `true` exactly when `sig` is present | yes |
+| `catalog.name` | Catalog the seller verified against | yes |
+| `catalog.publisher_key_id` | That catalog's key id (16 uppercase hex), or `null` when unknown. Informational: check against your own pin | yes, may be `null` |
+| `catalog.manifest_key` | Catalog key of the revision's manifest | yes |
+| `catalog.manifest_sha256` | SHA-256 of the signed manifest's `value` string, which is also the `sha256=` in that entry's trusted comment | yes |
+| `type` | `model` or `dataset` | yes |
+| `repo`, `revision` | Hugging Face repo id and 40 hex commit | yes |
+| `license.id` | License id from the manifest, or `null` | yes, may be `null` |
+| `license.class` | `open`, `attribution`, `restricted`, or `unknown` | yes |
+| `license.commercial_serving` | `allowed`, `restricted`, `forbidden`, or `unknown`, derived on the seller's machine | yes |
+| `license.rights_asserted` | `true` when the seller passed `--i-have-rights` to serve a `forbidden` license | yes |
+| `runtime` | `llama-cpp` or `vllm` | yes |
+| `engine_version` | The version string the engine reports, or what the seller passed with `--engine-version` | yes |
+| `entrypoint` | `{"kind":"gguf","path":"<file>"}` for one GGUF file, or `{"kind":"directory"}` for a safetensors checkpoint | yes |
+| `served_model_id` | The model id on `/v1/models` and in `X-Tensorseed-Served-Model` (1 to 256 printable ASCII, no spaces) | yes |
+| `base_url` | The local signing proxy address, usually loopback. Not for you to call | yes |
+| `public_base_url` | The public base URL buyers call. Should be `https` | no |
+| `files` | Every file the seller verified, each with `path`, `size`, `sha256` | yes |
+| `seller_wallet` | `0x` and 40 lowercase hex, as plain data | no |
+| `response_key` | `{"alg":"ed25519","pubkey":"<64 lowercase hex>"}` | yes |
+| `logprobs` | `required` (the endpoint returns logprobs) or `none` | yes |
+| `started_at`, `created_at` | RFC 3339 UTC | yes |
+| `claim_sha256` | See [4.3](#43-the-canonical-hash-claim_sha256) | yes |
+| `sig` | `{"alg":"eip191","value":"0x<65 bytes as hex>"}` | no |
+
+Unknown fields are rejected: Tensorseed refuses a claim with any field
+that is not in this table.
+
+### 4.3 The canonical hash (`claim_sha256`)
+
+Exactly as Tensorseed computes it (`ServedClaim::compute_hash`):
+
+1. Parse the claim. An explicit `null` for `public_base_url`,
+   `seller_wallet`, or `sig` means the same as the field being absent.
+2. Remove the top-level fields `claim_sha256`, `sig`, and `signed`.
+3. Remove `public_base_url` and `seller_wallet` if they are absent or
+   `null`. They are never hashed as `null`.
+4. Keep `catalog.publisher_key_id` and `license.id` even when they are
+   `null`. They are always serialized, as `null` when unknown.
+5. Serialize the rest as canonical JSON
+   ([3.4](#34-check-catalog-signatures-without-tensorseed-code)): keys
+   sorted at every level, no whitespace, `serde_json` escaping.
+6. `claim_sha256` is the SHA-256 of those UTF-8 bytes, as 64 lowercase
+   hex.
+
+Because `signed` and `sig` are outside the hash, attaching the wallet
+signature does not change `claim_sha256`. A claim that writes
+`"public_base_url": null` but was hashed with the `null` included does
+not verify in Tensorseed.
+
+Worked example: for the claim above, the hashed bytes are 1425 bytes
+(wrapped here at field boundaries; the real bytes have no line breaks):
+
+```text
+{"base_url":"http://127.0.0.1:18090/v1","catalog":{"manifest_key":"ts/v1/repo/model/Qwen/Qwen2.5-1.5B-Instruct-GGUF/rev/91cad51170dc346986eccefdc2dd33a9da36ead9","manifest_sha256":"7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2","name":"tensorseed","publisher_key_id":"CE1E0E3D543DFFB8"},
+"created_at":"2026-11-14T21:48:28Z","engine_version":"version: 1.0.0-dev (build 12366, commit 31953bcf7)","entrypoint":{"kind":"gguf","path":"qwen2.5-1.5b-instruct-q2_k.gguf"},
+"files":[{"path":"LICENSE","sha256":"832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e","size":11343},{"path":"README.md","sha256":"57c72d4010fb11a98fc8e62dc8ef112b23a7a7525b71e571ca978d35cb3b2eec","size":4856},{"path":"qwen2.5-1.5b-instruct-q2_k.gguf","sha256":"5ede348e91ce1e7a330926ec5b202c27b864d065149dc463257fde1f98865b3a","size":752880160}],
+"license":{"class":"open","commercial_serving":"allowed","id":"apache-2.0","rights_asserted":false},"logprobs":"required","public_base_url":"https://llm.example.com/v1","repo":"Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+"response_key":{"alg":"ed25519","pubkey":"b263675c2621c515f3e8299ec1bea216c4c6b9269a6bf83f109e0af86a084bb5"},"revision":"91cad51170dc346986eccefdc2dd33a9da36ead9","runtime":"llama-cpp","schema":"ts.served-weights/1",
+"seller_wallet":"0x6c72521c15d87eedebe623c63e5ae10dc05da50d","served_model_id":"qwen2.5-1.5b-instruct","started_at":"2026-11-14T21:48:28Z","type":"model"}
+```
+
+Their SHA-256 is
+`0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185`.
+Reproduce it in Python:
+
+```python
+import hashlib, json
+c = json.load(open("served-weights.json"))
+for k in ("claim_sha256", "sig", "signed"):
+    c.pop(k, None)
+for k in ("public_base_url", "seller_wallet"):
+    if k in c and c[k] is None:
+        del c[k]
+body = json.dumps(c, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+print(hashlib.sha256(body.encode()).hexdigest())
+# 0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185
+```
+
+When Tensorseed reads a claim (`claim_from_bytes` in Rust, used by
+every command that takes one), it also requires: `claim_sha256` and
+`catalog.manifest_sha256` are 64 lowercase hex; `response_key` is
+`ed25519` with a valid 32 byte public key; `served_model_id` is valid;
+`seller_wallet`, if present, is already lowercase; `signed` agrees with
+`sig`; and the wallet signature, if present, recovers to
+`seller_wallet`. A missing or non `https` `public_base_url` is only a
+warning, so check it yourself ([4.6](#46-listing-checks)).
+
+### 4.4 The wallet signature
+
+`seller_wallet` and `sig` are optional. When present, `sig.value` is an
+Ethereum `personal_sign` (EIP-191) signature by `seller_wallet` over
+this exact message:
+
+```text
+tensorseed served-weights/1:
+<claim_sha256>
+```
+
+That is `tensorseed served-weights/1:` and a newline, then the 64 hex
+characters, with no trailing newline. The signature is 65 bytes
+(`r || s || v`, with `v` of 27, 28, 0, or 1). Tensorseed accepts only
+low `s` values (EIP-2) and compares the recovered address in lowercase.
+With ethers v6:
+
+```js
+import { verifyMessage } from "ethers";
+const ok = verifyMessage(`tensorseed served-weights/1:\n${claim.claim_sha256}`, claim.sig.value)
+  .toLowerCase() === claim.seller_wallet;
+```
+
+ethers does not enforce low `s`; Tensorseed does. Whether a wallet must
+be present, and whether it must match a seller account you already
+know, is your policy.
+
+### 4.5 Match the claim to a catalog you trust
+
+The claim's own checks prove only that it is internally consistent and
+who signed it. The step that ties it to real weights is yours: look the
+manifest up in your own verified catalog copy. `verify-response` does
+not do this, and 0.3.0 has no single command for it. With a
+`catalog export` ([3.2](#32-verify-a-catalog-head-with-the-cli)):
+
+```python
+import hashlib, json, sys
+
+claim = json.load(open(sys.argv[1]))            # ts.served-weights/1
+export = json.load(open(sys.argv[2]))           # ts.export/1 from your own pinned config
+
+def fail(msg):
+    print("no match:", msg); sys.exit(1)
+
+if claim["catalog"]["name"] != export["catalog"]:
+    fail("claim names another catalog")
+entries = {e["key"]: e for e in export["entries"]}
+entry = entries.get(claim["catalog"]["manifest_key"])
+if entry is None:
+    fail("manifest_key is not in this catalog")
+if hashlib.sha256(entry["value"].encode()).hexdigest() != claim["catalog"]["manifest_sha256"]:
+    fail("manifest_sha256 differs from the signed manifest")
+manifest = json.loads(entry["value"])
+if manifest["repo"]["id"] != claim["repo"] or manifest["hf_commit"] != claim["revision"]:
+    fail("repo or revision differs")
+signed = {f["path"]: (f["size"], f["sha256"]) for f in manifest["files"]}
+for f in claim["files"]:
+    if signed.get(f["path"]) != (f["size"], f["sha256"]):
+        fail(f"file {f['path']} is not in the signed manifest with that size and hash")
+ep = claim["entrypoint"]
+if ep["kind"] == "gguf" and ep["path"] not in {f["path"] for f in claim["files"]}:
+    fail("entrypoint is not among the claimed files")
+tomb = entries.get("ts/v1/repo/%s/%s/tombstone" % (claim["type"], claim["repo"]))
+if tomb is not None:
+    fail("the repo is taken down in this catalog")
+print("match:", claim["repo"], claim["revision"], ep.get("path", "(directory)"))
+```
+
+```text
+$ python3 match_claim.py served-weights.json catalog.ts-export.json
+match: Qwen/Qwen2.5-1.5B-Instruct-GGUF 91cad51170dc346986eccefdc2dd33a9da36ead9 qwen2.5-1.5b-instruct-q2_k.gguf
+```
+
+The JavaScript example in [3.5](#35-check-catalogs-from-javascript-tensorseed-wasm)
+does the same against a `CatalogVerifier`. Notes:
+
+- For a very large repo the manifest's file list can be split into
+  pages (`file_pages` above 0, keys `.../rev/<commit>/files/<page:06>`).
+  Merge the pages before comparing.
+- A seller may verify and claim only the files it pulled (here one GGUF
+  of the nine in the repo). Every claimed file must be in the manifest
+  with the same size and hash. For `{"kind":"directory"}` (vLLM) the
+  claim should list the config, the tokenizer files, and every weight
+  shard.
+- `check-endpoint` gives you an indirect match as well: it refuses a
+  claim whose `manifest_sha256` or `entrypoint` differs from the
+  reference set you generated from your own verified copy
+  ([section 6](#6-run-logprob-spot-challenges)).
+
+### 4.6 Listing checks
+
+No Tensorseed command compares these for you, but you should:
+
+- `public_base_url` equals the base URL the seller listed with you, and
+  uses `https`. Fetch the claim from that URL's well-known path, not
+  from a URL the seller gives separately.
+- `served_model_id` equals the model id in the listing and appears in
+  the endpoint's `/v1/models`.
+- `logprobs` is `required` if the listing is to be spot checked.
+- The claim stays the same. Re-fetch it on your health check schedule.
+  A new `claim_sha256` means a new statement (a new file, model id,
+  endpoint, engine version, wallet, or response key) and should be
+  checked like a new listing. A seller restarting with the same settings
+  keeps the same claim, wallet signature included.
+- A 0.3.0 claim has no expiry and no revocation. `started_at` only says
+  when this serving period began. Revocation is planned.
+
+### 4.7 License marks a marketplace should act on
+
+The mark in a claim is computed on the seller's machine, and the seller
+could edit it before sealing the claim. Recompute it from the signed
+manifest's license (`license.spdx` and `license.class`) with your own
+copy: `tensorseed list --json` gives `commercial_serving` and
+`commercial_note` per entry, and `tensorseed-wasm` has
+`commercial_serving(license, class)`. The table lives in
+`crates/tensorseed-core/src/commercial.rs`.
+
+| Mark | Meaning | Suggested marketplace action |
+|---|---|---|
+| `allowed` | Permissive license without field of use limits | List. Show the license and keep its notices available |
+| `restricted` | Commercial use with conditions (for example the Llama licenses' user cap, acceptable use policy, and attribution; Gemma and OpenRAIL use restrictions; AGPL network source duties) | List only if your terms pass the conditions on to buyers. Show the conditions |
+| `forbidden` | Non-commercial or research only | Do not list for paid access. `rights_asserted: true` means the seller says it holds a separate license; accept that only through your own review |
+| `unknown` | Missing, `other`, or custom | Hold for manual review |
+
+These marks come from the license id only and are not legal advice.
+
+## 5. Verify signed responses
+
+### 5.1 Headers
+
+Send a request id with every call you want to verify:
+
+| Request header | Value |
+|---|---|
+| `X-Tensorseed-Request-Id` | 1 to 128 characters of `A-Z a-z 0-9 . _ ~ : -`. A UUID or 64 hex works. The proxy answers HTTP 400 to an invalid id, and mints (64 hex) and echoes one when it is missing |
+
+The proxy adds these to every JSON response, whatever the status,
+including `/v1/models`:
+
+| Response header | Value |
+|---|---|
+| `X-Tensorseed-Request-Id` | The request id, echoed byte for byte |
+| `X-Tensorseed-Claim-SHA256` | The claim's `claim_sha256` |
+| `X-Tensorseed-Served-Model` | The claim's `served_model_id` |
+| `X-Tensorseed-Timestamp` | RFC 3339 UTC time of signing |
+| `X-Tensorseed-Body-SHA256` | SHA-256 of the exact body bytes, 64 lowercase hex |
+| `X-Tensorseed-Signature` | Ed25519 signature, 128 lowercase hex |
+
+Other content types pass through unsigned, with the request id echoed.
+
+### 5.2 The signed message
+
+The signature is raw Ed25519 (not minisign) by the claim's
+`response_key.pubkey`, over the UTF-8 bytes of exactly these six lines,
+each ending in `\n`, the last one included:
+
+```text
+ts.response-sig/1
+claim_sha256=<X-Tensorseed-Claim-SHA256>
+request_id=<X-Tensorseed-Request-Id>
+served_model_id=<X-Tensorseed-Served-Model>
+timestamp=<X-Tensorseed-Timestamp>
+body_sha256=<X-Tensorseed-Body-SHA256>
+```
+
+Verification, in the order Tensorseed does it (`verify_fields`):
+
+1. Header formats: both hashes 64 lowercase hex, the signature 128
+   lowercase hex, a valid request id, a valid model id.
+2. `X-Tensorseed-Claim-SHA256` equals the claim you verified.
+3. `X-Tensorseed-Served-Model` equals the claim's `served_model_id`, and
+   the model you requested.
+4. The request id equals the one you sent.
+5. The timestamp is within the skew window (300 s either way by
+   default).
+6. The SHA-256 of the body bytes equals `X-Tensorseed-Body-SHA256`.
+7. The Ed25519 signature verifies.
+
+Replay detection (rejecting a request id you already accepted for the
+same claim) needs state and is left to you.
+
+### 5.3 Streams
+
+For `"stream": true`, the proxy passes events through as they arrive.
+The response headers carry the request id, the claim hash, the served
+model, and `X-Tensorseed-Signature-Mode: sse-trailer`. After the engine
+ends the stream, the proxy appends one SSE comment line, which SSE
+clients ignore. The end of a real stream:
+
+```text
+data: [DONE]
+
+: ts.response-sig/1 timestamp=2026-11-14T21:49:54Z body_sha256=d492ec7b384a07e137aa1c2d2779d89507fde92caadd76ffbd6da6778d2d108b signature=33adb604f1138c10e401efad5e22a2bce24c458379cdf4397dcc59fede4997641f30e0ccc772bc19ec7f6a95dd2680c2ee5a75822378410f0e05540f3e3c0701
+
+```
+
+`body_sha256` covers every byte before the `: ts.response-sig/1 ` line.
+The signature is over the same six line message, with the timestamp and
+body hash taken from the trailer. A stream that was cut short, or whose
+upstream failed, has no trailer and is unsigned. Keep the raw bytes (for
+example `curl -N -o`) to verify.
+
+### 5.4 With the CLI
+
+```text
+$ curl -s -D h.txt -o b.json https://llm.example.com/v1/chat/completions \
+    -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+    -H 'X-Tensorseed-Request-Id: mkt-test-1' \
+    -d '{"model":"qwen2.5-1.5b-instruct","messages":[{"role":"user","content":"hello"}],"max_tokens":8}'
+$ grep -i '^x-tensorseed' h.txt
+x-tensorseed-request-id: mkt-test-1
+x-tensorseed-claim-sha256: 0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185
+x-tensorseed-served-model: qwen2.5-1.5b-instruct
+x-tensorseed-timestamp: 2026-11-14T21:49:48Z
+x-tensorseed-body-sha256: dc79e3b7502e715dd755afbe5e8051ef73992a5d16f29b5d2617c796c623f7bf
+x-tensorseed-signature: 2cd07428f81823dfe5a5134e210ee7e7d302311b196ab12db360624842a3be7dafa66c29484d2378e671fc6de05206fef98436b5c726be69c1b1fea66f30a605
+$ tensorseed verify-response --claim https://llm.example.com/v1 \
+    --headers h.txt --body b.json --request-id mkt-test-1 --model-id qwen2.5-1.5b-instruct
+valid: signed by the response key of claim 0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185
+  model      qwen2.5-1.5b-instruct
+  request id mkt-test-1
+  timestamp  2026-11-14T21:49:48Z
+  wallet     0x6c72521c15d87eedebe623c63e5ae10dc05da50d (claim signature verified)
+```
+
+`--claim` takes a file, a URL ending in `.json`, or a base URL (which
+fetches the well-known path). `--json` prints a result object:
+
+```json
+{
+  "body_sha256": "dc79e3b7502e715dd755afbe5e8051ef73992a5d16f29b5d2617c796c623f7bf",
+  "claim_sha256": "0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185",
+  "claim_source": "https://llm.example.com/.well-known/tensorseed/served-weights.json",
+  "request_id": "mkt-test-1",
+  "seller_wallet": "0x6c72521c15d87eedebe623c63e5ae10dc05da50d",
+  "served_model_id": "qwen2.5-1.5b-instruct",
+  "timestamp": "2026-11-14T21:49:48Z",
+  "valid": true
+}
+```
+
+A failure has `"valid": false`, an `error` label, and a `detail`. With
+one body byte changed:
+
+```json
+{
+  "claim_sha256": "0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185",
+  "claim_source": "served-weights.json",
+  "detail": "the body does not match the signed body hash",
+  "error": "body_hash_mismatch",
+  "valid": false
+}
+```
+
+Error labels: `absent`, `missing_header`, `malformed_header`,
+`claim_mismatch`, `request_id_mismatch`, `model_mismatch`,
+`timestamp_skew`, `body_hash_mismatch`, `bad_signature`. Exit status is
+0 valid, 1 invalid or unsigned, and 2 for an error (for example a claim
+that does not verify). For a stream, pass the raw saved stream as
+`--body`. The skew check compares the signing time with the current
+time, so a stored response checked later needs a larger `--max-skew`.
+
+### 5.5 In Rust
+
+`tensorseed-app` is not on crates.io. Depend on the release tag:
+
+```toml
+[dependencies]
+anyhow = "1"
+tensorseed-app = { git = "https://github.com/TunedChaos/TensorSeed", tag = "v0.3.0" }
+```
+
+```rust
+use tensorseed_app::signing::{Expect, WalletStatus, claim_from_bytes, extract_signed, verify_fields};
+
+/// Check one response. `headers` are (name, value) pairs as received;
+/// `body` is the exact response bytes, before any gateway edits.
+fn check(
+    claim_json: &[u8],
+    headers: &[(String, String)],
+    body: &[u8],
+    sent_request_id: &str,
+    requested_model: &str,
+) -> anyhow::Result<()> {
+    // Schema, claim_sha256, response key, and the wallet signature if present.
+    let (claim, check) = claim_from_bytes(claim_json)?;
+    match &check.wallet {
+        WalletStatus::Verified(addr) => println!("claim signed by wallet {addr}"),
+        WalletStatus::NotSigned => println!("claim is not wallet-signed"),
+    }
+    let (fields, signed_bytes) = extract_signed(headers, body)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    verify_fields(
+        &fields,
+        signed_bytes,
+        &Expect {
+            pubkey: claim.response_pubkey()?,
+            claim_sha256: &claim.claim_sha256,
+            served_model_id: &claim.served_model_id,
+            request_id: Some(sent_request_id),
+            requested_model: Some(requested_model),
+            now_unix: now,
+            max_skew_secs: 300,
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("{} ({})", e, e.label()))?;
+    println!("valid response {} at {}", fields.request_id, fields.timestamp);
+    Ok(())
+}
+```
+
+Run against a fresh response, and then with a different requested model:
+
+```text
+claim signed by wallet 0x6c72521c15d87eedebe623c63e5ae10dc05da50d
+valid response mkt-test-3 at 2026-11-14T21:51:57Z
+
+claim signed by wallet 0x6c72521c15d87eedebe623c63e5ae10dc05da50d
+Error: served model "qwen2.5-1.5b-instruct" is not the claimed or requested model (model_mismatch)
+```
+
+`extract_signed` reads the headers, or the headers plus the trailer for
+a stream, and returns the bytes the signature covers. `tensorseed-app`
+is the library the CLI and Desktop share, so it brings their full
+dependency tree.
+
+### 5.6 Verify in JavaScript
+
+The WASM package does not cover signed responses in 0.3.0, so this is a
+direct implementation of the format above with `node:crypto` (Node 18
+or newer, no dependencies). It verified the same responses as the CLI,
+streams included, matched Tensorseed's `claim_sha256` (including the
+`null` rule in [4.3](#43-the-canonical-hash-claim_sha256)), and rejected
+the changed body:
+
+```js
+import { createHash, createPublicKey, verify } from "node:crypto";
+
+const sha256 = (b) => createHash("sha256").update(b).digest("hex");
+
+// Canonical JSON as Tensorseed writes it: keys sorted, no whitespace.
+function canonical(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
+export function claimSha256(claim) {
+  const body = { ...claim };
+  delete body.claim_sha256;
+  delete body.sig;
+  delete body.signed;
+  for (const k of ["public_base_url", "seller_wallet"]) if (body[k] === null) delete body[k];
+  return sha256(Buffer.from(canonical(body), "utf8"));
+}
+
+// headers: a Headers object or a plain object with lowercase names.
+// body: the exact response bytes (Buffer).
+export function verifyResponse(claim, headers, body, { requestId, model, maxSkewSecs = 300 } = {}) {
+  const h = (n) => (typeof headers.get === "function" ? headers.get(n) : headers[n]) ?? null;
+  if (claim.schema !== "ts.served-weights/1") throw new Error("not a ts.served-weights/1 claim");
+  if (claimSha256(claim) !== claim.claim_sha256) throw new Error("claim_sha256 does not match the claim");
+
+  let f = {
+    claim: h("x-tensorseed-claim-sha256"),
+    requestId: h("x-tensorseed-request-id"),
+    model: h("x-tensorseed-served-model"),
+    timestamp: h("x-tensorseed-timestamp"),
+    bodySha256: h("x-tensorseed-body-sha256"),
+    signature: h("x-tensorseed-signature"),
+  };
+  let signed = body;
+  if (h("x-tensorseed-signature-mode") === "sse-trailer") {
+    const marker = Buffer.from(": ts.response-sig/1 ");
+    const at = body.lastIndexOf(marker);
+    if (at < 0) throw new Error("stream has no signature trailer (cut short or unsigned)");
+    const line = body.subarray(at + marker.length).toString("utf8").trim();
+    const kv = Object.fromEntries(line.split(" ").map((p) => p.split("=")));
+    f = { ...f, timestamp: kv.timestamp, bodySha256: kv.body_sha256, signature: kv.signature };
+    signed = body.subarray(0, at);
+  }
+  for (const [k, v] of Object.entries(f)) if (!v) throw new Error(`missing ${k}`);
+  if (f.claim !== claim.claim_sha256) throw new Error("response names a different claim");
+  if (f.model !== claim.served_model_id || (model && model !== f.model)) throw new Error("served model mismatch");
+  if (requestId && requestId !== f.requestId) throw new Error("request id was not echoed");
+  const skew = Date.parse(f.timestamp) / 1000 - Date.now() / 1000;
+  if (!(Math.abs(skew) <= maxSkewSecs)) throw new Error(`timestamp outside the window (${Math.round(skew)} s)`);
+  if (sha256(signed) !== f.bodySha256) throw new Error("body does not match the signed body hash");
+
+  const msg =
+    `ts.response-sig/1\nclaim_sha256=${f.claim}\nrequest_id=${f.requestId}\n` +
+    `served_model_id=${f.model}\ntimestamp=${f.timestamp}\nbody_sha256=${f.bodySha256}\n`;
+  const key = createPublicKey({
+    key: { kty: "OKP", crv: "Ed25519", x: Buffer.from(claim.response_key.pubkey, "hex").toString("base64url") },
+    format: "jwk",
+  });
+  if (!verify(null, Buffer.from(msg, "utf8"), key, Buffer.from(f.signature, "hex"))) {
+    throw new Error("signature does not verify with the claim's response key");
+  }
+  return { requestId: f.requestId, timestamp: f.timestamp, claim: f.claim };
+}
+```
+
+This sketch skips the header format checks of step 1 in
+[5.2](#52-the-signed-message); add them if you accept responses at
+scale. Check the wallet signature as in [4.4](#44-the-wallet-signature).
+
+### 5.7 Rules for a gateway on the request path
+
+- **Verify the seller's bytes first, then change anything.** The body
+  hash covers the engine's body exactly. Hash and verify before you add
+  billing fields, rename the model, or re-encode the JSON. Verifying
+  after a change breaks honest signatures.
+- **Compression.** The proxy asks the engine for the identity encoding,
+  and sellers are told not to compress these paths at their reverse
+  proxy. If your HTTP client decompresses transparently, verify the
+  decoded bytes.
+- **Forward streams untouched**, including the final comment line, if
+  your buyers verify too.
+- **Request ids.** Send a fresh, unpredictable id per call, require the
+  echo, and keep recent ids per claim to reject replays.
+- **A missing or invalid signature on a listing that advertised signing
+  fails that response.** Whether it pauses the listing is your policy.
+- Signed responses prove who answered and that the answer was not
+  changed. They do not prove which model produced it. That is what
+  [section 6](#6-run-logprob-spot-challenges) is for.
+
+## 6. Run logprob spot challenges
+
+A signed response proves who answered. A logprob challenge tests what
+answered: you send short prompts whose next-token log probabilities you
+measured on a verified copy of the claimed file, and compare the
+endpoint's answers. Design and math: [verified-serving.md](plans/verified-serving.md)
+section 5.
+
+### 6.1 Make a reference set from your own verified copy
+
+Pull the claimed revision yourself (`tensorseed pull`, which verifies
+every file), then:
+
+```text
+$ tensorseed reference-logprobs dl/Qwen/Qwen2.5-1.5B-Instruct-GGUF \
+    --file qwen2.5-1.5b-instruct-q2_k.gguf --count 16 \
+    --out ref-q2_k.json --commitment ref-q2_k.commit.json
+verifying dl/Qwen/Qwen2.5-1.5B-Instruct-GGUF against the signed manifest
+verified 3 files of Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 (manifest sha256 7abb51d7f81299d0)
+starting llama.cpp: .../llama-server --model dl/Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q2_k.gguf --alias Qwen/Qwen2.5-1.5B-Instruct-GGUF --host 127.0.0.1 --port 37053
+  8/16 challenges
+  16/16 challenges
+wrote ref-q2_k.json (16 challenges, ts.reference-logprobs/1)
+  entrypoint qwen2.5-1.5b-instruct-q2_k.gguf
+  engine     llama.cpp version: 1.0.0-dev (build 12366, commit 31953bcf7)
+  set_hash   600fa5c51f8d22d6ce7c0e7f62fb0dba58292570eee0f951d1392741fcebeb0b
+  commitment ref-q2_k.commit.json (public)
+note: ref-q2_k.json holds the challenge prompts and expected values; keep it secret until the set is retired, and publish only set_hash or the commitment file
+```
+
+The default is 32 prompts from the `ts.challenge-gen/1` generator with a
+random seed; `--prompts` takes your own. Other options: `--top-logprobs`
+(default 5), `--max-tokens` (default 1), `--sampling-seed`, `--runtime`,
+and `--endpoint` to use a server you already run for that copy. Make one
+set per GGUF file (quantization) you list. Use the same engine family
+the seller claims; a llama.cpp set says little about a vLLM endpoint.
+
+Each run draws a fresh seed and salt, so it gets a new `set_hash`. The
+set used in the rest of this section came from an earlier run; its
+public commitment:
+
+```json
+{
+  "schema": "ts.reference-logprobs-commitment/1",
+  "set_hash": "6782e9273b0df285d26c15ab25722694ef415418eecd601b5d918c9f3f5c0851",
+  "manifest_sha256": "7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2",
+  "manifest_key": "ts/v1/repo/model/Qwen/Qwen2.5-1.5B-Instruct-GGUF/rev/91cad51170dc346986eccefdc2dd33a9da36ead9",
+  "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+  "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9",
+  "entrypoint": {
+    "kind": "gguf",
+    "path": "qwen2.5-1.5b-instruct-q2_k.gguf"
+  },
+  "entrypoint_sha256": "5ede348e91ce1e7a330926ec5b202c27b864d065149dc463257fde1f98865b3a",
+  "sampling": {
+    "temperature": 0.0,
+    "seed": 1,
+    "max_tokens": 1,
+    "logprobs": true,
+    "top_logprobs": 5
+  },
+  "generator": {
+    "tool": "tensorseed reference-logprobs",
+    "tensorseed_version": "0.3.0",
+    "runtime": "llama-cpp",
+    "engine_version": "version: 1.0.0-dev (build 12366, commit 31953bcf7)",
+    "request_extra": {
+      "cache_prompt": false
+    },
+    "note": "A reference run, not a bit-identical guarantee."
+  },
+  "generation_method": "ts.challenge-gen/1",
+  "prompt_count": 16,
+  "created_at": "2026-11-14T21:52:10Z"
+}
+```
+
+`set_hash` is the SHA-256 of the canonical JSON
+([3.4](#34-check-catalog-signatures-without-tensorseed-code)) of the
+whole reference file with `set_hash` removed. The secret file holds a
+random salt, so the hash reveals nothing about the prompts.
+
+### 6.2 Commit, rotate, reveal
+
+1. Publish `set_hash` or the commitment file before you use the set.
+   Sellers cannot learn the prompts from it.
+2. Keep the reference file private. Anyone who has it can answer those
+   exact prompts from a table.
+3. Retire sets on a schedule and make new ones.
+4. Reveal a retired file when you want to show your checks were fair,
+   or in a dispute. Anyone can check it against the published hash
+   (`check-endpoint --expect-set-hash`, or recompute it), and anyone with
+   a verified copy can regenerate the expected values with
+   `reference-logprobs --prompts`.
+
+0.3.0 has no reveal command and no format for publishing commitments;
+host the commitment file wherever your sellers can read it.
+
+### 6.3 Check an endpoint
+
+```text
+$ tensorseed check-endpoint https://llm.example.com/v1 -r ref-q2_k.json \
+    --model-id qwen2.5-1.5b-instruct --api-key-env SELLER_KEY --sample 0
+checking https://llm.example.com/v1 (model qwen2.5-1.5b-instruct) against Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 qwen2.5-1.5b-instruct-q2_k.gguf
+  set_hash 6782e9273b0df285d26c15ab25722694ef415418eecd601b5d918c9f3f5c0851, 16 of 16 challenges, sample seed 2b8c74ba0f165d978aa92b8ad1ac8352c0e00295767eb043baa01c13e6ca862f
+  tolerance mean <= 0.5 nats, token <= 2 nats, 3 attempt(s)
+  signatures required: claim 0a00a5079b7176d6 from https://llm.example.com/.well-known/tensorseed/served-weights.json
+  lp-0001  pass           1x  mean  0.472  max  1.279  top same  sig ok
+  lp-0002  pass           1x  mean  0.169  max  0.317  top differs  sig ok
+  lp-0003  pass           1x  mean  0.347  max  0.865  top differs  sig ok
+  ...
+  lp-0010  pass           1x  mean  0.154  max  0.463  top same  sig ok
+  lp-0011  fail           3x  mean  0.503  max  0.785  top differs  sig ok  (outside tolerance on all 3 attempt(s) (last mean 0.503, max 0.785 nats))
+  lp-0012  pass           1x  mean  0.220  max  0.465  top same  sig ok
+  ...
+  lp-0016  pass           1x  mean  0.180  max  0.291  top same  sig ok
+verdict: fail (15 pass, 1 fail, 0 inconclusive, 0 unsupported)
+signatures: 16 verified, 0 invalid, 0 absent, 0 unverifiable (claim signed by wallet 0x6c72521c15d87eedebe623c63e5ae10dc05da50d)
+```
+
+That endpoint was honest: the same file and the same llama.cpp build.
+See [6.4](#64-tolerances-and-what-a-fail-means) before acting on a
+fail.
+
+What `check-endpoint` does:
+
+- Loads the reference file and refuses it if its contents no longer
+  match its own `set_hash`, or (with `--expect-set-hash`) the published
+  one.
+- Fetches the claim from the endpoint's well-known path (or `--claim`).
+  If there is one, it refuses to run when the claim's `manifest_sha256`
+  or `entrypoint` differs from the reference, or when `--model-id`
+  differs from the claim's `served_model_id`, and it then requires a
+  valid signature on every challenge response. `--require-signatures`
+  fails when the endpoint serves no claim.
+- Sends `--sample` challenges (default 8; 0 for all), chosen by a
+  printed `--sample-seed` so a run can be repeated.
+- Re-sends a challenge outside tolerance up to `--repeats` times
+  (default 3). It is `fail` only if every attempt fails. A pass after a
+  failed attempt, or a transport or HTTP error, is `inconclusive`. A
+  response without logprobs is `unsupported`.
+- Overall: any `fail` is `fail`; all `pass` is `pass`; all `unsupported`
+  is `unsupported`; anything else is `inconclusive`. Exit status 0, 1,
+  2.
+
+The API key is read from the variable named by `--api-key-env` and
+never printed. Do not pass `--no-prompt-cache` to a seller: it sends a
+llama.cpp specific field that marks the request as a challenge. It is
+for checking your own server.
+
+`--json` prints `ts.check-endpoint/1`. Its top level (real run):
+
+```json
+{
+  "schema": "ts.check-endpoint/1",
+  "tensorseed_version": "0.3.0",
+  "base_url": "https://llm.example.com/v1",
+  "model_id": "qwen2.5-1.5b-instruct",
+  "reference": {
+    "set_hash": "6782e9273b0df285d26c15ab25722694ef415418eecd601b5d918c9f3f5c0851",
+    "manifest_sha256": "7abb51d7f81299d068ddf9bc5c723f4a414857f74c5a11f4a32fa97f070509a2",
+    "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9",
+    "entrypoint": {
+      "kind": "gguf",
+      "path": "qwen2.5-1.5b-instruct-q2_k.gguf"
+    },
+    "runtime": "llama-cpp",
+    "engine_version": "version: 1.0.0-dev (build 12366, commit 31953bcf7)",
+    "prompt_count": 16
+  },
+  "sampling": {
+    "temperature": 0.0,
+    "seed": 1,
+    "max_tokens": 1,
+    "logprobs": true,
+    "top_logprobs": 5
+  },
+  "tolerance": {
+    "max_mean_abs": 0.5,
+    "max_token_abs": 2.0
+  },
+  "repeats": 3,
+  "concurrency": 1,
+  "timeout_secs": 60,
+  "sample": {
+    "requested": 0,
+    "sent": 16,
+    "seed": "6486829a3fa4fcd02b5ee7bd592b25e1dee50514e4fa45f5d351d22e511ceba7"
+  },
+  "verdict": "fail",
+  "counts": {
+    "pass": 15,
+    "fail": 1,
+    "inconclusive": 0,
+    "unsupported": 0
+  },
+  "signatures": {
+    "claim_source": "https://llm.example.com/.well-known/tensorseed/served-weights.json",
+    "claim_sha256": "0a00a5079b7176d65a5c0a33b5ee43c2daab4f8c00b2f44307bebc51177c7185",
+    "response_pubkey": "b263675c2621c515f3e8299ec1bea216c4c6b9269a6bf83f109e0af86a084bb5",
+    "seller_wallet": "0x6c72521c15d87eedebe623c63e5ae10dc05da50d",
+    "verified": 16,
+    "invalid": 0,
+    "absent": 0,
+    "unverifiable": 0
+  },
+  "checked_at": "2026-11-14T22:04:33Z",
+  "challenges": [
+    "..."
+  ]
+}
+```
+
+and one entry of `challenges`:
+
+```json
+{
+  "id": "lp-0001",
+  "verdict": "fail",
+  "attempts": 3,
+  "comparison": {
+    "compared": 5,
+    "positions": 1,
+    "mean_abs_dev": 0.588886,
+    "max_abs_dev": 1.376341,
+    "missing": 1,
+    "first_token_match": true
+  },
+  "attempt_mean_abs_dev": [
+    0.588886,
+    0.588886,
+    0.588886
+  ],
+  "reason": "outside tolerance on all 3 attempt(s) (last mean 0.589, max 1.376 nats)",
+  "signature": {
+    "status": "verified"
+  },
+  "elapsed_ms": 93
+}
+```
+
+The report has no prompts or expected values, so you can share it with
+the seller without leaking the set.
+
+### 6.4 Tolerances and what a fail means
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--max-mean-abs` | 0.5 | Largest mean absolute logprob deviation per challenge, in nats |
+| `--max-token-abs` | 2 | Largest deviation of any single token, in nats |
+| `--repeats` | 3 | Attempts before a challenge fails |
+| `--sample` | 8 | Challenges per run (0 for all) |
+| `--concurrency` | 2 | Challenges in flight |
+| `--timeout` | 60 | Seconds per request |
+| `--max-skew` | 300 | Signature timestamp skew, seconds |
+
+Each reference token (the chosen one plus its top alternatives) is
+looked up in the endpoint's list. A listed token adds its absolute
+difference. An unlisted one adds the lower bound `max(0, expected -
+floor)`, where the floor is the lowest logprob the endpoint listed.
+Comparison stops at the first position where the chosen token differs.
+
+**The defaults are uncalibrated starting points, and they produce false
+fails.** On one CPU host, checking an honest endpoint (same q2_k file,
+same llama.cpp build, reference made by Tensorseed from a verified
+copy) with the full 16 prompt set, 11 runs in a row gave 1 `pass`, 1
+`inconclusive`, and 9 `fail`. Every failing run had exactly one challenge
+out of tolerance, with mean deviations from 0.50 to 0.78 nats. Changing
+`--concurrency` to 1 or sending `--no-prompt-cache` did not remove it.
+Low bit quantizations and llama.cpp's prompt cache and batching move
+logprobs by tenths of a nat between identical requests
+([verified-serving.md](plans/verified-serving.md) section 5.7 has the
+first measurements). So:
+
+- Calibrate per model, file, and engine: run `check-endpoint` many times
+  against your own server for the same verified copy, look at the
+  distribution of `mean_abs_dev`, and set tolerances above it.
+- Treat one failing challenge, or one failing run, as a reason to check
+  again, not as proof. A substitute model or a different quantization
+  typically fails many challenges, with the top token often different.
+  Look at the share of challenges that fail across runs.
+- `unsupported` means the endpoint returned no logprobs, so it cannot
+  be checked this way. A claim with `"logprobs": "required"` promises
+  them.
+- A signature failure inside a challenge is a hard fact, separate from
+  the tolerance question.
+
+### 6.5 How often, and keeping challenges ordinary
+
+Tensorseed does not set a schedule. Things that help:
+
+- Use `--sample` so each run sends a few prompts from a large secret
+  set, and run at random times rather than on a fixed clock.
+- Send challenges with the same client, headers, API key, and network
+  path as real buyer traffic. Do not send `--no-prompt-cache`.
+- Re-run after any change of `claim_sha256`, and after a fail.
+- Rotate sets ([6.2](#62-commit-rotate-reveal)).
+
+A determined seller can still try to tell challenges from real traffic
+(the generated prompts have a recognizable style, and `max_tokens: 1`
+with `top_logprobs` is unusual). Your own `--prompts` in the style of
+your traffic make that harder. Perfect indistinguishability is not
+claimed.
+
+### 6.6 Doing it in your own code
+
+`tensorseed_app::challenge` exposes the pieces `check-endpoint` uses:
+`ReferenceFile::load` (checks `set_hash`), `request_body` (builds the
+exact request for a prompt), `parse_logprobs`, `compare`,
+`Comparison::within`, and `check_signature`. Same crate and dependency
+note as [5.5](#55-in-rust).
+
+## 7. Suggested trust tiers
+
+Tensorseed does not rank sellers. These tiers are one way to turn the
+checks above into listing labels. Rename, merge, or ignore them. Each
+tier includes the ones above it.
+
+| Suggested tier | What you checked | What a buyer can rely on |
+|---|---|---|
+| Listed | Base URL, model id, `/v1/models` healthy | Nothing beyond your usual terms |
+| Claimed | A `ts.served-weights/1` claim at the well-known path that loads in Tensorseed, matches a catalog you trust ([4.5](#45-match-the-claim-to-a-catalog-you-trust)), and passes the listing checks ([4.6](#46-listing-checks)) | The seller states which exact files it serves, and the files exist in a signed catalog |
+| Signed | Claimed, plus responses verify against the claim's response key, ideally on every proxied call | Answers came from the holder of that key and were not changed on the way |
+| Wallet bound | Signed, plus a valid `sig` from a `seller_wallet` you link to the seller account | The statement is tied to a wallet the seller controls |
+| Spot checked | Signed, plus regular `check-endpoint` runs with secret sets and calibrated tolerances that keep passing | The endpoint behaves like the claimed file on your prompts, within your tolerances |
+
+Show the evidence date (last claim fetch, last challenge run) next to
+any label. Claims expire only when you stop accepting them, and a pass
+today says nothing about tomorrow, so downgrade on stale evidence.
+
+None of these tiers proves that every answer came from the claimed
+weights. That needs hardware attestation, which 0.3.0 does not have
+([section 13](#13-planned-not-in-030)).
+
+## 8. Health checks, `/v1/models`, and upstream keys
+
+- **Health.** Tensorseed adds no health endpoint. Use the engine's
+  OpenAI compatible `GET <base_url>/models`, which must list
+  `served_model_id`. Through the signing proxy that response is signed
+  like any other JSON response, so a health check can also verify a
+  signature and catch a changed claim cheaply.
+- **Claim file.** Fetch `/.well-known/tensorseed/served-weights.json`
+  with your health checks. A 503 from the proxy there means the file on
+  disk no longer matches the claim the proxy signs under (the seller
+  must restart), or no longer verifies.
+- **Upstream keys.** Sellers usually require a bearer key at their TLS
+  proxy (`TS_UPSTREAM_KEY` in [SELL-INFERENCE.md](SELL-INFERENCE.md)
+  section 5) and give it to you to send on every call. The signing proxy
+  forwards `Authorization` to the engine unchanged and never sees or
+  needs your marketplace credentials. Some sellers leave `GET /v1/models`
+  open for health checks; the claim path never needs the key.
+- **Status codes from the proxy.** 400 for an invalid
+  `X-Tensorseed-Request-Id`, 413 for a request body over 64 MiB, 502
+  when the engine is down or its body cannot be read, 503 for the claim
+  problems above. These errors come from the proxy itself, as JSON with
+  `"type": "tensorseed_proxy"`, and are not signed. Error responses
+  from the engine (JSON with any status) are signed like any other.
+- **Limits.** Request and signed response bodies are capped at 64 MiB.
+
+## 9. Desktop and seeding
+
+- **Tensorseed Desktop** pulls, verifies, and seeds catalog files. It
+  does not serve inference or sign responses, so sellers you list run
+  the CLI (`serve-inference --sign` or `sign-responses`).
+- **Getting weights to check against.** `tensorseed pull` downloads
+  from Hugging Face, mirrors, and the swarm, and verifies every byte
+  against the signed manifest, so the source does not matter. You need
+  this copy to make reference sets.
+- **Seeding.** If you seed catalog files to help sellers download
+  faster, note that 0.3.0 runs one seeder per machine: `serve`,
+  `tensorseed seed`, and Desktop share a lock (`seeder.lock`), and
+  Desktop attaches to a running `serve` instead of starting another. The `serve` control endpoint
+  (`/control/status`, `/control/action`) listens on loopback only and
+  needs a token. Seeding never exposes inference.
+
+## 10. Security notes
+
+- **Seller keys never leave the seller.** The response key, the wallet
+  key, and the engine all stay on the seller's machine. You verify with
+  public data only: the claim, the response headers, and the body.
+- **The marketplace never needs seller private keys.** Do not ask for
+  them, and do not accept a design that needs them. The only seller
+  secret you hold is the upstream API key the seller chose to share.
+- **Tensorseed holds no wallet keys.** It does not sign with, store, or
+  move funds from any wallet. Wallet signatures on claims are made by
+  the seller's own wallet software over a message Tensorseed prints
+  (`claim-serving`). Chia anchoring is the catalog publisher's wallet,
+  not yours or the seller's.
+- **Pin publishers out of band.** Take catalog public keys and store ids
+  from a source you trust, never from a claim, a mirror, or a seller.
+  The claim's `catalog.publisher_key_id` is a hint only.
+- **Treat claims as untrusted input.** Cap their size, refuse
+  credentials in URLs, and verify before you show anything from them.
+  A claim with any unknown field is invalid.
+- **Keep reference sets secret** until you reveal them, and keep
+  `--api-key-env` keys out of logs and shell history.
+- **Replay and staleness are yours to handle.** Use fresh request ids
+  and a skew window that fits your use.
+
+## 11. Integration checklist
+
+1. Pin the official catalog (and any others you accept) by name, key,
+   and store id, with several coin endpoints.
+2. Sync and verify with `catalog info` and `chain-status`; refresh
+   on a schedule.
+3. On listing, fetch the claim from the listed base URL's well-known
+   path, load it (schema, hash, response key, wallet signature), and
+   match it to your catalog copy.
+4. Check `public_base_url`, `served_model_id`, `logprobs`, and the
+   recomputed license mark. Decide on wallet policy.
+5. Health check `/v1/models` and the claim; re-check on any new
+   `claim_sha256`.
+6. Send `X-Tensorseed-Request-Id` on every call; verify signatures on
+   the seller's exact bytes before changing anything.
+7. Make secret reference sets from your own verified copies, publish
+   their `set_hash`, calibrate tolerances, and run sampled
+   `check-endpoint` runs at random times.
+8. Label listings with the evidence you hold and its date.
+
+## 12. Reference: exit codes and limits
+
+| Command | 0 | 1 | 2 |
+|---|---|---|---|
+| `verify-response` | valid | invalid or unsigned | error (for example the claim does not verify) |
+| `check-endpoint` | pass | fail | inconclusive, unsupported, or an error that prevents a verdict |
+
+| Limit | Value |
+|---|---|
+| Claim size when fetched | 1 MiB |
+| Claim fetch | 10 s timeout, at most 3 redirects, no credentials in the URL |
+| Request id | 1 to 128 of `A-Z a-z 0-9 . _ ~ : -` |
+| Served model id | 1 to 256 printable ASCII, no spaces |
+| Signature timestamp skew | 300 s by default (`--max-skew`) |
+| Signed body | 64 MiB |
+| Coin anchor grace | 192 blocks (`[chia] chain_grace_blocks`) |
+
+## 13. Planned (not in 0.3.0)
+
+Not in 0.3.0. Design notes are in
+[verified-serving.md](plans/verified-serving.md); none of this has a
+release date.
+
+- **On-chain serving attestations** (`attest-serving`, EAS) and stake,
+  so a claim can be tied to a bonded identity.
+- **Evidence bundles and dispute tooling** (`ts.challenge-evidence/1`
+  and a full generation dispute mode for `check-endpoint`).
+- **Claim expiry and revocation.**
+- **Hardware attestation** (confidential computing) to show which
+  weights produced each answer.
+- **A follow list for trusted catalog signers.** Nothing exists today;
+  each marketplace keeps its own `[[catalogs]]` list. A possible format,
+  proposed here for discussion only and not implemented:
+
+  ```json
+  {
+    "schema": "ts.follow-list/1",
+    "name": "example-marketplace",
+    "rev": 1,
+    "catalogs": [
+      {
+        "name": "tensorseed",
+        "pubkey": "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd",
+        "store_id": "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76",
+        "base_url": "https://catalog.tensorseed.dev/",
+        "note": "official catalog"
+      }
+    ]
+  }
+  ```
+
+  It would be published as canonical JSON with a minisign signature
+  whose trusted comment reads
+  `ts.follow-list/1 name=<name> rev=<n> sha256=<hex>`, so it can be
+  checked with the same tools as a catalog, and a command such as
+  `tensorseed catalog follow-list <url>` could turn it into
+  `[[catalogs]]` entries after showing the changes.
