@@ -326,13 +326,16 @@ A marketplace that wants to see that your endpoint really runs the
 weights you listed can send rare logprob challenges: ordinary requests
 whose next-token logprobs were computed ahead of time from a verified copy
 of the same file (design: [plans/verified-serving.md](plans/verified-serving.md),
-section 5.2). Two commands cover this today. Neither holds a wallet or
+section 5.2). Three commands cover this today: `reference-logprobs`,
+`calibrate-reference`, and `check-endpoint`. None holds a wallet or
 marketplace key.
 
 Generate a reference set from your verified copy. It re-hashes the copy
 like `serve-inference`, starts the runtime on a private loopback port,
 asks each challenge with fixed decoding (`temperature` 0, a fixed seed,
-`logprobs`, `top_logprobs` 5), and stops the runtime:
+`logprobs`, `top_logprobs` 5), and stops the runtime. By default it makes
+5 whole passes over the set (`--samples`) and records the per-token
+median, so one unusual answer cannot become the expected value:
 
 ```sh
 tensorseed reference-logprobs Qwen/Qwen2.5-1.5B-Instruct-GGUF \
@@ -358,31 +361,67 @@ tensorseed reference-logprobs Qwen/Qwen2.5-1.5B-Instruct-GGUF \
   reproducible.
 - `--endpoint http://127.0.0.1:8090/v1` uses a server that is already
   running instead of starting one. It must be serving the same file.
+- `--samples 1` writes a single-sample set in the 0.3.0 shape. Files
+  with more than one sample, or calibrated (below), are rejected by
+  0.3.0 binaries, which refuse unknown fields; 0.3.0 files still work.
+
+Calibrate the set against a server you run yourself for the same file
+before you publish anything. It sends the whole set `--runs` times
+(default 10), measures how far honest answers drift on your engine, and
+writes the tolerances into a copy of the set:
+
+```sh
+tensorseed calibrate-reference http://127.0.0.1:8090/v1 -r ref-q4_k_m.json \
+  -o ref-q4_k_m.cal.json --commitment ref-q4_k_m.cal.commit.json
+```
+
+The calibration is part of the sealed set, so the calibrated file gets a
+new `set_hash`. Publish the calibrated commitment, not the first one.
+How the tolerances are derived, and measured numbers per quantization,
+are in [plans/verified-serving.md](plans/verified-serving.md) section
+5.7.1.
 
 Then check an endpoint against the set:
 
 ```sh
 TS_CHECK_KEY=... tensorseed check-endpoint https://llm.example.com/v1 \
-  --reference ref-q4_k_m.json --sample 8 --api-key-env TS_CHECK_KEY
+  --reference ref-q4_k_m.cal.json --sample 8 --api-key-env TS_CHECK_KEY
 ```
 
 It sends a sample of the challenges (`--sample`, `--concurrency`,
 `--timeout`), compares the returned `top_logprobs` with the expected ones,
-and prints a verdict per challenge and overall: `pass`, `fail`,
-`inconclusive` (errors, timeouts, or attempts that disagree), or
-`unsupported` (the endpoint returns no logprobs). Exit status is 0 for
+and prints a verdict per challenge: `pass`, `fail`, `inconclusive`
+(errors, timeouts, or attempts that disagree), or `unsupported` (the
+endpoint returns no logprobs). The overall verdict is decided over the
+whole sample, because honest answers drift a little and one challenge
+can land just outside tolerance:
+
+- any unsigned or badly signed answer under a claim fails the run;
+- more than 25% of the answered challenges outside tolerance fails it
+  (`--max-fail-fraction`);
+- a median deviation above 0.35 nats fails it (`--max-median`);
+- fewer than half the challenges answered is `inconclusive`, and no
+  logprobs at all is `unsupported`;
+- otherwise it passes. `--max-fail-fraction 0` restores the 0.3.0 rule,
+  where any failing challenge fails the run.
+
+Exit status is 0 for
 pass, 1 for fail, and 2 for inconclusive, unsupported, or an error that
 prevents a verdict. `--json` prints a `ts.check-endpoint/1` report with no
 prompt text and no credentials. The API key is read from the variable you
 name, never from the command line.
 
-Defaults are starting points, not calibrated limits: a mean absolute
-deviation of at most 0.5 nats and no single token off by more than 2
-nats (`--max-mean-abs`, `--max-token-abs`), and a challenge fails only
-when all 3 attempts (`--repeats`) fail. Even the same file on the same
-llama.cpp build is not bit-identical across requests, because the prompt
-cache and batching change the arithmetic. For a self-check against your
-own llama.cpp server, `--no-prompt-cache` sends llama.cpp's
+Per challenge, the defaults are a mean absolute deviation of at most 0.5
+nats and no single token off by more than 2 nats (`--max-mean-abs`,
+`--max-token-abs`), and a challenge fails only when all 3 attempts
+(`--repeats`) fail. A calibrated set brings its own tolerances, which
+`check-endpoint` uses unless you pass flags; the report says which were
+used (`tolerance_source`) and why the run passed or failed (`decision`).
+Even the same file on the same llama.cpp build is not bit-identical
+across requests, because the prompt cache and batching change the
+arithmetic. What a marketplace sees, and what a fail means, is in
+[INTEGRATE-A-MARKETPLACE.md](INTEGRATE-A-MARKETPLACE.md#64-tolerances-and-what-a-fail-means).
+For a self-check against your own llama.cpp server, `--no-prompt-cache` sends llama.cpp's
 `cache_prompt: false`; a marketplace should leave it off so challenges
 look like normal traffic.
 
@@ -456,6 +495,21 @@ you. Tensorseed never holds your wallet key or any marketplace key.
    signed claim. Changing the file, model id, endpoint, engine version,
    wallet, or key writes a new claim that needs a new signature.
 
+4. Before you list, check the claim the way a buyer will. From
+   anywhere, once the reverse proxy forwards the well-known path (see
+   below):
+
+   ```sh
+   tensorseed check-claim https://llm.example.com/v1
+   ```
+
+   It fetches the claim from your public URL and checks its hash, the
+   wallet signature, that `public_base_url` is the URL it was fetched
+   from, that the catalog, manifest, and files match a catalog you
+   trust, and the license mark recomputed from the catalog. Exit status
+   is 0 when every check passes. Details:
+   [INTEGRATE-A-MARKETPLACE.md](INTEGRATE-A-MARKETPLACE.md#45-match-the-claim-to-a-catalog-you-trust).
+
 What the proxy does:
 
 - Forwards every request with its headers unchanged (your
@@ -498,8 +552,8 @@ out, 1 when anything fails, and 2 on an error. For a stream, save it with
 `curl -N` and pass the raw file as `--body`. `check-endpoint` finds the
 claim at the well-known path (or takes `--claim`), sends a fresh request
 id with every challenge, and fails any challenge whose answer is
-unsigned or badly signed; the report lists the signature status of each
-challenge and a summary.
+unsigned or badly signed, which fails the whole run; the report lists
+the signature status of each challenge and a summary.
 
 ## 7. License duties when you sell access
 
@@ -539,6 +593,13 @@ Again: these notes are not legal advice.
   return `logprobs`. Such an offer cannot be logprob checked.
 - `check-endpoint` says `inconclusive` with HTTP 503: the runtime is still
   loading the model; wait for `/v1/models` and rerun.
+- `check-endpoint` fails your own honest server: calibrate the set with
+  `calibrate-reference` on that server, and use the calibrated file. A
+  fail across many challenges, or a high median, usually means a
+  different file or model is answering.
+- `check-claim` fails `public_url`: `--public-url` in the claim must be
+  the address buyers call, and the claim must be served from that
+  address's `/.well-known/tensorseed/served-weights.json`.
 - `did not list a model within 600s`: large models load slowly; raise
   `inference.ready_timeout_secs` or `--ready-timeout`, and read the
   runtime's own log lines above the error.
