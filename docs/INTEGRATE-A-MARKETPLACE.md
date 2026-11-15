@@ -227,9 +227,12 @@ Two things to decide as a marketplace:
   catalogs list the same Hugging Face commit with the same file hashes,
   that is extra evidence. Requiring it is your policy, not Tensorseed's.
 
-`catalog export` exports the catalog in the `[catalog]` block. To export
-another publisher's catalog, give it its own config file (its four
-values in `[catalog]`, `[file]`, and `[chia]`) and pass `--config`.
+`catalog export` exports the default catalog; `--catalog <name>`
+(0.3.1) exports any catalog added with `catalog add`, read from its file
+catalog. Its entries keep their publisher's signatures and verify
+against that publisher's key, not yours. (0.3.0 exported only the
+`[catalog]` block; another publisher's catalog needed its own config
+file.)
 
 Tensorseed 0.3.0 has no signed list of trusted catalog publishers. You
 configure the publishers you accept yourself. A neutral, signed follow

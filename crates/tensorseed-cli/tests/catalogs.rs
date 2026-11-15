@@ -597,3 +597,100 @@ async fn check_claim_uses_catalogs_added_with_catalog_add() {
     let o = run(&cfg, &args).await;
     assert_eq!(code(&o), 0, "{}", stdout(&o));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn catalog_export_works_for_added_catalogs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let a = key(11);
+    let b = key(22);
+    let web = format!("{}/t/", server.uri());
+    let m = manifest("org/tiny", C, &[("config.json", br#"{}"#)], &web);
+    let pubdir = tmp.path().join("srv");
+    publish("alpha", &a, &pubdir, &tmp.path().join("st-a"), &m, false).await;
+    publish("beta", &b, &pubdir, &tmp.path().join("st-b"), &m, false).await;
+    mount_dir(&server, &pubdir).await;
+    let cfg = write_config(
+        tmp.path(),
+        &server.uri(),
+        &entry("alpha", "Alpha", &a.public_key().to_base64(), 0),
+    );
+    let read = |p: &Path| -> tensorseed_catalog::export::ExportBundle {
+        serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap()
+    };
+
+    // The default subscription exports without --catalog.
+    let out_a = tmp.path().join("alpha.json");
+    let o = run(
+        &cfg,
+        &["catalog", "export", "--out", out_a.to_str().unwrap()],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let bundle = read(&out_a);
+    assert_eq!(bundle.catalog, "alpha");
+    bundle.verify(&a.public_key()).unwrap();
+
+    // Not followed yet: a clear error.
+    let out_b = tmp.path().join("beta.json");
+    let args = [
+        "catalog",
+        "export",
+        "--catalog",
+        "beta",
+        "--out",
+        out_b.to_str().unwrap(),
+    ];
+    let o = run(&cfg, &args).await;
+    assert_ne!(code(&o), 0);
+    assert!(
+        stderr(&o).contains("no subscribed catalog named"),
+        "{}",
+        stderr(&o)
+    );
+
+    // After `catalog add`, its signed entries export and verify against
+    // beta's key (not alpha's), and the label works too.
+    let add = run(
+        &cfg,
+        &[
+            "catalog",
+            "add",
+            "--name",
+            "beta",
+            "--label",
+            "Beta",
+            "--publisher-pubkey",
+            &b.public_key().to_base64(),
+            "--base-url",
+            &format!("{}/", server.uri()),
+        ],
+    )
+    .await;
+    assert_eq!(code(&add), 0, "{}", stderr(&add));
+    let o = run(&cfg, &args).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stdout(&o).contains("exported"), "{}", stdout(&o));
+    let bundle = read(&out_b);
+    assert_eq!(bundle.catalog, "beta");
+    assert_eq!(bundle.publisher_pubkey, b.public_key().to_base64());
+    assert!(!bundle.entries.is_empty());
+    bundle.verify(&b.public_key()).unwrap();
+    assert!(bundle.verify(&a.public_key()).is_err());
+    let out_l = tmp.path().join("label.json");
+    let o = run(
+        &cfg,
+        &[
+            "catalog",
+            "export",
+            "--catalog",
+            "Beta",
+            "--no-wait",
+            "--out",
+            out_l.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(read(&out_l).entries.len(), bundle.entries.len());
+}

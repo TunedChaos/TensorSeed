@@ -45,6 +45,11 @@
   `url_mismatch`. The WebAssembly build and `verifyResponse` take the
   same checks as `origin_url` / `originUrl` and `response_url` /
   `responseUrl`.
+- `catalog export --catalog <name>` exports a catalog added with
+  `catalog add` (by name or label), with its publisher's signatures, and
+  `catalog export` without it uses the default subscription when
+  `[[catalogs]]` is set, as `catalog info` does. 0.3.0 exported only the
+  top-level `[catalog]` block.
 
 ### Added
 

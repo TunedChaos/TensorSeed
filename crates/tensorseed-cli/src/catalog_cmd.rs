@@ -104,11 +104,18 @@ pub async fn run(
             out,
             backend,
             no_wait,
+            catalog,
         } => {
             let cfg = cfg()?;
-            let pk = pinned_key(&cfg)?;
-            let (b, id) = open_reader(&cfg, backend.map(BackendArg::as_str), *no_wait).await?;
-            let bundle = export(b.as_dyn(), &id, &cfg.catalog.name, &pk).await?;
+            let (view, default_backend) = export_view(&cfg, catalog.as_deref())?;
+            let pk = pinned_key(&view)?;
+            let (b, id) = open_reader(
+                &view,
+                backend.map(BackendArg::as_str).or(default_backend),
+                *no_wait,
+            )
+            .await?;
+            let bundle = export(b.as_dyn(), &id, &view.catalog.name, &pk).await?;
             let tmp = out.with_extension("tmp");
             std::fs::write(&tmp, serde_json::to_vec_pretty(&bundle)?)?;
             std::fs::rename(&tmp, out)?;
@@ -177,6 +184,22 @@ pub async fn run(
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// The config view `catalog export` reads: the named subscription, or the
+/// default one when `[[catalogs]]` is used, else the top-level catalog.
+/// A catalog added with `catalog add` is a file catalog, so its backend
+/// defaults to `file` whatever `catalog.backend` says.
+fn export_view(
+    cfg: &Config,
+    catalog: Option<&str>,
+) -> anyhow::Result<(Config, Option<&'static str>)> {
+    if catalog.is_none() && cfg.catalogs.is_empty() {
+        return Ok((cfg.clone(), None));
+    }
+    let sub = cfg.subscription(catalog)?;
+    let backend = if sub.is_default { None } else { Some("file") };
+    Ok((cfg.for_subscription(&sub), backend))
 }
 
 fn store_id(cfg: &Config) -> anyhow::Result<CatalogId> {

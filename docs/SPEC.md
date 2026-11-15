@@ -407,11 +407,11 @@ The signature's trusted comment is exactly `ts.entry/1 catalog=<name> key=<key> 
 Because signatures live in the entries and not in a backend, a catalog can move between backends with signatures intact:
 
 ```
-tensorseed catalog export --out catalog.ts-export.json [--backend chia|file]
+tensorseed catalog export --out catalog.ts-export.json [--backend chia|file] [--catalog NAME]
 tensorseed catalog import catalog.ts-export.json [--backend chia|file] [--dry-run]
 ```
 
-- `export` reads every `ts/` key through `CatalogBackend::get_signed`, verifies each entry against the pinned key, and writes an `ExportBundle` (`ts.export/1`: `catalog`, informational `publisher_pubkey`, `source_kind`, `source_id`, `entries` sorted by key). The bundle is not signed as a whole; every entry already is.
+- `export` reads every `ts/` key through `CatalogBackend::get_signed`, verifies each entry against the pinned key (with `--catalog`, the key of that `[[catalogs]]` subscription, read from its file catalog), and writes an `ExportBundle` (`ts.export/1`: `catalog`, informational `publisher_pubkey`, `source_kind`, `source_id`, `entries` sorted by key). The bundle is not signed as a whole; every entry already is.
 - `import` verifies every entry against the key pinned in the *destination* config (never the key inside the bundle), then stages all entries unchanged and publishes them as one new generation (Chia) or one new revision (file). No re-signing, so the destination holds byte-identical signed entries. `--dry-run` only verifies; this mode works today.
 - Migration (for example Chia to file, or file to a future chain): export, import into the new backend, then publish a `ts/v1/catalog` update in the old backend announcing the new location. Running both backends side by side from the same publisher key is supported and recommended during a transition.
 
@@ -729,7 +729,7 @@ Single binary `tensorseed`.
 | `mirror add [URL] [--name] [--provider] [--priority] [--magnet] [--label] [--pubkey] [--disabled]`, `mirror remove NAME\|URL` | Edit the local `mirrors.toml` (6.12). | done |
 | `mirror list [--offline]` | Refresh the published list and print the merged mirror ranking. | done |
 | `mirror publish [--file]` | Sign a mirror list and write `<catalog>/mirrors.toml` (+ `.minisig`) to every storage target. | done |
-| `catalog export --out FILE [--backend chia\|file]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10). | done |
+| `catalog export --out FILE [--backend chia\|file] [--catalog NAME]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10), for the default catalog or a subscribed one. | done |
 | `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). | done |
 | `catalog resign-head`, `catalog snapshot` | File backend: re-sign `head.json` with a fresh expiry; write a snapshot now. Neither needs a chain transaction. | done |
 | `catalog anchor` | Publisher: make the Chia store anchor the current file catalog revision (all entries plus `ts/v1/file-head` in one generation, only if anything changed) and upload `chain-proof.json` (6.14). | done (mocked RPC) |

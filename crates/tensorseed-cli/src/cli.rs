@@ -522,16 +522,25 @@ pub enum CatalogCmd {
         url: Vec<String>,
     },
     /// Export every signed entry to a backend neutral bundle (ts.export/1).
+    ///
+    /// Works for your own catalog and for any catalog you follow
+    /// (`catalog add`): the entries keep their publisher's signatures, so
+    /// the bundle verifies against that publisher's key.
     Export {
         /// Output file for the bundle.
         #[arg(long)]
         out: PathBuf,
-        /// Backend to read from (default: catalog.backend).
+        /// Backend to read from (default: catalog.backend for the default
+        /// catalog, the file backend for one added with `catalog add`).
         #[arg(long, value_enum)]
         backend: Option<BackendArg>,
         /// Use the local catalog copy without syncing (file backend).
         #[arg(long)]
         no_wait: bool,
+        /// Export this subscribed catalog (name or label) instead of the
+        /// default one.
+        #[arg(long, value_name = "NAME")]
+        catalog: Option<String>,
     },
     /// Verify a bundle against the pinned publisher key and publish its
     /// entries, signatures unchanged, as one new generation.
