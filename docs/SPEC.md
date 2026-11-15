@@ -523,6 +523,50 @@ In 0.1.0 a client follows one catalog per config file: pin the third party's `ca
 
 Delegated writers on the official catalog (CHIP-0035) remain optional and separate; they are not the decentralization path.
 
+### 6.16 Signed follow lists (`ts.follow-list/1`, 0.3.1)
+
+A follow list is a signed list of catalogs that anyone (a marketplace, a community, one person) can publish and others can follow instead of collecting `[[catalogs]]` entries by hand. It only says which catalogs to follow: every catalog is still verified against its own publisher key, so a list can add or drop catalogs but cannot forge an entry. Code: `tensorseed_verify::follow_list` (also in WebAssembly and `@tensorseed/verify`).
+
+```json
+{
+  "schema": "ts.follow-list/1",
+  "name": "example-list",
+  "rev": 3,
+  "issued_at": "2026-11-14T00:00:00Z",
+  "catalogs": [
+    {
+      "name": "example-catalog",
+      "label": "Example publisher",
+      "publisher_pubkey": "RW...",
+      "base_url": "https://catalog.example.org/",
+      "store_id": "<64 hex, optional>",
+      "note": "optional, at most 280 bytes"
+    }
+  ]
+}
+```
+
+- **Fields.** `name` follows the catalog name rule (1 to 64 of `[a-z0-9-]`); `rev` starts at 1 and rises with every published change; `issued_at` is RFC 3339. Catalog names are unique within a list; `label` is at most 64 bytes, `note` at most 280, neither with control characters; `store_id` is empty or 64 lowercase hex. Unknown fields are refused at every level. A list is at most 1 MiB and 1000 catalogs. Chain check mode and priority are not in the list: they stay the follower's choice.
+- **Signature.** The file is published next to a detached minisign signature `<file>.minisig` over the exact bytes. The trusted comment is `ts.follow-list/1 name=<name> rev=<rev> sha256=<hex of the bytes>`, so any minisign tool can check it and a signature cannot be moved to another list, revision, or document type. Readers verify the bytes they received; Tensorseed writes pretty JSON with a final newline, but the form is not otherwise fixed.
+- **Keys.** The follower pins the list signer's key when first following; a list never carries its own key. Any minisign key can sign a list (`catalog keygen` makes one).
+- **Rollback and forks.** The follower stores the highest accepted `rev` and the SHA-256 of its bytes (`[[follow_lists]]` in config). A lower `rev` is refused as a rollback, and different bytes under the accepted `rev` as a fork. There is no expiry: a list that stops updating keeps its last accepted state.
+- **Applying.** `catalog follow-list follow` adds, changes, and removes only `[[catalogs]]` entries tagged `follow_list = "<list>"`. A listed catalog the follower already has with the same name and key is kept as the follower's own entry; with another key it is a conflict and is not changed. A listed catalog whose key changed is not applied without `--allow-key-change`. Updating an entry keeps the follower's own `chain_check`, `priority`, `state_dir`, `mirror_urls`, and `coin_api_urls`. Without `--yes` the command only prints the changes.
+
+```toml
+[[follow_lists]]
+name = "example-list"
+source = "https://lists.example.org/example-list.json"
+publisher_pubkey = "RW..."      # the list signer, pinned on first follow
+rev = 3                         # highest accepted
+sha256 = "<64 hex>"             # of the bytes accepted at rev
+
+[[catalogs]]
+name = "example-catalog"
+publisher_pubkey = "RW..."
+base_url = "https://catalog.example.org/"
+follow_list = "example-list"    # written by follow; updated or removed by it
+```
+
 ## 7. Content layer
 
 ### 7.1 BitTorrent v2
@@ -730,6 +774,8 @@ Single binary `tensorseed`.
 | `mirror list [--offline]` | Refresh the published list and print the merged mirror ranking. | done |
 | `mirror publish [--file]` | Sign a mirror list and write `<catalog>/mirrors.toml` (+ `.minisig`) to every storage target. | done |
 | `catalog export --out FILE [--backend chia\|file] [--catalog NAME]` | Write every signed entry to a backend neutral `ts.export/1` bundle (6.10), for the default catalog or a subscribed one. | done |
+| `catalog follow-list create --name NAME --out FILE [--catalog NAME]...`, `catalog follow-list sign FILE [--rev N] [--key FILE]` | Write a `ts.follow-list/1` list from catalogs you follow; sign it (sets `issued_at`, raises `rev` past the last signature, writes `FILE.minisig`) (6.16). | done |
+| `catalog follow-list verify SOURCE --pubkey KEY [--sig] [--json]`, `catalog follow-list follow SOURCE\|NAME [--pubkey KEY] [--sig] [--yes] [--allow-key-change]`, `catalog follow-list unfollow NAME [--keep-catalogs]` | Verify a list from a URL or file; follow it (show the `[[catalogs]]` changes, write them with `--yes`, refuse rollbacks and forks); stop following it (6.16). | done |
 | `catalog import FILE [--backend chia\|file] [--dry-run]` | Verify a bundle against the pinned key and publish its entries unchanged as one generation (6.10). | done |
 | `catalog resign-head`, `catalog snapshot` | File backend: re-sign `head.json` with a fresh expiry; write a snapshot now. Neither needs a chain transaction. | done |
 | `catalog anchor` | Publisher: make the Chia store anchor the current file catalog revision (all entries plus `ts/v1/file-head` in one generation, only if anything changed) and upload `chain-proof.json` (6.14). | done (mocked RPC) |

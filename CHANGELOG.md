@@ -53,6 +53,20 @@
 
 ### Added
 
+- Signed follow lists (`ts.follow-list/1`, SPEC section 6.16): a
+  publisher signed list of catalogs that a marketplace, a community, or
+  one user can follow instead of adding each catalog by hand.
+  `catalog follow-list create` writes one from the catalogs you follow,
+  `sign` signs it with any minisign key (detached `.minisig`, trusted
+  comment `ts.follow-list/1 name=<name> rev=<rev> sha256=<hex>`, and a
+  new `rev` for every change), `verify` checks one from a URL or file,
+  `follow` shows the `[[catalogs]]` changes and writes them with `--yes`,
+  and `unfollow` drops a list and its catalogs. Followers pin the list
+  key and the accepted `rev` and hash in `[[follow_lists]]`, so older or
+  swapped lists are refused; a list only touches the entries it added,
+  never your own, and key changes need `--allow-key-change`. The verify
+  crate, the WebAssembly build, and `@tensorseed/verify`
+  (`verifyFollowList`, `fetchFollowList`) check lists too.
 - `reference-logprobs --samples N` (default 5): expected values are
   per-token medians over N passes (`generator.samples`).
 - Set decision for `check-endpoint` (`ts.set-decision/1`): the run
@@ -123,6 +137,10 @@
   package's Node tests.
 
 ### Compatibility
+
+- New config keys `[[follow_lists]]` and `follow_list` in `[[catalogs]]`.
+  0.3.0 refuses a config that has them, so remove them before going
+  back to 0.3.0.
 
 - `verify-response --claim <URL>` now fails with `url_mismatch` when the
   claim is not served at its own `public_base_url` (for example, a

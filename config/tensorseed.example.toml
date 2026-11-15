@@ -85,6 +85,19 @@ torrent = true                   # also publish each snapshot as a torrent (not 
 # base_url = "https://catalog.example.org/"
 # chain_check = "strict"          # default: inherit catalog.chain_check
 # priority = 10                   # lower is preferred when hashes agree
+#
+# Signed follow lists (ts.follow-list/1, SPEC 6.16). `tensorseed catalog
+# follow-list follow <url> --pubkey RW... --yes` writes these entries and
+# tags the [[catalogs]] it adds with follow_list = "<name>"; following it
+# again updates or removes only those. Do not edit rev or sha256 by hand:
+# they stop an older or swapped list from being accepted.
+#
+# [[follow_lists]]
+# name = "example-list"
+# source = "https://lists.example.org/example-list.json"
+# publisher_pubkey = "RW........................................"
+# rev = 1
+# sha256 = "<64 hex>"
 
 [huggingface]
 endpoint = "https://huggingface.co"

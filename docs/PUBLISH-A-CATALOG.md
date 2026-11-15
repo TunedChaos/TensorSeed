@@ -260,9 +260,14 @@ and this snippet, not your secret key and not your Chia wallet. They
 can also seed what they pull, the same way they would with the
 official catalog ([RUN-A-MIRROR.md](RUN-A-MIRROR.md)).
 
-Following several catalogs in one process, showing when catalogs agree
-on a revision's hashes, and an explorer "use another catalog" form are
-planned for 0.2.0 (SPEC section 6.15).
+Since 0.2.0 one client can follow several catalogs in one config:
+followers run `tensorseed catalog add` with your four values, and
+`list` and `pull` show when catalogs agree on a revision's hashes.
+Since 0.3.1 you, or anyone curating catalogs, can also publish a signed
+follow list that names your catalog next to others; followers then run
+`catalog follow-list follow` instead of adding each catalog by hand
+([INTEGRATE-A-MARKETPLACE.md](INTEGRATE-A-MARKETPLACE.md#signed-follow-lists-031),
+SPEC section 6.16).
 
 ## See also
 

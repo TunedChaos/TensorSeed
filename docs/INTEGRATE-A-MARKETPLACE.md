@@ -234,9 +234,55 @@ against that publisher's key, not yours. (0.3.0 exported only the
 `[catalog]` block; another publisher's catalog needed its own config
 file.)
 
-Tensorseed 0.3.0 has no signed list of trusted catalog publishers. You
-configure the publishers you accept yourself. A neutral, signed follow
-list is a proposal under [Planned](#13-planned-not-in-030).
+#### Signed follow lists (0.3.1)
+
+Instead of collecting `[[catalogs]]` entries by hand, you can follow a
+signed list of catalogs that someone else maintains, or publish your own
+list of the publishers you accept so sellers and buyers can follow the
+same set. The format is `ts.follow-list/1` (SPEC section 6.16): a JSON
+file with `name`, `rev`, `issued_at`, and `catalogs` (each a `name`,
+`publisher_pubkey`, `base_url`, and optional `label`, `store_id`, and
+`note`), plus a detached minisign signature `<file>.minisig` whose
+trusted comment is `ts.follow-list/1 name=<name> rev=<rev> sha256=<hex>`.
+
+A list only says which catalogs to follow. Each catalog is still
+verified against its own publisher key, so a compromised list can add or
+drop catalogs but cannot forge an entry. Review what a list adds before
+accepting it.
+
+To publish one (any minisign key works; `catalog keygen` makes one):
+
+```sh
+tensorseed catalog follow-list create --name example-list --out example-list.json
+# edit example-list.json if needed (notes, which catalogs)
+tensorseed catalog follow-list sign example-list.json --key ~/.config/tensorseed/lister.key
+# host example-list.json and example-list.json.minisig; give followers the key it printed
+```
+
+`sign` sets `issued_at` and raises `rev` past the revision in the
+existing `.minisig`, so every published change gets a new revision.
+
+To follow one:
+
+```sh
+tensorseed catalog follow-list verify https://lists.example.org/example-list.json --pubkey RW...
+tensorseed catalog follow-list follow https://lists.example.org/example-list.json --pubkey RW...
+tensorseed catalog follow-list follow https://lists.example.org/example-list.json --pubkey RW... --yes
+tensorseed catalog follow-list follow example-list --yes   # later: refresh with the pinned key
+tensorseed catalog follow-list unfollow example-list       # drops the catalogs it added
+```
+
+`follow` prints the changes and writes them only with `--yes`. It pins
+the list key in a `[[follow_lists]]` entry with the accepted `rev` and
+SHA-256, refuses a lower `rev` (rollback) or other bytes under the same
+`rev` (fork), and only adds, updates, or removes `[[catalogs]]` entries
+tagged `follow_list = "<list>"`. A catalog you already follow with the
+same key stays your own entry; one with another key is reported as a
+conflict and left alone, and a key change in the list needs
+`--allow-key-change`. Your `chain_check` and `priority` on a followed
+entry survive updates. In JavaScript, `verifyFollowList` and
+`fetchFollowList` in `@tensorseed/verify` do the same checks
+([3.5](#35-check-catalogs-from-javascript-tensorseed-wasm)).
 
 ### 3.4 Check catalog signatures without Tensorseed code
 
@@ -1967,6 +2013,7 @@ weights. That needs hardware attestation, which 0.3.0 does not have
 | Coin anchor grace | 192 blocks (`[chia] chain_grace_blocks`) |
 | Revocation list | 4 MiB when fetched, at most 10,000 entries (0.3.1) |
 | Claim lifetime (`--expires-in`) | 1 hour to 400 days (0.3.1) |
+| Follow list | 1 MiB, at most 1000 catalogs (0.3.1) |
 
 ## 13. Planned (not in 0.3.0)
 
@@ -1987,30 +2034,3 @@ release date.
   store results; schedule it with your health checks.
 - **Hardware attestation** (confidential computing) to show which
   weights produced each answer.
-- **A follow list for trusted catalog signers.** Nothing exists today;
-  each marketplace keeps its own `[[catalogs]]` list. A possible format,
-  proposed here for discussion only and not implemented:
-
-  ```json
-  {
-    "schema": "ts.follow-list/1",
-    "name": "example-marketplace",
-    "rev": 1,
-    "catalogs": [
-      {
-        "name": "tensorseed",
-        "pubkey": "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd",
-        "store_id": "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76",
-        "base_url": "https://catalog.tensorseed.dev/",
-        "note": "official catalog"
-      }
-    ]
-  }
-  ```
-
-  It would be published as canonical JSON with a minisign signature
-  whose trusted comment reads
-  `ts.follow-list/1 name=<name> rev=<n> sha256=<hex>`, so it can be
-  checked with the same tools as a catalog, and a command such as
-  `tensorseed catalog follow-list <url>` could turn it into
-  `[[catalogs]]` entries after showing the changes.
