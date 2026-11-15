@@ -19,8 +19,9 @@ const BINARY: &str = if cfg!(windows) {
 } else {
     "tensorseed-desktop"
 };
-/// Desktop's application id (Flatpak and bundle identifier).
-const APP_ID: &str = "dev.tensorseed.desktop";
+/// Desktop's Flatpak app ids, newest first: the Flathub id, then the id of
+/// the 0.3.x bundles from GitHub Releases.
+const FLATPAK_IDS: [&str; 2] = ["dev.tensorseed.Tensorseed", "dev.tensorseed.desktop"];
 /// Where to get Desktop.
 const DOWNLOAD_URL: &str = "https://tensorseed.dev";
 
@@ -98,14 +99,14 @@ fn find_flatpak() -> Option<Launcher> {
     if let Some(h) = home() {
         roots.push(h.join(".local/share/flatpak/app"));
     }
-    roots
-        .iter()
-        .any(|r| r.join(APP_ID).is_dir())
-        .then(|| Launcher {
-            program: flatpak,
-            args: vec!["run".into(), APP_ID.into()],
-            found: format!("Flatpak {APP_ID}"),
-        })
+    let id = FLATPAK_IDS
+        .into_iter()
+        .find(|id| roots.iter().any(|r| r.join(id).is_dir()))?;
+    Some(Launcher {
+        program: flatpak,
+        args: vec!["run".into(), id.into()],
+        found: format!("Flatpak {id}"),
+    })
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -182,7 +183,7 @@ fn locate() -> Result<Launcher, Vec<String>> {
         return Ok(l);
     }
     if cfg!(target_os = "linux") {
-        looked.push(format!("Flatpak {APP_ID}"));
+        looked.push(format!("Flatpak {}", FLATPAK_IDS.join(" or ")));
     }
     Err(looked)
 }

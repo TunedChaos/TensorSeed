@@ -233,12 +233,12 @@ mod tests {
         let conf: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(conf["bundle"]["shortDescription"], SUMMARY);
-        let metainfo = include_str!("../../flatpak/dev.tensorseed.desktop.metainfo.xml");
+        let metainfo = include_str!("../../flatpak/dev.tensorseed.Tensorseed.metainfo.xml");
         assert!(
             metainfo.contains(&format!("<summary>{SUMMARY}</summary>")),
             "metainfo summary"
         );
-        let entry = include_str!("../../flatpak/dev.tensorseed.desktop.desktop");
+        let entry = include_str!("../../flatpak/dev.tensorseed.Tensorseed.desktop");
         assert!(
             entry.lines().any(|l| l == format!("Comment={SUMMARY}")),
             "desktop file Comment"

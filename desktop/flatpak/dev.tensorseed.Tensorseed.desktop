@@ -12,7 +12,7 @@ GenericName=Model and Dataset Seeder
 # together with the AppStream summary and shortDescription in tauri.conf.json.
 Comment=Download, seed, and verify AI models
 Exec=tensorseed-desktop %u
-Icon=dev.tensorseed.desktop
+Icon=dev.tensorseed.Tensorseed
 Terminal=false
 Categories=Network;FileTransfer;P2P;
 Keywords=tensorseed;huggingface;model;dataset;torrent;seed;

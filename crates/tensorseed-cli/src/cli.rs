@@ -391,7 +391,8 @@ pub enum Command {
     ///
     /// Looks for the `tensorseed-desktop` binary in `TENSORSEED_DESKTOP`,
     /// next to this binary, on PATH, and in the standard install locations
-    /// (and the Flatpak `dev.tensorseed.desktop`). Desktop gets the same
+    /// (and the Flatpak `dev.tensorseed.Tensorseed`, or
+    /// `dev.tensorseed.desktop` from the 0.3.x bundles). Desktop gets the same
     /// config file. With a target, it opens that entry page. Prints where
     /// to get Desktop when it is not installed. The CLI links no GUI code.
     Gui(GuiArgs),

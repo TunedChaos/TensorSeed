@@ -199,10 +199,10 @@ jobs:
         run: |
           set -euo pipefail
           flatpak-builder --user --install-deps-from=flathub --force-clean \
-            --repo=repo build-dir desktop/flatpak/dev.tensorseed.desktop.yml
+            --repo=repo build-dir desktop/flatpak/dev.tensorseed.Tensorseed.yml
           mkdir -p staged
           out="staged/Tensorseed.Desktop_${VERSION}_x86_64.flatpak"
-          flatpak build-bundle repo "$out" dev.tensorseed.desktop
+          flatpak build-bundle repo "$out" dev.tensorseed.Tensorseed
           ls -l "$out"
       - uses: actions/upload-artifact@v4
         with:

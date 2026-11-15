@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright 2026 Tuned Chaos -->
+<component type="desktop-application">
+  <id>dev.tensorseed.Tensorseed</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Tensorseed Desktop</name>
+  <!-- Desktop does not serve inference yet (the CLI does), so its summary
+       leaves serving out. Switch to the main tagline, "Download, seed, and
+       serve AI models you can verify", once the Desktop serve control
+       ships; keep the .desktop Comment and shortDescription in
+       tauri.conf.json the same (a unit test checks). -->
+  <summary>Download, seed, and verify AI models</summary>
+  <developer id="dev.tensorseed">
+    <name>Tuned Chaos</name>
+  </developer>
+  <description>
+    <p>
+      Tensorseed Desktop browses signed Tensorseed catalogs of open AI models
+      and datasets. Each catalog is anchored on the Chia blockchain, so you can
+      check that the list of files you are about to download is the one its
+      publisher signed.
+    </p>
+    <p>
+      Desktop pulls models over BitTorrent with an HTTP fallback, verifies every
+      file against the signed manifest, and seeds verified copies back to other
+      users, so a model stays available even when its original host is not.
+    </p>
+    <ul>
+      <li>Search catalogs and open an entry from a tensorseed:// link</li>
+      <li>Pull, verify, and seed models and datasets</li>
+      <li>Pause, resume, and limit seeding, and keep seeding from the system tray</li>
+      <li>Share config, keys, and pulled copies with the tensorseed command line tool</li>
+    </ul>
+    <p>
+      Serving a verified model through an inference engine such as llama.cpp or
+      vLLM is done with the tensorseed command line tool and an engine you
+      install separately. Downloading, verifying, and seeding never need one.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.tensorseed.Tensorseed.desktop</launchable>
+  <icon type="stock">dev.tensorseed.Tensorseed</icon>
+  <provides>
+    <binary>tensorseed-desktop</binary>
+    <binary>tensorseed</binary>
+  </provides>
+  <url type="homepage">https://tensorseed.dev</url>
+  <url type="vcs-browser">https://github.com/TunedChaos/TensorSeed</url>
+  <url type="bugtracker">https://github.com/TunedChaos/TensorSeed/issues</url>
+  <url type="contribute">https://github.com/TunedChaos/TensorSeed/blob/main/CONTRIBUTING.md</url>
+  <branding>
+    <color type="primary" scheme_preference="light">#d4a017</color>
+    <color type="primary" scheme_preference="dark">#12140f</color>
+  </branding>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Browse a signed catalog and open a model entry</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/01-entry.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Pull a model over BitTorrent with progress for every file</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/02-pull.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Every file checked against the signed manifest</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/03-verified.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Seed verified copies back to other users</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/04-seeding.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Seeding limits and other settings</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/05-settings.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+    <category>P2P</category>
+  </categories>
+  <keywords>
+    <keyword>model</keyword>
+    <keyword>dataset</keyword>
+    <keyword>torrent</keyword>
+    <keyword>verify</keyword>
+    <keyword>llm</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">720</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.3.1" date="2026-11-14">
+      <url type="details">https://github.com/TunedChaos/TensorSeed/releases/tag/v0.3.1</url>
+      <description>
+        <p>Verified serving and catalog fixes in the shared library:</p>
+        <ul>
+          <li>Signed follow lists for catalogs</li>
+          <li>Claim expiry and revocation</li>
+          <li>A more reliable endpoint check</li>
+          <li>Catalog export for added catalogs</li>
+        </ul>
+        <p>Desktop itself is unchanged apart from the version.</p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-11-14">
+      <url type="details">https://github.com/TunedChaos/TensorSeed/releases/tag/v0.3.0</url>
+      <description>
+        <p>First Flatpak build of Tensorseed Desktop.</p>
+      </description>
+    </release>
+  </releases>
+</component>

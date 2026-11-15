@@ -7,10 +7,10 @@
 #
 #   git submodule update --init desktop/flatpak/shared-modules
 #   flatpak-builder --user --install --force-clean build-dir \
-#     desktop/flatpak/dev.tensorseed.desktop.yml
+#     desktop/flatpak/dev.tensorseed.Tensorseed.yml
 #
 # See desktop/README.md (Flatpak) for the permissions and their reasons.
-id: dev.tensorseed.desktop
+id: dev.tensorseed.Tensorseed
 runtime: org.gnome.Platform
 runtime-version: '51'
 sdk: org.gnome.Sdk
@@ -45,6 +45,10 @@ modules:
         CARGO_HOME: /run/build/tensorseed-desktop/cargo
         CARGO_NET_OFFLINE: 'true'
         npm_config_offline: 'true'
+        # The Flatpak app id as the Tauri identifier, so the single instance
+        # D-Bus name (<identifier>.SingleInstance) is under the app id and
+        # needs no --own-name. Other builds keep tauri.conf.json unchanged.
+        TAURI_CONFIG: '{"identifier":"dev.tensorseed.Tensorseed"}'
     build-commands:
       # Frontend (desktop/dist), with pnpm from its npm tarball.
       - >-
@@ -62,14 +66,16 @@ modules:
       - cargo build --release --offline --locked -p tensorseed-cli
       - install -Dm755 desktop/src-tauri/target/release/tensorseed-desktop -t /app/bin
       - install -Dm755 target/release/tensorseed -t /app/bin
-      - install -Dm644 desktop/flatpak/dev.tensorseed.desktop.desktop -t /app/share/applications
-      - install -Dm644 desktop/flatpak/dev.tensorseed.desktop.metainfo.xml -t /app/share/metainfo
-      - install -Dm644 desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/dev.tensorseed.desktop.png
-      - install -Dm644 desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.tensorseed.desktop.png
-      - install -Dm644 desktop/src-tauri/icons/128x128@2x.png /app/share/icons/hicolor/256x256/apps/dev.tensorseed.desktop.png
-      - install -Dm644 desktop/src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/dev.tensorseed.desktop.png
+      - install -Dm644 desktop/flatpak/dev.tensorseed.Tensorseed.desktop -t /app/share/applications
+      - install -Dm644 desktop/flatpak/dev.tensorseed.Tensorseed.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 desktop/flatpak/dev.tensorseed.Tensorseed.svg -t /app/share/icons/hicolor/scalable/apps
+      - install -Dm644 desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/dev.tensorseed.Tensorseed.png
+      - install -Dm644 desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.tensorseed.Tensorseed.png
+      - install -Dm644 desktop/src-tauri/icons/256x256.png /app/share/icons/hicolor/256x256/apps/dev.tensorseed.Tensorseed.png
+      - install -Dm644 desktop/src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/dev.tensorseed.Tensorseed.png
     sources:
-      # This checkout. A Flathub submission uses a git source with a tag.
+      # This checkout. The Flathub manifest (in the Flathub repo for the app
+      # id) uses a git source with a release tag and commit instead.
       - type: dir
         path: ../..
         skip:

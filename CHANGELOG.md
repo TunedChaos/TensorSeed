@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed
+
+- The Flatpak app id is now `dev.tensorseed.Tensorseed` (it was
+  `dev.tensorseed.desktop`), because Flathub does not accept ids that end
+  in `.desktop`. The metainfo, desktop file, and icons are renamed to
+  match, the metainfo gains screenshots, branding colors, and release
+  links, and a scalable icon is installed. The Flatpak build sets the
+  Tauri identifier to the app id, so the single instance name stays under
+  it; other builds keep `dev.tensorseed.desktop`. A 0.3.x Flatpak from
+  GitHub Releases installs side by side with the new id; config, keys,
+  and pulled copies are shared, while Desktop's own preferences
+  (`desktop.json`) start fresh.
+- `tensorseed gui` finds the Flatpak under either id.
+
+### Docs
+
 - `@tensorseed/verify` 0.3.1 is on npm at
   <https://www.npmjs.com/package/@tensorseed/verify> (AGPL-3.0-or-later).
   Install with `pnpm add @tensorseed/verify` (or
