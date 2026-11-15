@@ -374,6 +374,21 @@ pub fn check_config(path: &Path) -> (Check, Option<Config>) {
             ),
             Some(cfg),
         ),
+        Ok(cfg) if crate::config::follows_builtin_official(path) => (
+            Check::new(
+                "config",
+                "config",
+                Status::Ok,
+                format!(
+                    "no config file at {}; following the official Tensorseed catalog (built in)",
+                    path.display()
+                ),
+            )
+            .with_details(vec![
+                "create the file (see config/tensorseed.example.toml) to change any setting".into(),
+            ]),
+            Some(cfg),
+        ),
         Ok(cfg) => (
             Check::new(
                 "config",

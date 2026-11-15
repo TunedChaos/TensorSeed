@@ -389,6 +389,11 @@ async fn follow(
         String::new()
     };
     let mut text = old.clone();
+    // Keep following the built-in official catalog once this file lists
+    // catalogs of its own.
+    if tensorseed_app::config::follows_builtin_official(path) {
+        text = tensorseed_app::config::pin_builtin_official(&text)?;
+    }
     for e in p.remove.iter().chain(p.change.iter().map(|(o, _)| o)) {
         text = strip_listed(&text, &list.name, &e.name);
     }

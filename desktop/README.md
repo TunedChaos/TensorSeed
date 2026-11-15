@@ -14,7 +14,9 @@ builds update themselves (see Updates).
 ## What it does
 
 - **Catalogs.** Lists the followed catalogs from the shared config and one
-  catalog's entries. Syncing runs the same chain check as `tensorseed
+  catalog's entries. With no config file, or one that names no catalog,
+  Desktop follows the official Tensorseed catalog, so a fresh install
+  works without editing anything. Syncing runs the same chain check as `tensorseed
   list` (`strict`, `warn`, or `off`), and every entry signature is checked
   in Rust against the pinned publisher key.
 - **Entry pages.** One page per model or dataset: manifest (commit,

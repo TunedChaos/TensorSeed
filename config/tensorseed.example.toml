@@ -8,6 +8,10 @@
 # Secrets are NEVER stored here: fields ending in _env name the environment
 # variable that holds the secret. Any key can be overridden with
 # TENSORSEED_<SECTION>__<KEY>, for example TENSORSEED_CHIA__FEE_MOJOS=1000.
+# With no config file (or one without the catalog settings below),
+# Tensorseed follows the official catalog with the same values as here.
+# Setting [catalog], [[catalogs]], [[follow_lists]], file.base_url, or
+# chia.catalog_store_id replaces that default.
 
 [general]
 state_db = "~/.local/share/tensorseed/state.sqlite"

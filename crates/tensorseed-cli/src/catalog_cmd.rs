@@ -756,6 +756,11 @@ fn add_subscription(
             "catalog {name:?} is already subscribed with a different publisher key; remove it first"
         );
     }
+    // A config that follows the built-in official catalog keeps following
+    // it: write it out before the first catalog of your own.
+    if name != crate::config::official::NAME && crate::config::follows_builtin_official(path) {
+        body = crate::config::pin_builtin_official(&body)?;
+    }
     body.push('\n');
     body.push_str("[[catalogs]]\n");
     body.push_str(&format!("name = {}\n", toml_string(name)));

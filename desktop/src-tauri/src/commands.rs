@@ -119,11 +119,15 @@ pub struct CatalogsList {
 #[tauri::command]
 pub async fn catalogs_list() -> Result<CatalogsList, String> {
     let (path, cfg) = load_config()?;
+    catalogs_view(&path, &cfg)
+}
+
+fn catalogs_view(path: &Path, cfg: &Config) -> Result<CatalogsList, String> {
     let mut subs = cfg.subscriptions().map_err(|e| format!("{e:#}"))?;
     subs.sort_by_key(|s| (!s.is_default, s.priority, s.name.clone()));
     Ok(CatalogsList {
         config_path: path.display().to_string(),
-        catalogs: subs.iter().map(|s| summary(&cfg, s)).collect(),
+        catalogs: subs.iter().map(|s| summary(cfg, s)).collect(),
     })
 }
 
@@ -1194,6 +1198,42 @@ pub async fn initial_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A fresh install has no config file. The Catalogs view must list the
+    // official catalog, not stop at a missing publisher key.
+    #[test]
+    fn catalogs_view_lists_the_official_catalog_without_a_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tensorseed").join("tensorseed.toml");
+        let mut cfg = config::load(&path).unwrap();
+        cfg.file.state_dir = tmp.path().join("catalog").to_string_lossy().into_owned();
+        let view = catalogs_view(&path, &cfg).unwrap();
+        assert_eq!(view.catalogs.len(), 1);
+        let c = &view.catalogs[0];
+        assert_eq!(c.name, config::official::NAME);
+        assert_eq!(c.base_url, config::official::BASE_URL);
+        assert_eq!(c.store_id, config::official::STORE_ID);
+        assert_eq!(c.backend, "file");
+        assert_eq!(c.chain_check, "strict");
+        assert!(c.is_default);
+        assert_eq!(c.error, None);
+        assert_eq!(c.local_revision, None);
+
+        // Your own catalog replaces it.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[catalog]\nbackend = \"file\"\nname = \"mine\"\n\
+             publisher_pubkey = \"RWSSA0NfLXhfVAteHxL9PPhshHfwrMfYyxUF2VhGZIzNWARaJdwDR5TY\"\n",
+        )
+        .unwrap();
+        let mut cfg = config::load(&path).unwrap();
+        cfg.file.state_dir = tmp.path().join("catalog").to_string_lossy().into_owned();
+        let view = catalogs_view(&path, &cfg).unwrap();
+        assert_eq!(view.catalogs.len(), 1);
+        assert_eq!(view.catalogs[0].name, "mine");
+        assert_eq!(view.catalogs[0].store_id, "");
+    }
 
     // The webview reads these shapes through `ui/src/source.ts`; keep the
     // field names and tags in step with it.

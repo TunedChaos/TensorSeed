@@ -104,7 +104,7 @@ tensorseed pull --from-hf hf-internal-testing/tiny-random-gpt2
 tensorseed verify hf-internal-testing/tiny-random-gpt2          # uses .tensorseed/pull.json
 tensorseed verify --hf hf-internal-testing/tiny-random-gpt2     # re-checks against the Hub
 
-# With a signed catalog configured (catalog.publisher_pubkey, file.base_url):
+# The official catalog is followed by default; your own [catalog] or [[catalogs]] replaces it:
 tensorseed list
 tensorseed list --catalog other     # only this subscribed catalog
 tensorseed pull org/name            # swarm first, then the Hub, then HTTP mirrors
@@ -435,9 +435,13 @@ sha256sum -c --ignore-missing SHA256SUMS
 Key roles, storage, and rotation: [RELEASE-KEY.md](RELEASE-KEY.md).
 Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
-Configuration: copy `config/tensorseed.example.toml` to
+Configuration: with no config file, Tensorseed follows the official catalog
+(publisher key id `CE1E0E3D543DFFB8`, strict Chia chain checking). To change
+anything, copy `config/tensorseed.example.toml` to
 `~/.config/tensorseed/tensorseed.toml` (Windows:
-`%APPDATA%\tensorseed\tensorseed.toml`). Secrets (HF token, storage keys, the
+`%APPDATA%\tensorseed\tensorseed.toml`). A file that sets `[catalog]`,
+`[[catalogs]]`, `[[follow_lists]]`, `file.base_url`, or
+`chia.catalog_store_id` replaces the built-in default. Secrets (HF token, storage keys, the
 publisher key password) are only read from environment variables, never from the
 file. Check the merged result with `tensorseed config show`. Default data
 directories are `~/.local/share/tensorseed/` on Unix and

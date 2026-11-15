@@ -487,6 +487,68 @@ async fn catalog_list_add_and_remove() {
     assert!(file.contains("name = \"alpha\""), "{file}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn fresh_config_follows_the_official_catalog_and_keeps_it_on_add() {
+    const OFFICIAL: &str = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd";
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("tensorseed").join("tensorseed.toml");
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+
+    // No file: the merged config is the official catalog.
+    let show = run(&cfg, &["config", "show"]).await;
+    assert_eq!(code(&show), 0, "{}", stderr(&show));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(v["catalog"]["backend"], "file");
+    assert_eq!(v["catalog"]["name"], "tensorseed");
+    assert_eq!(v["catalog"]["publisher_pubkey"], OFFICIAL);
+    assert_eq!(v["file"]["base_url"], "https://catalog.tensorseed.dev/");
+    assert_eq!(
+        v["chia"]["catalog_store_id"],
+        "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76"
+    );
+
+    // Adding a catalog writes the official one out first and keeps it.
+    let b = key(22);
+    let add = run(
+        &cfg,
+        &[
+            "catalog",
+            "add",
+            "--name",
+            "beta",
+            "--publisher-pubkey",
+            &b.public_key().to_base64(),
+            "--base-url",
+            "https://beta.example.org/",
+        ],
+    )
+    .await;
+    assert_eq!(code(&add), 0, "{}", stderr(&add));
+    let file = std::fs::read_to_string(&cfg).unwrap();
+    assert!(file.contains(OFFICIAL), "{file}");
+    assert!(file.contains("name = \"beta\""), "{file}");
+    let listed = run(&cfg, &["catalog", "list"]).await;
+    let text = format!("{}{}", stdout(&listed), stderr(&listed));
+    assert!(text.contains("tensorseed"), "{text}");
+    assert!(text.contains("(default)"), "{text}");
+    assert!(text.contains("beta"), "{text}");
+
+    // Your own [catalog] replaces the default.
+    let a = key(11);
+    std::fs::write(
+        &cfg,
+        format!(
+            "[catalog]\nbackend = \"file\"\nname = \"alpha\"\npublisher_pubkey = \"{}\"\n",
+            a.public_key().to_base64()
+        ),
+    )
+    .unwrap();
+    let show = run(&cfg, &["config", "show"]).await;
+    let v: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(v["catalog"]["name"], "alpha");
+    assert_eq!(v["chia"]["catalog_store_id"], "");
+}
+
 /// A sealed, unsigned `ts.served-weights/1` claim for `m` in catalog
 /// `name` signed by `pk_id`.
 fn claim_for(m: &Manifest, name: &str, pk_id: &str) -> Vec<u8> {

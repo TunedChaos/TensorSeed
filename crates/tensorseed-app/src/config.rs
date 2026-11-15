@@ -462,6 +462,137 @@ impl Default for Chia {
 /// for Chia mainnet).
 pub const DEFAULT_COIN_API: &str = "https://api.coinset.org";
 
+/// The official Tensorseed catalog, published by Tuned Chaos.
+///
+/// A config that names no catalog of its own follows this one (see
+/// [`follows_builtin_official`]). The values are the ones in
+/// `config/tensorseed.example.toml`, docs/RUN-A-MIRROR.md, and the
+/// signatures under `site/catalog/tensorseed/`; tests check that they agree.
+pub mod official {
+    /// Catalog name bound into every entry signature.
+    pub const NAME: &str = "tensorseed";
+    /// Publisher minisign public key.
+    pub const PUBLISHER_PUBKEY: &str = "RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd";
+    /// Key id of [`PUBLISHER_PUBKEY`].
+    pub const KEY_ID: &str = "CE1E0E3D543DFFB8";
+    /// Chia DataLayer store on mainnet that anchors the file catalog.
+    pub const STORE_ID: &str = "3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76";
+    /// HTTPS base of the published catalog files.
+    pub const BASE_URL: &str = "https://catalog.tensorseed.dev/";
+}
+
+/// Environment variables that choose a catalog. When one is set, the
+/// built-in official catalog is not applied.
+const CATALOG_ENV: [&str; 5] = [
+    "TENSORSEED_CATALOG__",
+    "TENSORSEED_CATALOGS",
+    "TENSORSEED_FOLLOW_LISTS",
+    "TENSORSEED_FILE__BASE_URL",
+    "TENSORSEED_CHIA__CATALOG_STORE_ID",
+];
+
+/// Whether the config at `path` follows the built-in official catalog.
+///
+/// True when the file is missing, or parses as TOML and has no `[catalog]`
+/// table, no `[[catalogs]]`, no `[[follow_lists]]`, no `file.base_url`, and
+/// no `chia.catalog_store_id`, and no `TENSORSEED_*` variable sets one of
+/// those. Anything you configure yourself replaces the default. A file that
+/// cannot be read or parsed returns false, so [`load`] reports the error.
+#[must_use]
+pub fn follows_builtin_official(path: &Path) -> bool {
+    let env_sets_catalog = std::env::vars_os().any(|(k, _)| {
+        k.to_str().is_some_and(|k| {
+            let k = k.to_ascii_uppercase();
+            CATALOG_ENV.iter().any(|p| k.starts_with(p))
+        })
+    });
+    if env_sets_catalog {
+        return false;
+    }
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
+    };
+    text_follows_builtin_official(&text)
+}
+
+fn text_follows_builtin_official(text: &str) -> bool {
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return false;
+    };
+    let has = |table: &str, key: &str| {
+        doc.get(table)
+            .and_then(toml::Value::as_table)
+            .is_some_and(|t| t.contains_key(key))
+    };
+    !doc.contains_key("catalog")
+        && !doc.contains_key("catalogs")
+        && !doc.contains_key("follow_lists")
+        && !has("file", "base_url")
+        && !has("chia", "catalog_store_id")
+}
+
+/// The built-in official catalog as figment defaults, layered over
+/// [`Config::default`] and under the file and the environment.
+fn official_defaults() -> Figment {
+    Figment::new()
+        .merge(Serialized::default("catalog.backend", "file"))
+        .merge(Serialized::default("catalog.name", official::NAME))
+        .merge(Serialized::default(
+            "catalog.publisher_pubkey",
+            official::PUBLISHER_PUBKEY,
+        ))
+        .merge(Serialized::default("file.base_url", official::BASE_URL))
+        .merge(Serialized::default(
+            "chia.catalog_store_id",
+            official::STORE_ID,
+        ))
+}
+
+/// Write the built-in official catalog into `text` as explicit settings
+/// (`[catalog]`, `file.base_url`, `chia.catalog_store_id`), keeping
+/// everything else. Commands that add catalogs to a config that follows
+/// the built-in default call this first, so adding a catalog does not
+/// silently stop following the official one. Text that already names a
+/// catalog is returned unchanged.
+///
+/// # Errors
+///
+/// Fails when `text` is not valid TOML or `[file]` or `[chia]` is not a table.
+pub fn pin_builtin_official(text: &str) -> anyhow::Result<String> {
+    if !text_follows_builtin_official(text) {
+        return Ok(text.to_string());
+    }
+    let mut doc: toml_edit::DocumentMut = text.parse()?;
+    let mut catalog = toml_edit::Table::new();
+    catalog.decor_mut().set_prefix(
+        "\n# The official Tensorseed catalog, followed by default until this file\n\
+         # named a catalog. To stop following it, remove this table and the\n\
+         # official file.base_url and chia.catalog_store_id.\n",
+    );
+    catalog["backend"] = toml_edit::value("file");
+    catalog["name"] = toml_edit::value(official::NAME);
+    catalog["publisher_pubkey"] = toml_edit::value(official::PUBLISHER_PUBKEY);
+    doc.insert("catalog", toml_edit::Item::Table(catalog));
+    for (table, key, value) in [
+        ("file", "base_url", official::BASE_URL),
+        ("chia", "catalog_store_id", official::STORE_ID),
+    ] {
+        let t = doc
+            .entry(table)
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("[{table}] in the config file is not a table"))?;
+        t[key] = toml_edit::value(value);
+    }
+    let mut out = doc.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 /// Effective chain check mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChainCheck {
@@ -2178,16 +2309,22 @@ pub fn default_path() -> PathBuf {
 }
 
 /// Build the figment: defaults, then the TOML file (if present), then env.
+///
+/// A config that names no catalog follows the official one: its settings
+/// sit between the built-in defaults and the file (see
+/// [`follows_builtin_official`]).
 pub fn figment(path: &Path) -> Figment {
-    Figment::from(Serialized::defaults(Config::default()))
-        .merge(Toml::file(path))
-        .merge(
-            // CLI and DESKTOP name the binaries `tensorseed gui` and
-            // Desktop start (TENSORSEED_CLI, TENSORSEED_DESKTOP).
-            Env::prefixed("TENSORSEED_")
-                .ignore(&["CONFIG", "KEY_PASSWORD", "CLI", "DESKTOP"])
-                .split("__"),
-        )
+    let mut f = Figment::from(Serialized::defaults(Config::default()));
+    if follows_builtin_official(path) {
+        f = f.merge(official_defaults());
+    }
+    f.merge(Toml::file(path)).merge(
+        // CLI and DESKTOP name the binaries `tensorseed gui` and
+        // Desktop start (TENSORSEED_CLI, TENSORSEED_DESKTOP).
+        Env::prefixed("TENSORSEED_")
+            .ignore(&["CONFIG", "KEY_PASSWORD", "CLI", "DESKTOP"])
+            .split("__"),
+    )
 }
 
 /// Load and validate configuration.
@@ -3226,5 +3363,205 @@ base_url = "https://a.example/"
             assert_eq!(cfg.subscriptions().map_err(|e| e.to_string())?.len(), 1);
             Ok(())
         });
+    }
+
+    /// The one subscription a config resolves to when it follows the
+    /// built-in official catalog.
+    fn assert_official(cfg: &Config) {
+        assert_eq!(cfg.catalog.backend, "file");
+        assert_eq!(cfg.catalog.name, official::NAME);
+        assert_eq!(cfg.catalog.publisher_pubkey, official::PUBLISHER_PUBKEY);
+        assert_eq!(cfg.file.base_url, official::BASE_URL);
+        assert_eq!(cfg.chia.catalog_store_id, official::STORE_ID);
+        assert_eq!(cfg.chain_check(), ChainCheck::Strict);
+        let subs = cfg.subscriptions().unwrap();
+        assert_eq!(subs.len(), 1);
+        assert!(subs[0].is_default);
+        assert_eq!(subs[0].name, official::NAME);
+        assert_eq!(subs[0].publisher_pubkey, official::PUBLISHER_PUBKEY);
+        assert_eq!(subs[0].store_id, official::STORE_ID);
+        assert_eq!(subs[0].base_url, official::BASE_URL);
+        assert_eq!(subs[0].chain_check, ChainCheck::Strict);
+        crate::backend::pinned_key(cfg).unwrap();
+    }
+
+    #[test]
+    fn no_config_file_follows_the_official_catalog() {
+        Jail::expect_with(|jail| {
+            let missing = jail.directory().join("missing").join("tensorseed.toml");
+            assert!(follows_builtin_official(&missing));
+            assert_official(&load(&missing).map_err(|e| e.to_string())?);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn config_without_catalog_settings_follows_the_official_catalog() {
+        Jail::expect_with(|jail| {
+            // What Desktop's settings view writes on a fresh install, plus
+            // [file] and [chia] keys that do not choose a catalog.
+            jail.create_file(
+                "t.toml",
+                "[torrent]\nlisten_port = 6882\n\n[file]\nsnapshot_every = 32\n\n[chia]\nfee_mojos = 5\n",
+            )?;
+            let cfg = load(Path::new("t.toml")).map_err(|e| e.to_string())?;
+            assert_official(&cfg);
+            assert_eq!(cfg.file.snapshot_every, 32);
+            assert_eq!(cfg.chia.fee_mojos, 5);
+            jail.create_file("empty.toml", "")?;
+            assert_official(&load(Path::new("empty.toml")).map_err(|e| e.to_string())?);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn your_own_catalog_settings_replace_the_official_default() {
+        Jail::expect_with(|jail| {
+            // Your own [catalog]: no official store id or key sneaks in.
+            jail.create_file(
+                "own.toml",
+                &format!(
+                    "[catalog]\nbackend = \"file\"\nname = \"main\"\npublisher_pubkey = \"{PK1}\"\n"
+                ),
+            )?;
+            assert!(!follows_builtin_official(Path::new("own.toml")));
+            let cfg = load(Path::new("own.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.catalog.publisher_pubkey, PK1);
+            assert!(cfg.chia.catalog_store_id.is_empty());
+            assert_eq!(cfg.chain_check(), ChainCheck::Off);
+            let subs = cfg.subscriptions().map_err(|e| e.to_string())?;
+            assert_eq!(subs.len(), 1);
+            assert_eq!(subs[0].name, "main");
+
+            // An empty [catalog] keeps the old behaviour: no key until set.
+            jail.create_file("bare.toml", "[catalog]\nbackend = \"file\"\n")?;
+            let cfg = load(Path::new("bare.toml")).map_err(|e| e.to_string())?;
+            assert!(cfg.catalog.publisher_pubkey.is_empty());
+            assert!(crate::backend::pinned_key(&cfg).is_err());
+
+            // [[catalogs]] only: just those.
+            jail.create_file(
+                "subs.toml",
+                &format!("[[catalogs]]\nname = \"other\"\npublisher_pubkey = \"{PK1}\"\nbase_url = \"https://a.example/\"\n"),
+            )?;
+            let cfg = load(Path::new("subs.toml")).map_err(|e| e.to_string())?;
+            let subs = cfg.subscriptions().map_err(|e| e.to_string())?;
+            assert_eq!(subs.len(), 1);
+            assert_eq!(subs[0].name, "other");
+
+            // Your own file.base_url or chia.catalog_store_id.
+            jail.create_file("url.toml", "[file]\nbase_url = \"https://a.example/\"\n")?;
+            assert!(!follows_builtin_official(Path::new("url.toml")));
+            let cfg = load(Path::new("url.toml")).map_err(|e| e.to_string())?;
+            assert!(cfg.catalog.publisher_pubkey.is_empty());
+            jail.create_file(
+                "store.toml",
+                &format!("[chia]\ncatalog_store_id = \"{}\"\n", "ab".repeat(32)),
+            )?;
+            assert!(!follows_builtin_official(Path::new("store.toml")));
+
+            // A file that does not parse is reported, not replaced.
+            jail.create_file("broken.toml", "[torrent\n")?;
+            assert!(!follows_builtin_official(Path::new("broken.toml")));
+            assert!(load(Path::new("broken.toml")).is_err());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn catalog_environment_variables_replace_the_official_default() {
+        Jail::expect_with(|jail| {
+            let missing = jail.directory().join("none.toml");
+            jail.set_env("TENSORSEED_CATALOG__PUBLISHER_PUBKEY", PK1);
+            jail.set_env("TENSORSEED_CATALOG__NAME", "main");
+            assert!(!follows_builtin_official(&missing));
+            let cfg = load(&missing).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.catalog.publisher_pubkey, PK1);
+            assert_eq!(cfg.catalog.name, "main");
+            assert!(cfg.chia.catalog_store_id.is_empty());
+            Ok(())
+        });
+        Jail::expect_with(|jail| {
+            // Variables that do not choose a catalog keep the default.
+            let missing = jail.directory().join("none.toml");
+            jail.set_env("TENSORSEED_TORRENT__LISTEN_PORT", "6990");
+            assert!(follows_builtin_official(&missing));
+            let cfg = load(&missing).map_err(|e| e.to_string())?;
+            assert_official(&cfg);
+            assert_eq!(cfg.torrent.listen_port, 6990);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn pinning_the_official_catalog_writes_it_out() {
+        Jail::expect_with(|jail| {
+            for (file, start) in [
+                ("a.toml", ""),
+                ("b.toml", "[torrent]\nlisten_port = 6882\n"),
+                (
+                    "c.toml",
+                    "# mine\n[chia]\nfee_mojos = 5\n\n[file]\nsnapshot_every = 32\n",
+                ),
+            ] {
+                let text = pin_builtin_official(start).map_err(|e| e.to_string())?;
+                for line in start.lines() {
+                    assert!(text.lines().any(|l| l == line), "{line:?} kept: {text}");
+                }
+                assert!(!text_follows_builtin_official(&text), "{text}");
+                // Adding a catalog after pinning keeps the official one.
+                let added = format!(
+                    "{text}\n[[catalogs]]\nname = \"other\"\npublisher_pubkey = \"{PK1}\"\nbase_url = \"https://a.example/\"\n"
+                );
+                jail.create_file(file, &added)?;
+                let cfg = load(Path::new(file)).map_err(|e| e.to_string())?;
+                let subs = cfg.subscriptions().map_err(|e| e.to_string())?;
+                let names: Vec<&str> = subs.iter().map(|s| s.name.as_str()).collect();
+                assert_eq!(names, [official::NAME, "other"], "{added}");
+                let def = cfg.subscription(None).map_err(|e| e.to_string())?;
+                assert_eq!(def.name, official::NAME);
+                assert_eq!(def.store_id, official::STORE_ID);
+                assert_eq!(def.chain_check, ChainCheck::Strict);
+            }
+            // Text that already names a catalog is left alone.
+            let own = format!("[catalog]\nname = \"main\"\npublisher_pubkey = \"{PK1}\"\n");
+            assert_eq!(pin_builtin_official(&own).map_err(|e| e.to_string())?, own);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn official_catalog_constants_match_the_published_catalog() {
+        let pk =
+            tensorseed_catalog::minisign::PublicKey::parse(official::PUBLISHER_PUBKEY).unwrap();
+        assert_eq!(pk.key_id_hex(), official::KEY_ID);
+        // The example config and the packaged configs name the same catalog.
+        for text in [
+            EXAMPLE,
+            include_str!("../../../contrib/systemd/tensorseed.toml"),
+            include_str!("../../../contrib/nfpm/tensorseed.toml"),
+        ] {
+            let t: toml::Table = text.parse().unwrap();
+            assert_eq!(t["catalog"]["name"].as_str(), Some(official::NAME));
+            assert_eq!(
+                t["catalog"]["publisher_pubkey"].as_str(),
+                Some(official::PUBLISHER_PUBKEY)
+            );
+            assert_eq!(
+                t["chia"]["catalog_store_id"].as_str(),
+                Some(official::STORE_ID)
+            );
+        }
+        // The published head is signed by that key, and its chain proof
+        // names that store.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../site/catalog/tensorseed");
+        let head = std::fs::read(format!("{dir}/head.json")).unwrap();
+        let sig = std::fs::read_to_string(format!("{dir}/head.json.minisig")).unwrap();
+        pk.verify(&head, &sig).unwrap();
+        let proof: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(format!("{dir}/chain-proof.json")).unwrap())
+                .unwrap();
+        assert_eq!(proof["store_id"].as_str(), Some(official::STORE_ID));
+        assert_eq!(Config::default().file.base_url, official::BASE_URL);
     }
 }
