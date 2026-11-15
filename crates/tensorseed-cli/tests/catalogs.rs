@@ -694,3 +694,251 @@ async fn catalog_export_works_for_added_catalogs() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(read(&out_l).entries.len(), bundle.entries.len());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn follow_lists_create_sign_follow_and_refuse_rollbacks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let a = key(11);
+    let b = key(22);
+    let web = format!("{}/t/", server.uri());
+    let m = manifest("org/tiny", C, &[("config.json", br#"{}"#)], &web);
+    let pubdir = tmp.path().join("srv");
+    publish("alpha", &a, &pubdir, &tmp.path().join("st-a"), &m, false).await;
+    publish("beta", &b, &pubdir, &tmp.path().join("st-b"), &m, false).await;
+    let apk = a.public_key().to_base64();
+    let bpk = b.public_key().to_base64();
+
+    // The list publisher follows alpha and beta and has its own key.
+    let pdir = tmp.path().join("lister");
+    std::fs::create_dir_all(&pdir).unwrap();
+    let pcfg = write_config(
+        &pdir,
+        &server.uri(),
+        &format!(
+            "{}{}",
+            entry("alpha", "Alpha", &apk, 0),
+            entry("beta", "Beta", &bpk, 1)
+        ),
+    );
+    let kg = run(
+        &pcfg,
+        &[
+            "catalog",
+            "keygen",
+            "--out-dir",
+            pdir.to_str().unwrap(),
+            "--name",
+            "lister",
+            "--no-password",
+        ],
+    )
+    .await;
+    assert_eq!(code(&kg), 0, "{}", stderr(&kg));
+    let seckey = pdir.join("lister.key");
+    let list_pk = std::fs::read_to_string(pdir.join("lister.pub"))
+        .unwrap()
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let list = pubdir.join("trusted.json");
+    let l = list.to_str().unwrap();
+    let o = run(
+        &pcfg,
+        &[
+            "catalog",
+            "follow-list",
+            "create",
+            "--name",
+            "trusted",
+            "--out",
+            l,
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let sign = |rev: Option<&str>| {
+        let mut args = vec![
+            "catalog",
+            "follow-list",
+            "sign",
+            l,
+            "--key",
+            seckey.to_str().unwrap(),
+        ];
+        if let Some(r) = rev {
+            args.extend(["--rev", r]);
+        }
+        let pcfg = pcfg.clone();
+        let args: Vec<String> = args.into_iter().map(String::from).collect();
+        async move {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            run(&pcfg, &args).await
+        }
+    };
+    let o = sign(None).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("signed trusted rev 1"),
+        "{}",
+        stdout(&o)
+    );
+    assert!(stdout(&o).contains(&list_pk), "{}", stdout(&o));
+    let rev1 = (
+        std::fs::read(&list).unwrap(),
+        std::fs::read(format!("{l}.minisig")).unwrap(),
+    );
+    mount_dir(&server, &pubdir).await;
+
+    // Anyone can verify it, from the URL, with the list key only.
+    let url = format!("{}/trusted.json", server.uri());
+    let o = run(
+        &pcfg,
+        &[
+            "catalog",
+            "follow-list",
+            "verify",
+            &url,
+            "--pubkey",
+            &list_pk,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["schema"], "ts.follow-list/1");
+    assert_eq!(v["rev"], 1);
+    assert_eq!(v["catalogs"][1]["publisher_pubkey"], bpk.as_str());
+    let o = run(
+        &pcfg,
+        &["catalog", "follow-list", "verify", &url, "--pubkey", &apk],
+    )
+    .await;
+    assert_ne!(code(&o), 0);
+
+    // A follower that trusts alpha follows the list from its URL.
+    let fdir = tmp.path().join("follower");
+    std::fs::create_dir_all(&fdir).unwrap();
+    let fcfg = write_config(&fdir, &server.uri(), &entry("alpha", "Alpha", &apk, 0));
+    let before = std::fs::read_to_string(&fcfg).unwrap();
+    let o = run(&fcfg, &["catalog", "follow-list", "follow", &url]).await;
+    assert_ne!(code(&o), 0);
+    assert!(stderr(&o).contains("--pubkey"), "{}", stderr(&o));
+    let o = run(
+        &fcfg,
+        &[
+            "catalog",
+            "follow-list",
+            "follow",
+            &url,
+            "--pubkey",
+            &list_pk,
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let out = stdout(&o);
+    assert!(out.contains("add       beta"), "{out}");
+    assert!(out.contains("keep      alpha"), "{out}");
+    assert!(out.contains("nothing written"), "{out}");
+    assert_eq!(std::fs::read_to_string(&fcfg).unwrap(), before);
+    let o = run(
+        &fcfg,
+        &[
+            "catalog",
+            "follow-list",
+            "follow",
+            &url,
+            "--pubkey",
+            &list_pk,
+            "--yes",
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = std::fs::read_to_string(&fcfg).unwrap();
+    assert!(
+        text.contains("[[follow_lists]]") && text.contains("follow_list = \"trusted\""),
+        "{text}"
+    );
+    // The followed catalog works like one added by hand.
+    let out_b = tmp.path().join("beta.json");
+    let o = run(
+        &fcfg,
+        &[
+            "catalog",
+            "export",
+            "--catalog",
+            "beta",
+            "--out",
+            out_b.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+
+    // Rev 2 drops beta. The follower refreshes by list name (pinned key),
+    // and only the list's own entry goes.
+    let mut v: serde_json::Value = serde_json::from_slice(&rev1.0).unwrap();
+    v["catalogs"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["name"] != "beta");
+    std::fs::write(&list, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let o = sign(Some("1")).await;
+    assert_ne!(code(&o), 0, "reusing rev 1 must fail");
+    let o = sign(None).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stdout(&o).contains("rev 2"), "{}", stdout(&o));
+    let rev2 = (
+        std::fs::read(&list).unwrap(),
+        std::fs::read(format!("{l}.minisig")).unwrap(),
+    );
+    server.reset().await;
+    mount_dir(&server, &pubdir).await;
+    let o = run(
+        &fcfg,
+        &["catalog", "follow-list", "follow", "trusted", "--yes"],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stdout(&o).contains("remove    beta"), "{}", stdout(&o));
+    let text = std::fs::read_to_string(&fcfg).unwrap();
+    assert!(!text.contains("name = \"beta\""), "{text}");
+    assert!(text.contains("rev = 2"), "{text}");
+    assert!(text.contains("name = \"alpha\""), "{text}");
+
+    // Serving rev 1 again is a rollback; edited bytes fail the signature.
+    std::fs::write(&list, &rev1.0).unwrap();
+    std::fs::write(format!("{l}.minisig"), &rev1.1).unwrap();
+    server.reset().await;
+    mount_dir(&server, &pubdir).await;
+    let o = run(
+        &fcfg,
+        &["catalog", "follow-list", "follow", "trusted", "--yes"],
+    )
+    .await;
+    assert_ne!(code(&o), 0);
+    assert!(stderr(&o).contains("rollback"), "{}", stderr(&o));
+    let tampered = String::from_utf8(rev2.0.clone())
+        .unwrap()
+        .replace("\"rev\": 2", "\"rev\": 3");
+    std::fs::write(&list, tampered).unwrap();
+    std::fs::write(format!("{l}.minisig"), &rev2.1).unwrap();
+    server.reset().await;
+    mount_dir(&server, &pubdir).await;
+    let o = run(&fcfg, &["catalog", "follow-list", "follow", "trusted"]).await;
+    assert_ne!(code(&o), 0);
+    assert!(stderr(&o).contains("verifying"), "{}", stderr(&o));
+
+    // Unfollow drops the list entry; alpha (added by hand) stays.
+    let o = run(&fcfg, &["catalog", "follow-list", "unfollow", "trusted"]).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = std::fs::read_to_string(&fcfg).unwrap();
+    assert!(!text.contains("[[follow_lists]]"), "{text}");
+    assert!(text.contains("name = \"alpha\""), "{text}");
+    let o = run(&fcfg, &["config", "show"]).await;
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+}

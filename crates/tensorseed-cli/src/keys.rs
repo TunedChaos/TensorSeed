@@ -45,9 +45,14 @@ pub fn load_secret(cfg: &Config) -> anyhow::Result<SecretKey> {
             "catalog.publisher_seckey_file is not set; create a key with `tensorseed catalog keygen`"
         );
     };
-    let path = expand(path);
+    load_secret_file(&expand(path))
+}
+
+/// Load a minisign secret key file, prompting for its password when it is
+/// encrypted (or reading it from `TENSORSEED_KEY_PASSWORD`).
+pub fn load_secret_file(path: &Path) -> anyhow::Result<SecretKey> {
     let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let sk = if SecretKey::file_is_encrypted(&text)? {
         let pw = password(&format!("Password for {}: ", path.display()), false)?;
         SecretKey::from_minisign_file(&text, Some(&pw))?

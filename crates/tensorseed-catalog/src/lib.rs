@@ -29,6 +29,7 @@
 //! - [`anchor`]: inclusion proofs and coin lookups tying the file catalog
 //!   to the chain.
 //! - [`mirrors`]: the signed list of catalog mirrors.
+//! - [`follow_list`]: signed lists of catalogs to follow.
 //! - [`sink`]: upload targets (local directory, S3 compatible storage).
 //! - [`export`]: verified bundles for moving a catalog between backends.
 //!
@@ -68,6 +69,7 @@ pub mod anchor;
 pub mod chia;
 pub mod export;
 pub mod file;
+pub mod follow_list;
 pub mod minisign;
 pub mod mirrors;
 pub mod signed;

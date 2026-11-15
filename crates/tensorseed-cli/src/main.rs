@@ -10,6 +10,7 @@ mod claim_check;
 mod cli;
 mod consumer;
 mod doctor;
+mod follow_list_cmd;
 mod gui;
 mod harvest;
 mod hf_auth;

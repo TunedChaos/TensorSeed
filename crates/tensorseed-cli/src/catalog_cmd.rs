@@ -173,6 +173,7 @@ pub async fn run(
             *priority,
         ),
         CatalogCmd::Remove { name } => remove_subscription(config_path, name),
+        CatalogCmd::FollowList(c) => crate::follow_list_cmd::run(c, cfg, config_path).await,
         CatalogCmd::Snapshot => {
             let cfg = cfg()?;
             let (cat, _) = publisher_file_catalog(&cfg).await?;
@@ -709,7 +710,7 @@ async fn list_subscriptions(cfg: &Config) -> anyhow::Result<ExitCode> {
     })
 }
 
-fn toml_string(s: &str) -> String {
+pub(crate) fn toml_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
@@ -808,13 +809,30 @@ fn remove_subscription(path: &Path, name: &str) -> anyhow::Result<ExitCode> {
 
 /// Drop every `[[catalogs]]` table whose `name` equals `want`.
 fn strip_catalogs_table(text: &str, want: &str) -> anyhow::Result<(String, bool)> {
+    Ok(strip_tables(text, "catalogs", |block| {
+        block_value(block, "name").as_deref() == Some(want)
+    }))
+}
+
+/// The value of `key` in one table's text, unquoted.
+pub(crate) fn block_value(block: &str, key: &str) -> Option<String> {
+    block.lines().find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        (k.trim() == key).then(|| unquote(v.trim()))
+    })
+}
+
+/// Drop every `[[<table>]]` whose text matches `drop`. Returns the new
+/// text and whether anything was dropped.
+pub(crate) fn strip_tables(text: &str, table: &str, drop: impl Fn(&str) -> bool) -> (String, bool) {
+    let header = format!("[[{table}]]");
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut out = String::new();
     let mut i = 0;
     let mut removed = false;
     while i < lines.len() {
         let trim = lines[i].trim();
-        if trim == "[[catalogs]]" {
+        if trim == header {
             let start = i;
             i += 1;
             while i < lines.len() {
@@ -825,13 +843,7 @@ fn strip_catalogs_table(text: &str, want: &str) -> anyhow::Result<(String, bool)
                 i += 1;
             }
             let block = lines[start..i].join("");
-            let is_match = block.lines().any(|l| {
-                let l = l.trim();
-                l.starts_with("name")
-                    && l.split_once('=')
-                        .is_some_and(|(_, v)| unquote(v.trim()) == want)
-            });
-            if is_match {
+            if drop(&block) {
                 removed = true;
                 continue;
             }
@@ -841,7 +853,7 @@ fn strip_catalogs_table(text: &str, want: &str) -> anyhow::Result<(String, bool)
         out.push_str(lines[i]);
         i += 1;
     }
-    Ok((out, removed))
+    (out, removed)
 }
 
 fn unquote(v: &str) -> String {

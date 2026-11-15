@@ -613,6 +613,85 @@ pub enum CatalogCmd {
         /// Catalog name.
         name: String,
     },
+    /// Signed follow lists (`ts.follow-list/1`): publish a list of catalogs
+    /// for others to follow, or follow one.
+    #[command(subcommand)]
+    FollowList(FollowListCmd),
+}
+
+/// `catalog follow-list` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum FollowListCmd {
+    /// Write an unsigned list from catalogs you follow.
+    Create {
+        /// The list's name (1 to 64 of a-z, 0-9, -).
+        #[arg(long)]
+        name: String,
+        /// Output file.
+        #[arg(long)]
+        out: PathBuf,
+        /// Catalogs to include by name or label (repeat it). Default: every
+        /// catalog you follow.
+        #[arg(long = "catalog", value_name = "NAME")]
+        catalogs: Vec<String>,
+        /// Overwrite `--out`.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Sign a list: sets `issued_at`, raises `rev` past the last signed
+    /// revision, rewrites FILE, and writes FILE.minisig.
+    Sign {
+        /// The list file.
+        file: PathBuf,
+        /// Revision to sign (must be above the one in FILE.minisig).
+        #[arg(long)]
+        rev: Option<u64>,
+        /// Minisign secret key to sign with (default:
+        /// catalog.publisher_seckey_file).
+        #[arg(long, value_name = "FILE")]
+        key: Option<PathBuf>,
+    },
+    /// Verify a list (URL or file) against a key and print it.
+    Verify {
+        /// URL or file of the list.
+        source: String,
+        /// The list signer's key (minisign base64).
+        #[arg(long, value_name = "KEY")]
+        pubkey: String,
+        /// Signature URL or file (default: SOURCE.minisig).
+        #[arg(long)]
+        sig: Option<String>,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Follow a list, or refresh one you follow: verify it, show the
+    /// `[[catalogs]]` changes, and write them with --yes.
+    Follow {
+        /// URL or file of the list, or the name of a list you follow.
+        source: String,
+        /// The list signer's key (minisign base64). Needed the first time;
+        /// afterwards the pinned key is used.
+        #[arg(long, value_name = "KEY")]
+        pubkey: Option<String>,
+        /// Signature URL or file (default: SOURCE.minisig).
+        #[arg(long)]
+        sig: Option<String>,
+        /// Write the changes (without it, only show them).
+        #[arg(long)]
+        yes: bool,
+        /// Apply a listed catalog whose publisher key changed.
+        #[arg(long)]
+        allow_key_change: bool,
+    },
+    /// Stop following a list and drop the catalogs it added.
+    Unfollow {
+        /// The list's name.
+        name: String,
+        /// Keep its catalogs as your own entries.
+        #[arg(long)]
+        keep_catalogs: bool,
+    },
 }
 
 /// Catalog backend argument (mirrors `catalog.backend`).
@@ -1472,6 +1551,21 @@ impl Command {
             Self::Catalog(CatalogCmd::List) => "catalog list",
             Self::Catalog(CatalogCmd::Add { .. }) => "catalog add",
             Self::Catalog(CatalogCmd::Remove { .. }) => "catalog remove",
+            Self::Catalog(CatalogCmd::FollowList(FollowListCmd::Create { .. })) => {
+                "catalog follow-list create"
+            }
+            Self::Catalog(CatalogCmd::FollowList(FollowListCmd::Sign { .. })) => {
+                "catalog follow-list sign"
+            }
+            Self::Catalog(CatalogCmd::FollowList(FollowListCmd::Verify { .. })) => {
+                "catalog follow-list verify"
+            }
+            Self::Catalog(CatalogCmd::FollowList(FollowListCmd::Follow { .. })) => {
+                "catalog follow-list follow"
+            }
+            Self::Catalog(CatalogCmd::FollowList(FollowListCmd::Unfollow { .. })) => {
+                "catalog follow-list unfollow"
+            }
             Self::Publish { .. } => "publish",
             Self::Sync => "sync",
             Self::Harvest(_) => "harvest",

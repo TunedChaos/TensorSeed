@@ -13,6 +13,7 @@ pub mod claim_check;
 pub mod config;
 pub mod doctor;
 pub mod follow;
+pub mod follow_list;
 pub mod hf;
 pub mod inference;
 pub mod links;

@@ -60,6 +60,9 @@ pub struct Config {
     /// Extra catalogs to follow (`[[catalogs]]`). Empty keeps the top-level
     /// `[catalog]` / `[file]` / `[chia]` block as the sole subscription.
     pub catalogs: Vec<CatalogSub>,
+    /// Signed follow lists you follow (`[[follow_lists]]`), written by
+    /// `catalog follow-list follow`.
+    pub follow_lists: Vec<FollowListSub>,
     /// Local inference runtimes for `serve-inference` (`[inference]`).
     /// `None` when the section is absent; [`Config::inference`] then gives
     /// the defaults, and `doctor` skips the inference checks.
@@ -314,6 +317,48 @@ pub struct CatalogSub {
     pub mirror_urls: Vec<String>,
     /// Coin API endpoints for this catalog's chain check.
     pub coin_api_urls: Vec<String>,
+    /// The `[[follow_lists]]` entry this catalog came from. Following that
+    /// list again updates or removes only entries carrying its name; empty
+    /// for catalogs you added yourself.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub follow_list: String,
+}
+
+/// One `[[follow_lists]]` entry: a signed `ts.follow-list/1` list you
+/// follow, the key you pinned for it, and the revision accepted last.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct FollowListSub {
+    /// The list's name (from the signed list).
+    pub name: String,
+    /// Where it is read from: an http(s) URL or a file. The signature is
+    /// read from the same place with `.minisig` appended.
+    pub source: String,
+    /// The list signer's key (minisign `RW...`), pinned when you first
+    /// followed it. A list never supplies its own key.
+    pub publisher_pubkey: String,
+    /// Highest revision accepted. A lower one is refused as a rollback.
+    pub rev: u64,
+    /// SHA-256 of the bytes accepted at `rev`; different bytes under the
+    /// same `rev` are refused.
+    pub sha256: String,
+}
+
+impl FollowListSub {
+    fn validate(&self) -> anyhow::Result<()> {
+        tensorseed_catalog::signed::check_catalog_name(&self.name)
+            .map_err(|e| anyhow::anyhow!("[[follow_lists]] name: {e}"))?;
+        let at = format!("[[follow_lists]] {:?}", self.name);
+        if self.source.is_empty() {
+            anyhow::bail!("{at} is missing source");
+        }
+        tensorseed_catalog::minisign::PublicKey::parse(&self.publisher_pubkey)
+            .map_err(|e| anyhow::anyhow!("{at} publisher_pubkey: {e}"))?;
+        if !self.sha256.is_empty() && !tensorseed_core::hash::is_lower_hex(&self.sha256, 64) {
+            anyhow::bail!("{at} sha256 must be 64 lowercase hex");
+        }
+        Ok(())
+    }
 }
 
 /// A resolved catalog subscription used at runtime.
@@ -608,6 +653,7 @@ fn resolve_subscriptions(cfg: &Config) -> anyhow::Result<Vec<Subscription>> {
                     state_dir: None,
                     mirror_urls: cfg.file.mirror_urls.clone(),
                     coin_api_urls: cfg.chia.coin_api_urls.clone(),
+                    follow_list: String::new(),
                 },
             );
         }
@@ -2173,6 +2219,22 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
         tensorseed_catalog::minisign::PublicKey::parse(&cfg.catalog.publisher_pubkey)?;
     }
     let _ = cfg.subscriptions()?;
+    let mut lists = std::collections::BTreeSet::new();
+    for l in &cfg.follow_lists {
+        l.validate()?;
+        if !lists.insert(l.name.as_str()) {
+            anyhow::bail!("[[follow_lists]] {:?} appears twice", l.name);
+        }
+    }
+    for c in &cfg.catalogs {
+        if !c.follow_list.is_empty() && !lists.contains(c.follow_list.as_str()) {
+            anyhow::bail!(
+                "[[catalogs]] {:?} names follow_list {:?}, which is not in [[follow_lists]]",
+                c.name,
+                c.follow_list
+            );
+        }
+    }
     if let Some(m) = &cfg.catalog.chain_check
         && !["strict", "warn", "off"].contains(&m.as_str())
     {
