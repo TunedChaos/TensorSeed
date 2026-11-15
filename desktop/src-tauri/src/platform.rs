@@ -96,25 +96,6 @@ fn command_program(cmd: &str) -> Option<&str> {
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn register_deep_links<R: Runtime>(_app: &tauri::App<R>) {}
 
-#[cfg(test)]
-mod tests {
-    use super::command_program;
-
-    #[test]
-    fn registry_commands_name_their_program() {
-        assert_eq!(
-            command_program(r#""C:\PROGRA~1\TENSOR~1\TENSOR~1.EXE" "%1""#),
-            Some(r"C:\PROGRA~1\TENSOR~1\TENSOR~1.EXE")
-        );
-        assert_eq!(
-            command_program(r"C:\Apps\tensorseed-desktop.exe %1"),
-            Some(r"C:\Apps\tensorseed-desktop.exe")
-        );
-        assert_eq!(command_program(r#""" "%1""#), None);
-        assert_eq!(command_program("   "), None);
-    }
-}
-
 /// Where the tray icon image is written, when the default does not work.
 ///
 /// On Linux the StatusNotifierItem names the icon by file path, and the
@@ -148,33 +129,6 @@ fn flatpak_tray_icon_dir(
     )
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod flatpak_tests {
-    use super::*;
-    use std::ffi::OsStr;
-
-    #[test]
-    fn flatpak_tray_icon_dir_is_the_shared_app_runtime_dir() {
-        assert_eq!(
-            flatpak_tray_icon_dir(
-                Some(OsStr::new("/run/user/1000")),
-                Some(OsStr::new("dev.tensorseed.desktop"))
-            ),
-            Some(std::path::PathBuf::from(
-                "/run/user/1000/app/dev.tensorseed.desktop/tray-icon"
-            ))
-        );
-        assert_eq!(
-            flatpak_tray_icon_dir(None, Some(OsStr::new("dev.tensorseed.desktop"))),
-            None
-        );
-        assert_eq!(
-            flatpak_tray_icon_dir(Some(OsStr::new("/run/user/1000")), Some(OsStr::new(""))),
-            None
-        );
-    }
-}
-
 /// Open `dir` in the system file manager (`xdg-open`, Explorer, or
 /// Finder). Returns once it has started.
 ///
@@ -201,4 +155,50 @@ pub fn open_folder(dir: &std::path::Path) -> anyhow::Result<()> {
         let _ = child.wait();
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_program;
+
+    #[test]
+    fn registry_commands_name_their_program() {
+        assert_eq!(
+            command_program(r#""C:\PROGRA~1\TENSOR~1\TENSOR~1.EXE" "%1""#),
+            Some(r"C:\PROGRA~1\TENSOR~1\TENSOR~1.EXE")
+        );
+        assert_eq!(
+            command_program(r"C:\Apps\tensorseed-desktop.exe %1"),
+            Some(r"C:\Apps\tensorseed-desktop.exe")
+        );
+        assert_eq!(command_program(r#""" "%1""#), None);
+        assert_eq!(command_program("   "), None);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod flatpak_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn flatpak_tray_icon_dir_is_the_shared_app_runtime_dir() {
+        assert_eq!(
+            flatpak_tray_icon_dir(
+                Some(OsStr::new("/run/user/1000")),
+                Some(OsStr::new("dev.tensorseed.desktop"))
+            ),
+            Some(std::path::PathBuf::from(
+                "/run/user/1000/app/dev.tensorseed.desktop/tray-icon"
+            ))
+        );
+        assert_eq!(
+            flatpak_tray_icon_dir(None, Some(OsStr::new("dev.tensorseed.desktop"))),
+            None
+        );
+        assert_eq!(
+            flatpak_tray_icon_dir(Some(OsStr::new("/run/user/1000")), Some(OsStr::new(""))),
+            None
+        );
+    }
 }
