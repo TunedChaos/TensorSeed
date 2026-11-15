@@ -152,7 +152,7 @@ jobs:
       - name: Install Desktop JS dependencies
         run: pnpm --dir desktop install --frozen-lockfile
       - name: Build unsigned AppImage, deb, and rpm
-        run: pnpm --dir desktop build:unsigned -- --bundles appimage,deb,rpm
+        run: pnpm --dir desktop build:unsigned --bundles appimage,deb,rpm
       - name: Stage Linux Desktop assets
         run: |
           set -euo pipefail
@@ -234,7 +234,7 @@ jobs:
       - name: Install Desktop JS dependencies
         run: pnpm --dir desktop install --frozen-lockfile
       - name: Build unsigned NSIS and MSI
-        run: pnpm --dir desktop build:unsigned -- --bundles msi,nsis --target x86_64-pc-windows-msvc
+        run: pnpm --dir desktop build:unsigned --bundles msi,nsis --target x86_64-pc-windows-msvc
       - name: Stage Windows x64 Desktop assets
         shell: bash
         run: |
@@ -320,7 +320,7 @@ jobs:
       - name: Install Desktop JS dependencies
         run: pnpm --dir desktop install --frozen-lockfile
       - name: Build unsigned NSIS and MSI
-        run: pnpm --dir desktop build:unsigned -- --bundles msi,nsis --target aarch64-pc-windows-msvc
+        run: pnpm --dir desktop build:unsigned --bundles msi,nsis --target aarch64-pc-windows-msvc
       - name: Stage Windows ARM64 Desktop assets
         shell: bash
         run: |

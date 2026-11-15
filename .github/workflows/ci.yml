@@ -238,7 +238,7 @@ jobs:
         # build:unsigned omits updater signatures because CI has no updater
         # key. --bundles overrides tauri.conf.json, which lists only deb and
         # AppImage as default targets.
-        run: pnpm --dir desktop build:unsigned -- --bundles msi,nsis --target aarch64-pc-windows-msvc
+        run: pnpm --dir desktop build:unsigned --bundles msi,nsis --target aarch64-pc-windows-msvc
       - name: Smoke test Desktop start
         # Best effort: the Windows runner has a desktop session and WebView2
         # usually ships with Windows 11, but a headless or missing runtime
