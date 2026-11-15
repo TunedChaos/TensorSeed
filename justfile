@@ -31,6 +31,8 @@ package := "tensorseed-cli"
 bin := "tensorseed"
 version := `sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1`
 dist_dir := "dist"
+# Guides and references shipped in docs/ of every release archive.
+dist_docs := "docs/RUN-A-MIRROR.md docs/PUBLISH-A-CATALOG.md docs/SELL-INFERENCE.md docs/INTEGRATE-A-MARKETPLACE.md docs/SPEC.md docs/CHIA-RUNBOOK.md docs/M0-TORRENT-SPIKE.md docs/MILESTONES.md"
 
 # With Rust 1.100 and Zig as the linker, aarch64-pc-windows-gnullvm fails to
 # link crc-fast's dylib on missing _Unwind_* symbols. Zig ships libunwind for
@@ -86,20 +88,27 @@ dist: (clean-dist)
             *)         exe="{{ bin }}" ;;
         esac
         cp "target/${triple}/dist/${exe}" "$stage/"
-        cp LICENSE README.md RELEASE-KEY.md "$stage/"
-        mkdir -p "$stage/docs" "$stage/config" "$stage/completions" "$stage/man"
-        cp docs/RUN-A-MIRROR.md docs/PUBLISH-A-CATALOG.md "$stage/docs/"
+        cp LICENSE README.md RELEASE-KEY.md CHANGELOG.md CONTRIBUTING.md SECURITY.md "$stage/"
+        mkdir -p "$stage/docs/plans" "$stage/config" "$stage/completions" "$stage/man"
+        cp {{ dist_docs }} "$stage/docs/"
+        cp docs/plans/verified-serving.md "$stage/docs/plans/"
         cp config/tensorseed.example.toml config/mirrors.example.toml "$stage/config/"
         cp -a target/shell-docs/completions/. "$stage/completions/"
         cp -a target/shell-docs/man/. "$stage/man/"
+        # Every relative link in the shipped docs must resolve (the Windows
+        # zip has no contrib/systemd; spikes/ is source only).
+        case "$triple" in
+            *windows*) python3 scripts/check-doc-links.py "$stage" --scan docs --allow-missing spikes/ --allow-missing contrib/ ;;
+            *)         mkdir -p "$stage/contrib"; cp -r contrib/systemd "$stage/contrib/"
+                       python3 scripts/check-doc-links.py "$stage" --scan docs --allow-missing spikes/ ;;
+        esac
         case "$triple" in
             *windows*) (cd {{ dist_dir }} && python3 -c 'import sys, zipfile, pathlib
     root = pathlib.Path(sys.argv[1])
     with zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for p in sorted(root.rglob("*")):
             z.write(p, p.as_posix())' "$name" "${name}.zip") ;;
-            *) mkdir -p "$stage/contrib"; cp -r contrib/systemd "$stage/contrib/"
-               tar -C {{ dist_dir }} --owner=0 --group=0 --numeric-owner -czf "{{ dist_dir }}/${name}.tar.gz" "$name" ;;
+            *) tar -C {{ dist_dir }} --owner=0 --group=0 --numeric-owner -czf "{{ dist_dir }}/${name}.tar.gz" "$name" ;;
         esac
         rm -rf "$stage"
     done

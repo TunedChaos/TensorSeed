@@ -13,6 +13,11 @@
   below, 55 of 55 honest runs passed, and other quantizations, a smaller
   model under the claimed name, and tampered responses failed every run
   (docs/plans/verified-serving.md section 5.7.1).
+- Release archives now ship every guide (SELL-INFERENCE.md,
+  INTEGRATE-A-MARKETPLACE.md, and the references they link to, not only
+  RUN-A-MIRROR.md and PUBLISH-A-CATALOG.md), plus CHANGELOG.md,
+  CONTRIBUTING.md, and SECURITY.md. `just dist` fails when a shipped
+  guide links to a file that was left out.
 
 ### Added
 
