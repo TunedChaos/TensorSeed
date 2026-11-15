@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 (2026-11-15)
+
+0.3.2 makes a fresh install work without hand editing, renames the
+Flatpak app id for Flathub, and builds every release asset in CI,
+including Windows ARM64 installers for Desktop.
+
+### Fixed
+
+- A fresh install follows the official Tensorseed catalog. With no config
+  file, or a config that names no catalog of its own (for example one that
+  only has the `[torrent]` settings Desktop writes), the CLI and Desktop use
+  the official catalog: name `tensorseed`, publisher key
+  `RWS4/z1UPQ4ezmjrcpKqDYpqyn5h1WUS2oDs1B73Dh91kVzzNIZd03xd` (key id
+  `CE1E0E3D543DFFB8`), `https://catalog.tensorseed.dev/`, and the mainnet
+  Chia store with strict chain checking. Desktop's Catalogs view no longer
+  stops at "catalog.publisher_pubkey must be set". A `[catalog]` table,
+  `[[catalogs]]`, `[[follow_lists]]`, `file.base_url`, or
+  `chia.catalog_store_id` in your file (or a `TENSORSEED_CATALOG__*`,
+  `TENSORSEED_FILE__BASE_URL`, or `TENSORSEED_CHIA__CATALOG_STORE_ID`
+  variable) replaces the default, exactly as before.
+- `catalog add` and `catalog follow-list follow` on such a config first
+  write the official catalog into the file, so adding a catalog does not
+  stop following the official one.
+- `tensorseed doctor` reports a missing config file that follows the
+  built-in official catalog as ok rather than a warning.
 
 ### Changed
 
@@ -10,11 +34,25 @@
   match, the metainfo gains screenshots, branding colors, and release
   links, and a scalable icon is installed. The Flatpak build sets the
   Tauri identifier to the app id, so the single instance name stays under
-  it; other builds keep `dev.tensorseed.desktop`. A 0.3.x Flatpak from
-  GitHub Releases installs side by side with the new id; config, keys,
-  and pulled copies are shared, while Desktop's own preferences
-  (`desktop.json`) start fresh.
+  it; other builds keep `dev.tensorseed.desktop`.
+- Upgrading from a 0.3.x Flatpak: the new id installs side by side with
+  the old one. Config, keys, catalogs, and pulled models are shared,
+  because both use the same `tensorseed` folders, but Desktop's own
+  preferences (`desktop.json`) start fresh. Remove the old one with
+  `flatpak uninstall dev.tensorseed.desktop` once the new one runs.
 - `tensorseed gui` finds the Flatpak under either id.
+
+### Added
+
+- Windows ARM64 Desktop installers (NSIS and MSI) and a Windows ARM64 CI
+  job for the CLI and Desktop. The in-app updater does not offer ARM64
+  updates yet; install them by hand.
+- Release builds in CI: a `v*` tag builds every unsigned release asset
+  (CLI archives and packages, Desktop AppImage, `.deb`, `.rpm`, Flatpak,
+  and the Windows installers), writes `SHA256SUMS`, and attests build
+  provenance for each file. Signing and publishing stay on your signing
+  machine (docs/RELEASING.md).
+- A CI status badge in the README.
 
 ### Docs
 
@@ -22,6 +60,7 @@
   <https://www.npmjs.com/package/@tensorseed/verify> (AGPL-3.0-or-later).
   Install with `pnpm add @tensorseed/verify` (or
   `npm install @tensorseed/verify`).
+- docs/RELEASING.md describes the release steps.
 
 ## 0.3.1 (2026-11-14)
 

@@ -17,7 +17,7 @@ members = [
 exclude = ["desktop/src-tauri"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.87"
 license = "AGPL-3.0-or-later"
@@ -26,15 +26,15 @@ repository = "https://tensorseed.dev"
 homepage = "https://tensorseed.dev"
 
 [workspace.dependencies]
-tensorseed-core = { path = "crates/tensorseed-core", version = "0.3.1", default-features = false }
-tensorseed-hf = { path = "crates/tensorseed-hf", version = "0.3.1" }
-tensorseed-verify = { path = "crates/tensorseed-verify", version = "0.3.1", default-features = false }
-tensorseed-catalog = { path = "crates/tensorseed-catalog", version = "0.3.1" }
-tensorseed-wasm = { path = "crates/tensorseed-wasm", version = "0.3.1" }
-tensorseed-torrent = { path = "crates/tensorseed-torrent", version = "0.3.1" }
-tensorseed-fetch = { path = "crates/tensorseed-fetch", version = "0.3.1" }
-tensorseed-serve = { path = "crates/tensorseed-serve", version = "0.3.1" }
-tensorseed-app = { path = "crates/tensorseed-app", version = "0.3.1" }
+tensorseed-core = { path = "crates/tensorseed-core", version = "0.3.2", default-features = false }
+tensorseed-hf = { path = "crates/tensorseed-hf", version = "0.3.2" }
+tensorseed-verify = { path = "crates/tensorseed-verify", version = "0.3.2", default-features = false }
+tensorseed-catalog = { path = "crates/tensorseed-catalog", version = "0.3.2" }
+tensorseed-wasm = { path = "crates/tensorseed-wasm", version = "0.3.2" }
+tensorseed-torrent = { path = "crates/tensorseed-torrent", version = "0.3.2" }
+tensorseed-fetch = { path = "crates/tensorseed-fetch", version = "0.3.2" }
+tensorseed-serve = { path = "crates/tensorseed-serve", version = "0.3.2" }
+tensorseed-app = { path = "crates/tensorseed-app", version = "0.3.2" }
 
 anyhow = "1"
 # HTTP serving for `tensorseed serve` (already in the tree through librqbit).

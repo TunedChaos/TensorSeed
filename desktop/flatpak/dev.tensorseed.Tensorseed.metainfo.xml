@@ -96,6 +96,18 @@
   </supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.2" date="2026-11-15">
+      <url type="details">https://github.com/TunedChaos/TensorSeed/releases/tag/v0.3.2</url>
+      <description>
+        <p>Desktop works on a fresh install:</p>
+        <ul>
+          <li>Follows the official Tensorseed catalog when no catalog is configured</li>
+          <li>New app id dev.tensorseed.Tensorseed</li>
+          <li>Windows ARM64 installers</li>
+        </ul>
+        <p>Desktop preferences from the dev.tensorseed.desktop Flatpak start over; config, keys, and pulled models are shared.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-14">
       <url type="details">https://github.com/TunedChaos/TensorSeed/releases/tag/v0.3.1</url>
       <description>

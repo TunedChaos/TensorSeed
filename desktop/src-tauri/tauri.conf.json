@@ -58,7 +58,7 @@
     },
     "windows": {
       "wix": {
-        "version": "0.3.1.0",
+        "version": "0.3.2.0",
         "upgradeCode": "fabd4d81-f9ff-570f-aba4-7d20e7ede3cb",
         "fragmentPaths": ["windows/firewall.wxs"],
         "componentRefs": ["TsFirewallChoice"]
