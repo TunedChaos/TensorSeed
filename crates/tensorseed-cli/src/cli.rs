@@ -1090,6 +1090,13 @@ pub struct VerifyResponseArgs {
     /// Default: `verify.max_skew_secs` in the config, else 300.
     #[arg(long, value_name = "SECS")]
     pub max_skew: Option<u64>,
+    /// The URL you sent the request to. It must be under the claim's
+    /// `public_base_url` (same scheme, host, and port); otherwise the
+    /// response fails with `url_mismatch`. A claim given as a URL must
+    /// also be the one published at its own `public_base_url`, as in
+    /// `check-claim`.
+    #[arg(long, value_name = "URL")]
+    pub response_url: Option<String>,
     /// Check the timestamp as of this time (RFC 3339) instead of now, for
     /// a response you stored: pass the time you received it. Expiry and
     /// revocation are judged by the signing time either way.

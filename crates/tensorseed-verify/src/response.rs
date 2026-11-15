@@ -148,6 +148,9 @@ pub enum SigError {
     /// The claim was revoked before the response was signed (or with
     /// reason `key_compromised`, at any time).
     ClaimRevoked,
+    /// The claim or the response did not come from the endpoint the claim
+    /// names (see [`crate::claim_check::response_url_error`]).
+    Url(String),
 }
 
 impl SigError {
@@ -166,6 +169,7 @@ impl SigError {
             Self::BadSignature => "bad_signature",
             Self::ClaimExpired => "claim_expired",
             Self::ClaimRevoked => "claim_revoked",
+            Self::Url(_) => "url_mismatch",
         }
     }
 }
@@ -195,6 +199,7 @@ impl std::fmt::Display for SigError {
             Self::ClaimRevoked => {
                 write!(f, "the claim was revoked before this response was signed")
             }
+            Self::Url(d) => write!(f, "{d}"),
         }
     }
 }

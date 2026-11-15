@@ -522,6 +522,62 @@ fn same_origin(a: &url::Url, b: &url::Url) -> bool {
         && a.port_or_known_default() == b.port_or_known_default()
 }
 
+/// Check that `response_url`, the URL a request was sent to, is on the
+/// endpoint the claim names: the same scheme, host, and port as
+/// `public_base_url`, under its path (`https://h/v1/chat/completions` for
+/// `https://h/v1`).
+///
+/// # Errors
+///
+/// Why it is not, as text for the report.
+pub fn check_response_url(c: &ServedClaim, response_url: &str) -> Result<(), String> {
+    let Some(public) = &c.public_base_url else {
+        return Err(
+            "the claim has no public_base_url, so a response cannot be tied to an endpoint".into(),
+        );
+    };
+    let pu = norm_url(public)
+        .ok_or_else(|| format!("public_base_url {public:?} is not an http(s) URL"))?;
+    let ru = norm_url(response_url)
+        .ok_or_else(|| format!("response URL {response_url:?} is not an http(s) URL"))?;
+    let base = pu.path().trim_end_matches('/');
+    let path = ru.path();
+    let under = path == base
+        || base.is_empty()
+        || path
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.starts_with('/'));
+    if same_origin(&ru, &pu) && under {
+        Ok(())
+    } else {
+        Err(format!(
+            "the response came from {response_url}, which is not under the claim's public_base_url {public}"
+        ))
+    }
+}
+
+/// The URL checks `verify-response` applies, as one error: a claim read
+/// from a URL must have been published at its own `public_base_url`
+/// ([`check_origin`], the `public_url` rule of `check-claim`), and
+/// `response_url`, when given, must pass [`check_response_url`]. A claim
+/// read from a file is not tied to a URL unless `response_url` is given.
+#[must_use]
+pub fn response_url_error(
+    c: &ServedClaim,
+    claim_origin: &Origin,
+    response_url: Option<&str>,
+) -> Option<String> {
+    if matches!(claim_origin, Origin::Url(_)) {
+        let fail = check_origin(c, claim_origin, &ClaimCheckOptions::default())
+            .into_iter()
+            .find(|k| k.name == "public_url" && k.status == Status::Fail);
+        if let Some(k) = fail {
+            return Some(k.detail);
+        }
+    }
+    response_url.and_then(|u| check_response_url(c, u).err())
+}
+
 /// The claim's `public_base_url` must be where it was fetched: the
 /// fetched URL must be `well_known_for(public_base_url)`. For a file,
 /// `expect_url` (if given) must equal `public_base_url`.
@@ -1644,6 +1700,65 @@ mod tests {
             &o,
         );
         assert_eq!(rep.verdict, ClaimVerdict::Fail);
+    }
+
+    #[test]
+    fn response_urls_must_be_under_the_public_url() {
+        let c = claim(); // public_base_url https://llm.example.com/v1
+        for ok in [
+            "https://llm.example.com/v1/chat/completions",
+            "https://llm.example.com/v1",
+            "https://llm.example.com:443/v1/completions?x=1",
+        ] {
+            assert_eq!(check_response_url(&c, ok), Ok(()), "{ok}");
+        }
+        for bad in [
+            "https://other.example.net/v1/chat/completions",
+            "http://llm.example.com/v1/chat/completions",
+            "https://llm.example.com:8443/v1/chat/completions",
+            "https://llm.example.com/v10/chat/completions",
+            "https://llm.example.com/chat/completions",
+            "not a url",
+        ] {
+            assert!(check_response_url(&c, bad).is_err(), "{bad}");
+        }
+        let mut root = c.clone();
+        root.public_base_url = Some("https://llm.example.com/".into());
+        assert_eq!(
+            check_response_url(&root, "https://llm.example.com/v1/chat/completions"),
+            Ok(())
+        );
+        let mut none = c.clone();
+        none.public_base_url = None;
+        assert!(check_response_url(&none, "https://llm.example.com/v1").is_err());
+
+        // The claim's own origin, as check-claim checks it.
+        let home = Origin::Url(well_known_for("https://llm.example.com/v1"));
+        let copy = Origin::Url(
+            "https://copy.example.net/.well-known/tensorseed/served-weights.json".into(),
+        );
+        let file = Origin::File("claim.json".into());
+        assert_eq!(response_url_error(&c, &home, None), None);
+        assert!(
+            response_url_error(&c, &copy, None)
+                .unwrap()
+                .contains("copied from another endpoint")
+        );
+        assert_eq!(response_url_error(&c, &file, None), None);
+        assert_eq!(
+            response_url_error(&none, &file, None),
+            None,
+            "files are not tied to a URL"
+        );
+        assert!(response_url_error(&c, &file, Some("https://other.example.net/v1/x")).is_some());
+        assert_eq!(
+            response_url_error(
+                &c,
+                &home,
+                Some("https://llm.example.com/v1/chat/completions")
+            ),
+            None
+        );
     }
 
     #[test]

@@ -59,6 +59,7 @@ const result = verifyResponse({
   body,
   requestId,
   requestedModel: request.model,
+  responseUrl: "https://seller.example/v1/chat/completions", // must be under public_base_url
   revocations,      // optional: the seller's revocations.json, merged with yours
 });
 if (!result.valid) console.warn("unsigned or altered response:", result.error);
@@ -73,6 +74,11 @@ that claim. `checkEndpoint` also fetches the seller's revocation list
 and merges it with any `revocations` you pass; when it cannot be fetched
 or does not parse, a verdict that would pass is `inconclusive`, since the
 claim may be revoked. `noRevocations: true` skips it.
+`verifyResponse` fails with `url_mismatch` when `responseUrl` is not
+under the claim's `public_base_url`, or when `originUrl` (where you
+fetched the claim) is not the claim's own well-known URL. `maxSkewSecs`
+is 1 to 604800 (default 300); for a stored response, pass the time you
+received it as `now` instead of widening the window.
 
 The report is the `ts.claim-check/1` JSON that `tensorseed check-claim
 --json` prints. See `docs/INTEGRATE-A-MARKETPLACE.md` in the repository for

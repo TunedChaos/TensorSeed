@@ -13,7 +13,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use tensorseed_app::claim_check::{revocations_url_next_to, rough_duration};
+use tensorseed_app::claim_check::{
+    Origin, response_url_error, revocations_url_next_to, rough_duration,
+};
 use tensorseed_app::inference::{
     Runtime, ServedWeights, VerifyCopyOptions, check_extra_files, choose_runtime, default_model_id,
     find_binary, license_gate, missing_engine_message, verify_copy,
@@ -21,7 +23,7 @@ use tensorseed_app::inference::{
 use tensorseed_app::sign_proxy::SignProxy;
 use tensorseed_app::signing::{
     ClaimCheck, ClaimExtras, ClaimFile, DEFAULT_MAX_SKEW_SECS, Expect, LogprobsMode,
-    RESPONSE_KEY_FILE, ResponseKey, Revocations, ServedClaim, WELL_KNOWN_CLAIM,
+    RESPONSE_KEY_FILE, ResponseKey, Revocations, ServedClaim, SigError, WELL_KNOWN_CLAIM,
     WELL_KNOWN_REVOCATIONS, WalletStatus, claim_from_bytes, claim_path, extract_signed, load_claim,
     load_revocations, parse_rfc3339, revocation_message, revocations_path, valid_reason,
     verify_fields, write_revocations,
@@ -601,6 +603,17 @@ async fn verify_inner(args: &VerifyResponseArgs, max_skew: u64) -> anyhow::Resul
             claim_revoked_unix,
         };
         verify_fields(&f, signed, &e).map(|()| f)
+    });
+    let origin = if source.starts_with("http://") || source.starts_with("https://") {
+        Origin::Url(source.clone())
+    } else {
+        Origin::File(source.clone())
+    };
+    let result = result.and_then(|f| {
+        match response_url_error(&claim, &origin, args.response_url.as_deref()) {
+            Some(e) => Err(SigError::Url(e)),
+            None => Ok(f),
+        }
     });
     let wallet = match &check.wallet {
         WalletStatus::Verified(a) => Some(a.clone()),

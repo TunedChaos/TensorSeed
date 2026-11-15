@@ -232,6 +232,21 @@ test("a response for another model fails", () => {
   assert.equal(r.valid, false);
 });
 
+test("a response must come from the claim's public URL", () => {
+  const ok = v.verifyResponse(
+    response({ originUrl: x.claim_url, responseUrl: "https://llm.example.com/v1/chat/completions" }),
+  );
+  assert.equal(ok.valid, true, JSON.stringify(ok));
+  const elsewhere = v.verifyResponse(response({ responseUrl: "https://relay.example.net/v1/chat/completions" }));
+  assert.equal(elsewhere.valid, false);
+  assert.equal(elsewhere.error, "url_mismatch");
+  const copied = v.verifyResponse(
+    response({ originUrl: "https://relay.example.net/.well-known/tensorseed/served-weights.json" }),
+  );
+  assert.equal(copied.error, "url_mismatch");
+  assert.match(copied.detail, /copied from another endpoint/);
+});
+
 test("a stale response fails the clock check", () => {
   const r = v.verifyResponse(response({ now: NOW + 3600 }));
   assert.equal(r.valid, false);

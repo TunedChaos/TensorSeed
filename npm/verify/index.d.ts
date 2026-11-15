@@ -75,6 +75,10 @@ export interface VerifyResponseInput {
   /** Allowed timestamp skew either way, 1 to 604800 seconds (default 300). */
   maxSkewSecs?: number;
   revocations?: Json;
+  /** Where you fetched the claim; it must be the claim's own well-known URL (`url_mismatch` otherwise). */
+  originUrl?: string;
+  /** The URL you sent the request to; it must be under the claim's public_base_url (`url_mismatch` otherwise). */
+  responseUrl?: string;
 }
 
 export type VerifyResponseResult =

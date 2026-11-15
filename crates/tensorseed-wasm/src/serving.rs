@@ -9,10 +9,11 @@
 use serde::Deserialize;
 use tensorseed_verify::claim::{ServedClaim, WalletStatus, claim_message, parse_claim};
 use tensorseed_verify::claim_check::{
-    CatalogResult, ClaimCheckOptions, Origin, RevocationInput, build_report, unparsable_report,
+    CatalogResult, ClaimCheckOptions, Origin, RevocationInput, build_report, response_url_error,
+    unparsable_report,
 };
 use tensorseed_verify::response::{
-    DEFAULT_MAX_SKEW_SECS, Expect, check_max_skew, extract_signed, verify_fields,
+    DEFAULT_MAX_SKEW_SECS, Expect, SigError, check_max_skew, extract_signed, verify_fields,
 };
 use tensorseed_verify::revocation::{Revocations, revocation_message};
 use wasm_bindgen::prelude::*;
@@ -206,6 +207,12 @@ struct ResponseOptions {
     now_unix: f64,
     max_skew_secs: Option<u64>,
     revocations: Option<serde_json::Value>,
+    /// Where the claim was fetched from; it must be the claim's own
+    /// well-known URL (as in `check-claim`).
+    origin_url: Option<String>,
+    /// The URL the request was sent to; it must be under the claim's
+    /// `public_base_url`.
+    response_url: Option<String>,
 }
 
 /// Headers as an object (`{"name": "value"}`) or a list of pairs.
@@ -246,7 +253,10 @@ fn headers_from(json: &str) -> Result<Vec<(String, String)>, JsError> {
 /// `timestamp_skew`, `claim_expired`, `claim_revoked`, and so on).
 ///
 /// `options_json` (every field optional): `request_id`, `requested_model`,
-/// `now_unix`, `max_skew_secs` (default 300, 1 to 604800), `revocations`.
+/// `now_unix`, `max_skew_secs` (default 300, 1 to 604800), `revocations`,
+/// `origin_url` (where the claim was fetched; it must be its own
+/// well-known URL), and `response_url` (where the request went; it must be
+/// under `public_base_url`). A failed URL check is `url_mismatch`.
 /// For a stored response, pass the time it was received as `now_unix`
 /// rather than widening `max_skew_secs`.
 ///
@@ -289,6 +299,17 @@ pub fn verify_response(
         };
         verify_fields(&f, signed, &e).map(|()| f)
     });
+    let origin = match &o.origin_url {
+        Some(u) => Origin::Url(u.clone()),
+        None => Origin::File("(provided)".into()),
+    };
+    let result =
+        result.and_then(
+            |f| match response_url_error(&claim, &origin, o.response_url.as_deref()) {
+                Some(e) => Err(SigError::Url(e)),
+                None => Ok(f),
+            },
+        );
     let wallet = match &check.wallet {
         WalletStatus::Verified(a) => Some(a.clone()),
         WalletStatus::NotSigned => None,

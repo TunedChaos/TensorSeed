@@ -582,7 +582,11 @@ TS_CHECK_KEY=... tensorseed check-endpoint https://llm.example.com/v1 \
 `verify-response` exits 0 when the signature, body hash, model, request
 id, claim hash, and timestamp (within `--max-skew`, 300 s by default) all check
 out, 1 when anything fails, and 2 on an error. For a stream, save it with
-`curl -N` and pass the raw file as `--body`. `check-endpoint` finds the
+`curl -N` and pass the raw file as `--body`. Run it against your public
+URL: since 0.3.1 a claim fetched from an address other than its
+`public_base_url` (for example the loopback proxy) fails with
+`url_mismatch`, so to test locally pass the claim file instead.
+`check-endpoint` finds the
 claim at the well-known path (or takes `--claim`), sends a fresh request
 id with every challenge, and fails any challenge whose answer is
 unsigned or badly signed, which fails the whole run; the report lists

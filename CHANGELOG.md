@@ -38,6 +38,13 @@
   `verify-response --at <RFC 3339>` checks a stored response as of the
   time it was received (JSON `checked_at`). The JavaScript package's
   `maxSkewSecs` has the same bounds.
+- `verify-response` checks URLs, consistent with `check-claim`: a claim
+  given as a URL must be the one published at its own `public_base_url`,
+  and `--response-url <URL>` (the URL the request went to) must be under
+  `public_base_url`. Either failure is the new error label
+  `url_mismatch`. The WebAssembly build and `verifyResponse` take the
+  same checks as `origin_url` / `originUrl` and `response_url` /
+  `responseUrl`.
 
 ### Added
 
@@ -112,6 +119,9 @@
 
 ### Compatibility
 
+- `verify-response --claim <URL>` now fails with `url_mismatch` when the
+  claim is not served at its own `public_base_url` (for example, a
+  claim fetched from a local proxy). Pass the claim file instead.
 - `--max-skew` above 604800 (7 days) or 0 is now refused. Use
   `verify-response --at` for stored responses instead of a huge window.
 

@@ -145,12 +145,16 @@ export function makeApi(raw, isReady) {
     now,
     maxSkewSecs,
     revocations,
+    originUrl,
+    responseUrl,
   }) {
     ready();
     const o = { now_unix: unix(now) };
     if (requestId !== undefined) o.request_id = requestId;
     if (requestedModel !== undefined) o.requested_model = requestedModel;
     if (maxSkewSecs !== undefined) o.max_skew_secs = maxSkewSecs;
+    if (originUrl !== undefined) o.origin_url = originUrl;
+    if (responseUrl !== undefined) o.response_url = responseUrl;
     const r = revocationsText(revocations);
     if (r !== undefined) o.revocations = r;
     return JSON.parse(

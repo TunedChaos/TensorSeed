@@ -2456,8 +2456,46 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
             run(&cfg, &a, &[]).await
         }
     };
+    // A claim fetched from where it is not published (the test proxy is
+    // not its public_base_url) does not tie responses to the seller's
+    // endpoint: url_mismatch, as check-claim fails public_url. A buyer who
+    // checked the claim keeps it as a file and names the URL it called.
+    let o = verify(proxy.clone(), bp.clone(), vec!["--json".into()]).await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["error"], "url_mismatch", "{v}");
+    assert!(
+        v["detail"]
+            .as_str()
+            .unwrap()
+            .contains("copied from another endpoint")
+    );
+    let claim_file = claimp.to_str().unwrap().to_string();
     let o = verify(
-        proxy.clone(),
+        claim_file.clone(),
+        bp.clone(),
+        vec![
+            "--response-url".into(),
+            "https://llm.example.com/v1/chat/completions".into(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    let o = verify(
+        claim_file.clone(),
+        bp.clone(),
+        vec![
+            "--json".into(),
+            "--response-url".into(),
+            format!("{proxy}/v1/chat/completions"),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["error"], "url_mismatch");
+    let o = verify(
+        claim_file.clone(),
         bp.clone(),
         vec!["--request-id".into(), "buyer-1".into()],
     )
@@ -2475,14 +2513,14 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     assert_eq!(v["valid"], true);
     assert_eq!(v["seller_wallet"], DEV_WALLET);
     let o = verify(
-        proxy.clone(),
+        claim_file.clone(),
         bp.clone(),
         vec!["--request-id".into(), "other".into()],
     )
     .await;
     assert_eq!(code(&o), 1);
     let o = verify(
-        proxy.clone(),
+        claim_file.clone(),
         bp.clone(),
         vec!["--model-id".into(), "org/else".into()],
     )
@@ -2493,7 +2531,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     let i = b.iter().position(|&c| c == b'H').unwrap();
     b[i] = b'J';
     std::fs::write(&tampered, &b).unwrap();
-    let o = verify(proxy.clone(), tampered, vec!["--json".into()]).await;
+    let o = verify(claim_file.clone(), tampered, vec!["--json".into()]).await;
     assert_eq!(code(&o), 1);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["error"], "body_hash_mismatch");
@@ -2507,7 +2545,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     let later = tensorseed_core::time::rfc3339(now + 3600);
     let received = tensorseed_core::time::rfc3339(now);
     let o = verify(
-        proxy.clone(),
+        claim_file.clone(),
         bp.clone(),
         vec!["--json".into(), "--at".into(), later.clone()],
     )
@@ -2517,7 +2555,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     assert_eq!(v["error"], "timestamp_skew");
     assert_eq!(v["checked_at"], later.as_str());
     let o = verify(
-        proxy.clone(),
+        claim_file.clone(),
         bp.clone(),
         vec!["--at".into(), received, "--max-skew".into(), "600".into()],
     )
@@ -2525,7 +2563,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     assert_eq!(code(&o), 0, "{}", stdout(&o));
     assert!(stderr(&o).contains("checked as of"), "{}", stderr(&o));
     let o = verify(
-        proxy.clone(),
+        claim_file.clone(),
         bp.clone(),
         vec![
             "--at".into(),
@@ -2538,7 +2576,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     assert_eq!(code(&o), 0, "{}", stdout(&o));
     for bad in ["0", "604801"] {
         let o = verify(
-            proxy.clone(),
+            claim_file.clone(),
             bp.clone(),
             vec!["--max-skew".into(), bad.into()],
         )
@@ -2547,7 +2585,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
         assert!(stderr(&o).contains("1 to 604800"), "{}", stderr(&o));
     }
     let o = verify(
-        proxy.clone(),
+        claim_file.clone(),
         bp.clone(),
         vec!["--at".into(), "soon".into()],
     )
@@ -2565,7 +2603,7 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     let a = [
         "verify-response",
         "--claim",
-        &proxy,
+        &claim_file,
         "--headers",
         hp.to_str().unwrap(),
         "--body",

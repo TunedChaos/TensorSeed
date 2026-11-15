@@ -1065,7 +1065,19 @@ well-known path, the seller's revocation list next to it is fetched too
 lists you keep. The claim's `expires_at` and any verified revocation are
 applied by the response's signed timestamp
 ([4.8](#48-expiry-and-revocation)), and the JSON gains
-`claim_expires_at` and `revocation_lists`. `--json` prints a result
+`claim_expires_at` and `revocation_lists`.
+
+**URL checks (0.3.1).** A claim given as a URL must be the one published
+at its own `public_base_url`, the `public_url` rule of `check-claim`
+([4.5](#45-match-the-claim-to-a-catalog-you-trust)); a claim fetched
+from anywhere else fails with `url_mismatch`. `--response-url <URL>`
+names the URL you sent the request to, which must be under the claim's
+`public_base_url` (same scheme, host, and port, and under its path), or
+the response fails with `url_mismatch`. A claim read from a file is
+not tied to a URL unless you pass `--response-url`, so after checking a
+claim once, keep it as a file and pass `--response-url` for each
+response. In the JavaScript package these are the `originUrl` and
+`responseUrl` options of `verifyResponse`. `--json` prints a result
 object:
 
 ```json
@@ -1097,7 +1109,7 @@ one body byte changed:
 Error labels: `absent`, `missing_header`, `malformed_header`,
 `claim_mismatch`, `request_id_mismatch`, `model_mismatch`,
 `timestamp_skew`, `body_hash_mismatch`, `bad_signature`, and in 0.3.1
-`claim_expired` and `claim_revoked`. Exit status is
+`claim_expired`, `claim_revoked`, and `url_mismatch`. Exit status is
 0 valid, 1 invalid or unsigned, and 2 for an error (for example a claim
 that does not verify). For a stream, pass the raw saved stream as
 `--body`.
