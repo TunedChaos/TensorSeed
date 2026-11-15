@@ -3,7 +3,8 @@
 
 //! Test vectors for the `@tensorseed/verify` npm package
 //! (`npm/verify/test/fixtures/vectors.json`): a small signed catalog, a
-//! claim that matches it, a signed response, and a revocation.
+//! claim that matches it, a signed response, a revocation, and a signed
+//! follow list naming the catalog.
 //!
 //! Every key here is a throwaway test value (fixed seeds and the
 //! well-known Hardhat development account); none is a real key. The
@@ -22,6 +23,7 @@ use tensorseed_verify::claim::{
     ServedLicense, VerifiedFile,
 };
 use tensorseed_verify::file::{ChainState, DeltaOp};
+use tensorseed_verify::follow_list::{FollowList, FollowedCatalog, sign_list};
 use tensorseed_verify::minisign::SecretKey;
 use tensorseed_verify::response::signing_message;
 use tensorseed_verify::revocation::{Revocation, Revocations, revocation_message};
@@ -30,6 +32,7 @@ use tensorseed_verify::signed::SignedEntry;
 const CATALOG: &str = "main";
 const PUBLISHER_SEED: [u8; 32] = [9; 32];
 const RESPONSE_SEED: [u8; 32] = [7; 32];
+const LIST_SEED: [u8; 32] = [5; 32];
 // Hardhat and Anvil development account 0 (public test key).
 const DEV_WALLET_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const DEV_WALLET: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
@@ -151,6 +154,19 @@ fn vectors() -> serde_json::Value {
         wallet_sig: None,
     });
 
+    let list_key = SecretKey::from_seed(&LIST_SEED);
+    let mut list = FollowList::new("example-list", "2026-11-14T00:00:00Z");
+    list.rev = 2;
+    list.catalogs.push(FollowedCatalog {
+        name: CATALOG.into(),
+        label: "Main".into(),
+        publisher_pubkey: pk.to_base64(),
+        base_url: "https://catalog.example.org/".into(),
+        store_id: String::new(),
+        note: "test catalog".into(),
+    });
+    let (list_body, list_sig) = sign_list(&list_key, &list).unwrap();
+
     serde_json::json!({
         "note": "Test vectors for @tensorseed/verify. Every key is a throwaway test value. Regenerate with TS_WRITE_NPM_FIXTURES=1 cargo test -p tensorseed-wasm --test npm_fixtures.",
         "catalog": {
@@ -178,6 +194,11 @@ fn vectors() -> serde_json::Value {
         },
         "revocations": serde_json::to_string_pretty(&revocations).unwrap(),
         "seller_wallet": DEV_WALLET,
+        "follow_list": {
+            "body": String::from_utf8(list_body).unwrap(),
+            "sig": list_sig,
+            "pubkey": list_key.public_key().to_base64(),
+        },
     })
 }
 

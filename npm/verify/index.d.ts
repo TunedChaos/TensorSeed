@@ -141,6 +141,51 @@ export function checkEndpoint(
 ): Promise<ClaimCheckReport>;
 export function verifyResponse(input: VerifyResponseInput): VerifyResponseResult;
 
+export interface FollowedCatalog {
+  name: string;
+  label?: string;
+  /** The catalog's own publisher key; verify the catalog against it. */
+  publisher_pubkey: string;
+  base_url: string;
+  store_id?: string;
+  note?: string;
+}
+
+/** The revision you accepted last. */
+export interface FollowListSeen {
+  rev: number;
+  sha256: string;
+}
+
+export type FollowListResult =
+  | {
+      valid: true;
+      name: string;
+      rev: number;
+      issued_at: string;
+      /** SHA-256 of the list bytes; store it with `rev` as your next `seen`. */
+      sha256: string;
+      update: "new" | "same" | "newer";
+      catalogs: FollowedCatalog[];
+    }
+  | { valid: false; error: "signature" | "invalid" | "rollback" | "fork"; detail: string };
+
+/** Verify a signed follow list (ts.follow-list/1) against the signer key you pinned. */
+export function verifyFollowList(input: {
+  /** The exact list bytes. */
+  body: Bytes;
+  /** The detached minisign signature (`<list>.minisig`). */
+  sig: string;
+  /** The list signer's key, pinned by you; a list never supplies its own. */
+  pubkey: string;
+  seen?: FollowListSeen;
+}): FollowListResult;
+/** Fetch a list and `<url>.minisig` (or `sigUrl`), then verify them. */
+export function fetchFollowList(
+  url: string,
+  options: { pubkey: string; seen?: FollowListSeen; sigUrl?: string; fetch?: typeof fetch },
+): Promise<FollowListResult>;
+
 export function claimUrl(baseUrl: string): string;
 export function revocationsUrl(claimUrl: string): string | undefined;
 export function claimSigningMessage(claimSha256: string): string;

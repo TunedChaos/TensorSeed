@@ -8,9 +8,9 @@
 //! verify a DataLayer inclusion proof, and check a coin record. The
 //! `@tensorseed/verify` npm package (in `npm/verify`) uses the same build
 //! to check served-weights claims, revocations, and signed responses in a
-//! browser or Node ([`serving`]). No verification logic is reimplemented
-//! in JavaScript. Methods that return structured data return JSON strings;
-//! the caller parses them.
+//! browser or Node ([`serving`]), and signed follow lists ([`follow`]).
+//! No verification logic is reimplemented in JavaScript. Methods that
+//! return structured data return JSON strings; the caller parses them.
 
 #![warn(missing_docs)]
 
@@ -27,7 +27,9 @@ use tensorseed_verify::manifest::{merge_file_pages, verify_manifest_entry};
 use tensorseed_verify::minisign::PublicKey;
 use wasm_bindgen::prelude::*;
 
+pub mod follow;
 pub mod serving;
+pub use follow::*;
 pub use serving::*;
 
 pub(crate) fn js_err(err: impl std::fmt::Display) -> JsError {

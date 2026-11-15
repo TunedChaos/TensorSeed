@@ -207,12 +207,45 @@ export function makeApi(raw, isReady) {
       : checkClaim(claim, o);
   }
 
+  /**
+   * Verify a signed follow list (ts.follow-list/1) against the signer key
+   * you pinned. Pass the revision you accepted last as `seen` so a lower
+   * revision (rollback) or other bytes under it (fork) are refused.
+   */
+  function verifyFollowList({ body, sig, pubkey, seen }) {
+    ready();
+    const o = {};
+    if (seen) {
+      o.seen_rev = seen.rev;
+      o.seen_sha256 = seen.sha256;
+    }
+    return JSON.parse(
+      raw.verify_follow_list(bytes(body, "body"), String(sig), String(pubkey), JSON.stringify(o)),
+    );
+  }
+
+  /** Fetch a follow list and `<url>.minisig` (or `sigUrl`), then verify them. */
+  async function fetchFollowList(url, { pubkey, seen, sigUrl, fetch: f0 } = {}) {
+    ready();
+    const f = f0 ?? globalThis.fetch;
+    if (typeof f !== "function") throw new Error("no fetch available; pass options.fetch");
+    const get = async (u) => {
+      const r = await f(u, { redirect: "follow" });
+      if (!r.ok) throw new Error(`fetching ${u}: HTTP ${r.status}`);
+      return readCapped(r, r.url || u);
+    };
+    const [body, sig] = await Promise.all([get(url), get(sigUrl ?? `${url}.minisig`)]);
+    return verifyFollowList({ body, sig, pubkey, seen });
+  }
+
   return {
     checkClaim,
     checkClaimWithCatalog,
     openCatalog,
     verifyResponse,
     checkEndpoint,
+    verifyFollowList,
+    fetchFollowList,
     claimSigningMessage: (claimSha256) => (ready(), raw.claim_signing_message(claimSha256)),
     revocationSigningMessage: (claimSha256, revokedAt, reason) => (
       ready(), raw.revocation_signing_message(claimSha256, revokedAt, reason)

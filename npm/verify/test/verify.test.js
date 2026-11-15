@@ -333,6 +333,43 @@ test("checkEndpoint fetches the claim and the revocation list", async () => {
   }
 });
 
+test("a follow list verifies against the pinned key and refuses rollbacks", async () => {
+  const fl = x.follow_list;
+  const r = v.verifyFollowList(fl);
+  assert.equal(r.valid, true, JSON.stringify(r));
+  assert.equal(r.name, "example-list");
+  assert.equal(r.rev, 2);
+  assert.equal(r.update, "new");
+  assert.equal(r.catalogs[0].name, x.catalog.name);
+  assert.equal(r.catalogs[0].publisher_pubkey, x.catalog.pubkey);
+  assert.match(r.sha256, /^[0-9a-f]{64}$/);
+
+  // Same bytes again, a newer list, a rollback, and a fork.
+  assert.equal(v.verifyFollowList({ ...fl, seen: { rev: 2, sha256: r.sha256 } }).update, "same");
+  assert.equal(v.verifyFollowList({ ...fl, seen: { rev: 1, sha256: "00".repeat(32) } }).update, "newer");
+  assert.equal(v.verifyFollowList({ ...fl, seen: { rev: 3, sha256: "00".repeat(32) } }).error, "rollback");
+  assert.equal(v.verifyFollowList({ ...fl, seen: { rev: 2, sha256: "00".repeat(32) } }).error, "fork");
+
+  // Another key, edited bytes, a key that does not parse.
+  assert.equal(v.verifyFollowList({ ...fl, pubkey: x.catalog.pubkey }).error, "signature");
+  const edited = fl.body.replace("catalog.example.org", "evil.example.org");
+  assert.equal(v.verifyFollowList({ ...fl, body: edited }).error, "signature");
+  assert.throws(() => v.verifyFollowList({ ...fl, pubkey: "RWnope" }));
+
+  // fetchFollowList reads <url>.minisig next to the list.
+  const url = "https://lists.example.org/example-list.json";
+  const seen = [];
+  const fetch = async (u) => {
+    seen.push(u);
+    if (u === url) return new Response(fl.body);
+    if (u === `${url}.minisig`) return new Response(fl.sig);
+    return new Response("", { status: 404 });
+  };
+  const f = await v.fetchFollowList(url, { pubkey: fl.pubkey, fetch });
+  assert.equal(f.valid, true);
+  assert.deepEqual(seen.sort(), [url, `${url}.minisig`]);
+});
+
 test("the browser entry works once initialized with the wasm bytes", async () => {
   const web = await import("../index.js");
   assert.throws(() => web.checkClaim(x.claim), /await init/);

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026 Tuned Chaos
 
-//! Verify-only Tensorseed: catalog heads and signed entries, manifests,
-//! served-weights claims, claim revocations, and signed responses. Covers
-//! minisign signatures, the signed-file hash chain, Chia DataLayer inclusion
-//! proofs (spec sections 6.8, 6.9, 6.14), and verified serving
-//! (docs/plans/verified-serving.md).
+//! Verify-only Tensorseed: catalog heads and signed entries, follow lists,
+//! manifests, served-weights claims, claim revocations, and signed
+//! responses. Covers minisign signatures, the signed-file hash chain, Chia
+//! DataLayer inclusion proofs (spec sections 6.8, 6.9, 6.14), and verified
+//! serving (docs/plans/verified-serving.md).
 //!
 //! This crate has no async runtime, no HTTP client, no torrent or serving
 //! code, and no OS randomness, and it compiles to WebAssembly.
@@ -23,6 +23,8 @@
 //! - [`anchor`]: inclusion proofs, coin id and puzzle hash, and
 //!   [`anchor::check_coin_record`].
 //! - [`mirrors`]: the signed list of catalog mirrors.
+//! - [`follow_list`]: signed lists of catalogs to follow,
+//!   `ts.follow-list/1`.
 //! - [`manifest`]: signed manifest entries, file pages, and takedowns.
 //! - [`claim`]: the `ts.served-weights/1` claim and EIP-191 wallet
 //!   signatures.
@@ -38,6 +40,7 @@ pub mod claim;
 pub mod claim_check;
 pub mod error;
 pub mod file;
+pub mod follow_list;
 pub mod manifest;
 pub mod minisign;
 pub mod mirrors;

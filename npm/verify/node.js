@@ -21,6 +21,8 @@ export const {
   openCatalog,
   verifyResponse,
   checkEndpoint,
+  verifyFollowList,
+  fetchFollowList,
   claimSigningMessage,
   revocationSigningMessage,
   recoverWallet,
