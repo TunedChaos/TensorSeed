@@ -76,7 +76,9 @@ git push origin $tag
 set run (gh run list --repo $repo --workflow release-build.yml --branch $tag --limit 1 --json databaseId --jq '.[0].databaseId')
 gh run watch $run --repo $repo --exit-status
 
-# Download the unsigned artifact.
+# Download the unsigned artifact into an empty folder. `gh run download`
+# fails if a file already exists there (for example SHA256SUMS from an
+# earlier attempt).
 mkdir -p ~/releases/$ver
 cd ~/releases/$ver
 gh run download $run --repo $repo --name tensorseed-release-unsigned
@@ -98,7 +100,7 @@ refuses the catalog publisher key and writes the trusted comment
 cd /path/to/TensorSeed
 git checkout $tag
 mkdir -p dist
-cp ~/releases/$ver/SHA256SUMS ~/releases/$ver/tensorseed-* ~/releases/$ver/tensorseed_* ~/releases/$ver/Tensorseed.Desktop_* dist/
+cp ~/releases/$ver/SHA256SUMS ~/releases/$ver/tensorseed-* ~/releases/$ver/tensorseed_* ~/releases/$ver/Tensorseed.Desktop_* ~/releases/$ver/Tensorseed.Desktop-* dist/
 just sign ~/.tensorseed-release/tensorseed-release.key
 just verify-dist
 cp dist/SHA256SUMS.minisig ~/releases/$ver/
@@ -106,8 +108,11 @@ cp dist/SHA256SUMS.minisig ~/releases/$ver/
 
 Then sign each Desktop installer that the in-app updater may download.
 `pnpm --dir desktop tauri signer sign` writes a `.sig` next to the file
-and binds it to this version. Sign the exact files from the artifact;
-rebuilding them changes the bytes and breaks the signature.
+and binds it to this version. Pass an absolute path (`$PWD/$f`):
+`pnpm --dir` runs the signer from `desktop/`, so a bare file name is
+looked up there rather than in the releases folder. Sign the exact files
+from the artifact; rebuilding them changes the bytes and breaks the
+signature.
 
 ```fish
 cd ~/releases/$ver
@@ -117,7 +122,7 @@ for f in \
     Tensorseed.Desktop_{$ver}_x64-setup.exe \
     Tensorseed.Desktop_{$ver}_x64_en-US.msi
     pnpm --dir /path/to/TensorSeed/desktop tauri signer sign \
-        -f ~/.tauri/tensorseed-desktop-updater.key --app-version $ver $f
+        -f ~/.tauri/tensorseed-desktop-updater.key --app-version $ver $PWD/$f
 end
 set -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 ```
@@ -127,13 +132,18 @@ Windows ARM64 installers are part of the release and of `SHA256SUMS`, but
 `windows-aarch64` entries. Leave those `.sig` files out until the feed
 grows that channel. They can still be installed by hand.
 
-Write `latest.json` from the signed x64 and Linux AppImage files. The
-script reads each `.sig`, checks the signed version and file name, and
-with `--verify` checks the signature against the public key in
+Write release notes from this version's dated section in
+`CHANGELOG.md`. Headings look like `## 0.3.2 (2026-11-15)`, not an
+Unreleased section. Confirm `notes.md` is not empty before continuing.
+
+Then write `latest.json` from the signed x64 and Linux AppImage files.
+The script reads each `.sig`, checks the signed version and file name,
+and with `--verify` checks the signature against the public key in
 `desktop/src-tauri/tauri.conf.json`:
 
 ```fish
 cd ~/releases/$ver
+awk -v v="## $ver " 'index($0,v)==1{f=1;next} f&&/^## /{exit} f' /path/to/TensorSeed/CHANGELOG.md > notes.md
 /path/to/TensorSeed/scripts/make-latest-json --version $ver --notes-file notes.md --verify \
     --appimage Tensorseed.Desktop_{$ver}_amd64.AppImage \
     --nsis Tensorseed.Desktop_{$ver}_x64-setup.exe \
@@ -141,11 +151,13 @@ cd ~/releases/$ver
     --out latest.json
 ```
 
-Prepare release notes (the Unreleased section of `CHANGELOG.md` is a
-good start) in `notes.md`. Then create the GitHub Release. Upload
-`SHA256SUMS` and `SHA256SUMS.minisig` with the archives first, and
-`latest.json` last. Desktop follows `releases/latest`, which GitHub
-points at the newest release that is not a draft or a pre-release.
+Then create the GitHub Release. Upload `SHA256SUMS` and
+`SHA256SUMS.minisig` with the archives first, and `latest.json` last.
+Do not also list `*.sig`: `Tensorseed.Desktop_*` already matches the
+updater signatures, and uploading a file twice fails with HTTP 422.
+`Tensorseed.Desktop-*` is the Desktop `.rpm` (a hyphen, not an
+underscore). Desktop follows `releases/latest`, which GitHub points at
+the newest release that is not a draft or a pre-release.
 
 ```fish
 cd ~/releases/$ver
@@ -155,8 +167,7 @@ mv tensorseed-$ver-unsigned-bundle.zip ~/releases/$ver-ci/
 gh release create $tag --repo $repo --title "Tensorseed $ver" --notes-file notes.md \
     SHA256SUMS SHA256SUMS.minisig tensorseed-release.pub \
     tensorseed-$ver-* tensorseed_$ver-* \
-    Tensorseed.Desktop_* \
-    *.sig
+    Tensorseed.Desktop_* Tensorseed.Desktop-*
 gh release upload $tag --repo $repo latest.json
 ```
 

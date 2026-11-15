@@ -345,16 +345,21 @@ dots. After `SHA256SUMS` is signed (see docs/RELEASING.md):
 
 ```fish
 set ver 0.3.2
+cd ~/releases/$ver
 read -s -P 'updater key password: ' -x TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 for f in \
         Tensorseed.Desktop_{$ver}_amd64.AppImage \
         Tensorseed.Desktop_{$ver}_x64-setup.exe \
         Tensorseed.Desktop_{$ver}_x64_en-US.msi
-    pnpm --dir desktop tauri signer sign \
-        -f ~/.tauri/tensorseed-desktop-updater.key --app-version $ver $f
+    pnpm --dir /path/to/TensorSeed/desktop tauri signer sign \
+        -f ~/.tauri/tensorseed-desktop-updater.key --app-version $ver $PWD/$f
 end
 set -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 ```
+
+`pnpm --dir` runs the signer from `desktop/`, so pass an absolute path
+(`$PWD/$f`) or the installer is looked up there rather than in the
+releases folder.
 
 `scripts/make-latest-json` reads the `.sig` next to each installer,
 checks the signed version and file name, verifies each signature against
