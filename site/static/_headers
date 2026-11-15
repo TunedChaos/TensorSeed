@@ -51,6 +51,17 @@
   Access-Control-Allow-Origin: *
   Access-Control-Allow-Methods: GET, HEAD, OPTIONS
 
+# Flathub: the app id verification token (one token per line, # comments)
+# and the AppStream screenshots. Screenshot paths carry the version and are
+# never rewritten, so their URLs stay stable for the metainfo.
+/.well-known/org.flathub.VerifiedApps.txt
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/flathub/screenshots/*
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+
 https://:project.pages.dev/*
 https://:version.:project.pages.dev/*
   X-Robots-Tag: noindex

@@ -38,6 +38,12 @@ const required = [
   "og.png",
   "catalog/tensorseed/head.json",
   "mirror/index.html",
+  // AppStream screenshots, referenced by URL from the Flatpak metainfo.
+  "flathub/screenshots/0.3.1/01-catalog.png",
+  "flathub/screenshots/0.3.1/02-entry.png",
+  "flathub/screenshots/0.3.1/03-pulled.png",
+  "flathub/screenshots/0.3.1/04-seeding.png",
+  "flathub/screenshots/0.3.1/05-settings.png",
 ];
 const missing = required.filter((f) => !existsSync(join(build, f)));
 if (missing.length) {
@@ -49,6 +55,20 @@ const address = readFileSync(join(site, "xch-donate-address.txt"), "utf8").trim(
 if (!readFileSync(join(build, "support.html"), "utf8").includes(address)) {
   console.error("build/support.html is missing the XCH address from site/xch-donate-address.txt");
   process.exit(1);
+}
+
+// Flathub app id verification: optional until Flathub issues the token, but
+// when the file is there it must hold at least one token line.
+const verified = join(build, ".well-known", "org.flathub.VerifiedApps.txt");
+if (existsSync(verified)) {
+  const tokens = readFileSync(verified, "utf8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+  if (!tokens.length) {
+    console.error("build/.well-known/org.flathub.VerifiedApps.txt has no token");
+    process.exit(1);
+  }
 }
 
 console.log("build/ is ready for the tensorseed Pages project");

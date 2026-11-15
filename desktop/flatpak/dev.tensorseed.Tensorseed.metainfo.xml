@@ -55,23 +55,23 @@
   </branding>
   <screenshots>
     <screenshot type="default">
-      <caption>Browse a signed catalog and open a model entry</caption>
-      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/01-entry.png</image>
+      <caption>Browse a signed catalog, verified and anchored on Chia</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/01-catalog.png</image>
     </screenshot>
     <screenshot>
-      <caption>Pull a model over BitTorrent with progress for every file</caption>
-      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/02-pull.png</image>
+      <caption>Check a model's signature, chain anchor, license, and files before you pull</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/02-entry.png</image>
     </screenshot>
     <screenshot>
-      <caption>Every file checked against the signed manifest</caption>
-      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/03-verified.png</image>
+      <caption>Pull a model and verify every file against the signed manifest</caption>
+      <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/03-pulled.png</image>
     </screenshot>
     <screenshot>
       <caption>Seed verified copies back to other users</caption>
       <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/04-seeding.png</image>
     </screenshot>
     <screenshot>
-      <caption>Seeding limits and other settings</caption>
+      <caption>Hugging Face sign in, updates, and seeding limits</caption>
       <image type="source" width="1200" height="830">https://tensorseed.dev/flathub/screenshots/0.3.1/05-settings.png</image>
     </screenshot>
   </screenshots>
