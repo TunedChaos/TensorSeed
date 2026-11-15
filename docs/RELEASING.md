@@ -176,5 +176,5 @@ differ).
 
 - [RELEASE-KEY.md](../RELEASE-KEY.md) for the three keys, verification,
   and key storage
-- [desktop/README.md](../desktop/README.md#releasing-an-update) for
+- [desktop/README.md](https://github.com/TunedChaos/TensorSeed/blob/main/desktop/README.md#releasing-an-update) for
   updater signature details
