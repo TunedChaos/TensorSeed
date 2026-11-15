@@ -206,6 +206,17 @@ As built (section 5.8), `signed` is also left out of the unsigned body,
 so attaching `sig` and setting `signed` to true does not change
 `claim_sha256`.
 
+Since 0.3.1 the hashed fields also have exactly one allowed form, so
+hashing the received bytes and hashing the parsed claim cannot differ:
+optional fields (`public_base_url`, `seller_wallet`, `expires_at`) are
+present with a value or left out, never `null`;
+`catalog.publisher_key_id` and `license.id` are always present (`null`
+when unknown); and no object at any level has unknown fields (0.3.0
+ignored unknown fields inside `catalog`, `license`, `entrypoint`, and
+`files`, so they could be shown without being hashed). Claims in any
+other form are rejected. Every claim Tensorseed wrote already had this
+form, so no hash changed (INTEGRATE-A-MARKETPLACE.md section 4.3).
+
 EIP-191 is the proposed default because Tensorseed can print the exact
 message and an external wallet can sign it, with no Tensorseed-held key.
 EIP-712 (a typed "ServedWeights" struct the wallet can display) is an

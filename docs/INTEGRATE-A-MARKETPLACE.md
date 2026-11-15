@@ -568,27 +568,38 @@ that is not in this table.
 
 ### 4.3 The canonical hash (`claim_sha256`)
 
-Exactly as Tensorseed computes it (`ServedClaim::compute_hash`):
+The hash covers the claim as received, minus three fields:
 
-1. Parse the claim. An explicit `null` for `public_base_url`,
-   `seller_wallet`, `expires_at`, or `sig` means the same as the field
-   being absent.
+1. Parse the claim as JSON.
 2. Remove the top-level fields `claim_sha256`, `sig`, and `signed`.
-3. Remove `public_base_url`, `seller_wallet`, and `expires_at` if they
-   are absent or `null`. They are never hashed as `null`, so a claim
-   without `expires_at` hashes exactly as it did in 0.3.0.
-4. Keep `catalog.publisher_key_id` and `license.id` even when they are
-   `null`. They are always serialized, as `null` when unknown.
-5. Serialize the rest as canonical JSON
+3. Serialize the rest as canonical JSON
    ([3.4](#34-check-catalog-signatures-without-tensorseed-code)): keys
    sorted at every level, no whitespace, `serde_json` escaping.
-6. `claim_sha256` is the SHA-256 of those UTF-8 bytes, as 64 lowercase
+4. `claim_sha256` is the SHA-256 of those UTF-8 bytes, as 64 lowercase
    hex.
 
-Because `signed` and `sig` are outside the hash, attaching the wallet
-signature does not change `claim_sha256`. A claim that writes
-`"public_base_url": null` but was hashed with the `null` included does
-not verify in Tensorseed.
+For that to be unambiguous, the hashed fields have one allowed form,
+and since 0.3.1 Tensorseed rejects a claim that uses any other
+(`malformed ts.served-weights/1: ...`):
+
+- `public_base_url`, `seller_wallet`, and `expires_at` are either
+  present with a value or left out. An explicit `null` is rejected, so
+  "absent" and "null" can never hash differently. A claim without
+  `expires_at` hashes exactly as it did in 0.3.0.
+- `catalog.publisher_key_id` and `license.id` are always present, as
+  `null` when unknown. Leaving them out is rejected.
+- No unknown fields at any level, including inside `catalog`,
+  `license`, `entrypoint`, and `files` entries. (0.3.0 ignored unknown
+  fields inside those objects, so they were shown but not hashed.)
+- Numbers are integers as written by `serde_json`.
+
+Every claim Tensorseed has written already has this form, so no hash
+changes and every 0.3.0 claim still verifies. `sig` is outside the hash,
+so `"sig": null` is accepted and means "not signed"; attaching the
+wallet signature does not change `claim_sha256`. If you write claims
+with other software, compute the hash over exactly the bytes you
+publish, following the rules above. This is
+`ServedClaim::compute_hash` plus the form check in `parse_claim`.
 
 Worked example: for the claim above, the hashed bytes are 1425 bytes
 (wrapped here at field boundaries; the real bytes have no line breaks):
@@ -1266,8 +1277,8 @@ package README has the details.
 
 Without the package (or on 0.3.0), here is a direct implementation of the format above with `node:crypto` (Node 18
 or newer, no dependencies). It verified the same responses as the CLI,
-streams included, matched Tensorseed's `claim_sha256` (including the
-`null` rule in [4.3](#43-the-canonical-hash-claim_sha256)), and rejected
+streams included, matched Tensorseed's `claim_sha256` (with the form
+rules in [4.3](#43-the-canonical-hash-claim_sha256)), and rejected
 the changed body:
 
 ```js
@@ -1289,7 +1300,13 @@ export function claimSha256(claim) {
   delete body.claim_sha256;
   delete body.sig;
   delete body.signed;
-  for (const k of ["public_base_url", "seller_wallet", "expires_at"]) if (body[k] === null) delete body[k];
+  // The form rules of section 4.3 (unknown fields are not checked here).
+  for (const k of ["public_base_url", "seller_wallet", "expires_at"]) {
+    if (body[k] === null) throw new Error(`${k} is null; it must be left out`);
+  }
+  if (!("publisher_key_id" in body.catalog) || !("id" in body.license)) {
+    throw new Error("catalog.publisher_key_id and license.id must be present (null when unknown)");
+  }
   return sha256(Buffer.from(canonical(body), "utf8"));
 }
 

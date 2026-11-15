@@ -14,6 +14,18 @@
 //! claim still loads. [`ServedClaim::verify`] does not look at the clock;
 //! [`ServedClaim::expired_at`] and the checks in [`crate::claim_check`] do.
 //! Revocation is in [`crate::revocation`].
+//!
+//! **What is hashed is what was received (0.3.1).** [`parse_claim`] rejects
+//! a document whose hashed part is not exactly the form Tensorseed writes:
+//! an explicit `null` for an optional field (`public_base_url`,
+//! `seller_wallet`, `expires_at`), a missing `catalog.publisher_key_id` or
+//! `license.id` (always written, as `null` when unknown), an unknown field
+//! at any level, or a number written another way. So hashing the received
+//! JSON (minus `claim_sha256`, `sig`, and `signed`) and hashing the parsed
+//! claim give the same `claim_sha256`, and two readers cannot disagree
+//! about what a hash covers. Every claim Tensorseed has written already has
+//! this form, so no hash changes. `"sig": null` stays accepted: `sig` is
+//! outside the hash.
 
 use serde::{Deserialize, Serialize};
 use sha3::Digest as _;
@@ -478,12 +490,89 @@ pub fn parse_claim(raw: &[u8]) -> Result<ServedClaim> {
         serde_json::from_slice(raw).map_err(|e| bad(format!("not JSON: {e}")))?;
     match v.get("schema").and_then(|s| s.as_str()) {
         Some(CLAIM_SCHEMA) => {
-            serde_json::from_value(v).map_err(|e| bad(format!("malformed {CLAIM_SCHEMA}: {e}")))
+            let c: ServedClaim = serde_json::from_value(v.clone())
+                .map_err(|e| bad(format!("malformed {CLAIM_SCHEMA}: {e}")))?;
+            check_hashed_form(&v, &c)?;
+            Ok(c)
         }
         Some(SERVED_WEIGHTS_V0_SCHEMA) => Err(bad(format!(
             "this is an unsigned {SERVED_WEIGHTS_V0_SCHEMA} record with no response key, not a {CLAIM_SCHEMA} claim"
         ))),
         other => Err(bad(format!("unknown served-weights schema {other:?}"))),
+    }
+}
+
+/// The part of a claim that `claim_sha256` covers.
+fn hashed_part(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(o) = v.as_object_mut() {
+        o.remove("claim_sha256");
+        o.remove("sig");
+        o.remove("signed");
+    }
+    v
+}
+
+/// Reject a claim whose hashed part, as received, differs from the form
+/// [`ServedClaim::compute_hash`] hashes (see the module notes).
+fn check_hashed_form(raw: &serde_json::Value, c: &ServedClaim) -> Result<()> {
+    let got = hashed_part(raw.clone());
+    let want = hashed_part(serde_json::to_value(c).map_err(|e| bad(e.to_string()))?);
+    match first_difference(&got, &want, "") {
+        None => Ok(()),
+        Some(d) => Err(bad(format!(
+            "malformed {CLAIM_SCHEMA}: {d}; the hashed fields must be exactly as Tensorseed writes them, so every reader hashes the same bytes"
+        ))),
+    }
+}
+
+/// Where the received value `got` first differs from the canonical `want`.
+fn first_difference(got: &serde_json::Value, want: &serde_json::Value, at: &str) -> Option<String> {
+    use serde_json::Value;
+    let name = |k: &str| {
+        if at.is_empty() {
+            k.to_string()
+        } else {
+            format!("{at}.{k}")
+        }
+    };
+    match (got, want) {
+        (Value::Object(g), Value::Object(w)) => {
+            let mut keys: Vec<&String> = g.keys().chain(w.keys()).collect();
+            keys.sort();
+            keys.dedup();
+            for k in keys {
+                match (g.get(k), w.get(k)) {
+                    (Some(Value::Null), None) => {
+                        return Some(format!("{} is null; leave it out instead", name(k)));
+                    }
+                    (Some(_), None) => return Some(format!("unknown field {}", name(k))),
+                    (None, Some(Value::Null)) => {
+                        return Some(format!(
+                            "{} is missing; write it as null when unknown",
+                            name(k)
+                        ));
+                    }
+                    (None, Some(_)) => return Some(format!("{} is missing", name(k))),
+                    (Some(a), Some(b)) => {
+                        if let Some(d) = first_difference(a, b, &name(k)) {
+                            return Some(d);
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+            None
+        }
+        (Value::Array(g), Value::Array(w)) if g.len() == w.len() => g
+            .iter()
+            .zip(w)
+            .enumerate()
+            .find_map(|(i, (a, b))| first_difference(a, b, &format!("{at}[{i}]"))),
+        _ if got == want => None,
+        _ => Some(format!(
+            "{} is written as {got}, which is read as {want}",
+            if at.is_empty() { "the claim" } else { at }
+        )),
     }
 }
 
@@ -622,6 +711,101 @@ mod tests {
         let back = parse_claim(&serde_json::to_vec(&c).unwrap()).unwrap();
         assert_eq!(back.compute_hash().unwrap(), c.claim_sha256);
         back.verify().unwrap();
+    }
+
+    #[test]
+    fn the_hashed_bytes_are_the_received_bytes() {
+        // Hashing the received JSON (minus claim_sha256, sig, signed) gives
+        // claim_sha256 for every claim parse_claim accepts.
+        let raw_hash = |raw: &[u8]| {
+            let v: serde_json::Value = serde_json::from_slice(raw).unwrap();
+            sha256_bytes(&to_canonical_vec(&hashed_part(v)).unwrap())
+        };
+        let mut nulls = claim();
+        nulls.catalog.publisher_key_id = None;
+        nulls.license.id = None;
+        nulls.public_base_url = None;
+        nulls.seller_wallet = None;
+        nulls.seal().unwrap();
+        for c in [claim(), nulls.clone()] {
+            let raw = serde_json::to_vec(&c).unwrap();
+            let back = parse_claim(&raw).unwrap();
+            assert_eq!(raw_hash(&raw), c.claim_sha256);
+            assert_eq!(back.compute_hash().unwrap(), c.claim_sha256);
+        }
+        // "sig": null is outside the hash and still accepted.
+        let mut v = serde_json::to_value(claim()).unwrap();
+        v["sig"] = serde_json::Value::Null;
+        parse_claim(&serde_json::to_vec(&v).unwrap()).unwrap();
+
+        // Each of these used to load and hash differently from its bytes.
+        let edit = |c: &ServedClaim, f: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = serde_json::to_value(c).unwrap();
+            f(&mut v);
+            parse_claim(&serde_json::to_vec(&v).unwrap())
+                .unwrap_err()
+                .to_string()
+        };
+        let mut base = claim();
+        if base.files.is_empty() {
+            base.files.push(VerifiedFile {
+                path: "tiny-q4.gguf".into(),
+                size: 1000,
+                sha256: "b".repeat(64),
+            });
+            base.seal().unwrap();
+        }
+        for (f, want) in [
+            (
+                &(|v: &mut serde_json::Value| v["public_base_url"] = serde_json::Value::Null)
+                    as &dyn Fn(&mut serde_json::Value),
+                "public_base_url is null; leave it out",
+            ),
+            (
+                &|v: &mut serde_json::Value| v["expires_at"] = serde_json::Value::Null,
+                "expires_at is null",
+            ),
+            (
+                &|v: &mut serde_json::Value| {
+                    v["catalog"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("publisher_key_id");
+                },
+                "catalog.publisher_key_id is missing; write it as null",
+            ),
+            (
+                &|v: &mut serde_json::Value| {
+                    v["license"].as_object_mut().unwrap().remove("id");
+                },
+                "license.id is missing",
+            ),
+            (
+                &|v: &mut serde_json::Value| v["catalog"]["note"] = "unhashed".into(),
+                "unknown field catalog.note",
+            ),
+            (
+                &|v: &mut serde_json::Value| v["files"][0]["extra"] = true.into(),
+                "unknown field files[0].extra",
+            ),
+            (
+                &|v: &mut serde_json::Value| v["license"]["x"] = 1.into(),
+                "unknown field license.x",
+            ),
+            (
+                &|v: &mut serde_json::Value| v["files"][0]["size"] = serde_json::json!(1.0e3),
+                "expected u64",
+            ),
+        ] {
+            let e = edit(&base, f);
+            assert!(e.contains(want), "{e}");
+        }
+        // An optional field that is absent is fine.
+        let mut v = serde_json::to_value(&nulls).unwrap();
+        assert!(v.get("public_base_url").is_none());
+        assert_eq!(v["catalog"]["publisher_key_id"], serde_json::Value::Null);
+        v.as_object_mut().unwrap().remove("seller_wallet");
+        parse_claim(&serde_json::to_vec(&v).unwrap()).unwrap();
     }
 
     #[test]

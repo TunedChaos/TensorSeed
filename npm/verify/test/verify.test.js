@@ -95,6 +95,23 @@ test("a tampered claim fails its hash", () => {
   assert.equal(check(r, "claim_sha256").status, "fail");
 });
 
+test("a claim whose hashed fields are not in the one allowed form fails", () => {
+  const o = { originUrl: x.claim_url, now: NOW };
+  const forms = [
+    [{ ...claim, expires_at: null }, /expires_at is null/],
+    [{ ...claim, catalog: { ...claim.catalog, note: "not hashed" } }, /unknown field catalog.note/],
+  ];
+  const { id, ...licenseWithoutId } = claim.license;
+  forms.push([{ ...claim, license: licenseWithoutId }, /license.id is missing/]);
+  for (const [c, want] of forms) {
+    const r = v.checkClaim(c, o);
+    assert.equal(r.verdict, "fail");
+    assert.match(check(r, "claim").detail, want);
+  }
+  // sig is outside the hash: null is still accepted.
+  assert.notEqual(v.checkClaim({ ...claim, sig: null, signed: false }, o).checks[0].name, "claim");
+});
+
 test("a claim copied to another host fails the public URL check", () => {
   const r = v.checkClaim(x.claim, {
     originUrl: "https://copy.example.net/.well-known/tensorseed/served-weights.json",

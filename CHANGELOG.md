@@ -23,6 +23,14 @@
   lines and says "none published" for an empty one. `catalog create` and
   `catalog update-info` warn when `publisher_name`, `publisher_contact`,
   or `publisher_policy_url` is empty.
+- The claim hash is unambiguous: `ts.served-weights/1` claims must have
+  their hashed fields in the one form Tensorseed writes, so hashing the
+  received JSON (minus `claim_sha256`, `sig`, `signed`) always equals
+  `claim_sha256`. An explicit `null` for `public_base_url`,
+  `seller_wallet`, or `expires_at`, a missing `catalog.publisher_key_id`
+  or `license.id`, and unknown fields inside `catalog`, `license`,
+  `entrypoint`, or `files` (which 0.3.0 dropped without hashing) are now
+  rejected with a message naming the field.
 
 ### Added
 
@@ -96,6 +104,11 @@
   package's Node tests.
 
 ### Compatibility
+
+- No claim hash changes. Every claim Tensorseed has written already
+  uses the one allowed form; a hand-written claim that used `null` for
+  an optional field, left out `publisher_key_id` or `license.id`, or
+  carried extra nested fields loaded in 0.3.0 and is rejected in 0.3.1.
 
 - 0.3.0 reference files, commitments, and reports load unchanged; new
   fields are optional. Reference files written with `--samples` above 1
