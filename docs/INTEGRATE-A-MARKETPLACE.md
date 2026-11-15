@@ -710,11 +710,16 @@ note: a valid claim says what the seller serves; logprob challenges (check-endpo
   `--require-expiry`. See [4.8](#48-expiry-and-revocation).
 - `revocation` (0.3.1): for a claim read from its well-known path, the
   seller's `/.well-known/tensorseed/revocations.json` next to it is
-  fetched (404 means the seller publishes none, a `pass`; a read error is
-  a `warn`). `--revocations <file|URL>` (repeatable) adds your own lists.
-  A verified revocation in effect fails the claim; one dated in the
-  future is a `warn`. For a file without `--revocations` the check is
-  skipped.
+  fetched (404 means the seller publishes none, a `pass`).
+  `--revocations <file|URL>` (repeatable) adds your own lists. A verified
+  revocation in effect fails the claim; one dated in the future is a
+  `warn`. When the seller's list cannot be fetched or does not parse the
+  check is a `warn` and a run that would pass is `inconclusive` (exit 2),
+  because the claim may be revoked, even when your own lists were read;
+  a revocation in the lists that were read still fails the claim.
+  `--no-revocations` skips the seller's list, the way to accept one that
+  cannot be read. A `--revocations` list that cannot be read is an
+  error. For a file without `--revocations` the check is skipped.
 - `public_url`: the claim must have been fetched from
   `public_base_url`'s well-known path. The same valid claim served by
   another host fails. For a file, pass `--expect-url`, or the check is
@@ -918,11 +923,14 @@ for you:
 | An entry whose signature does not verify | Ignored, reported as a `warn` | Ignored, counted in `ignored` | Ignored |
 | An entry for another claim | Not counted | Not counted | Not counted |
 | No list (404) | `revocation` passes | Reported (`no_list`); no effect | Nothing to apply |
-| The list cannot be read or does not parse | `revocation` warns | A passing run is `inconclusive` (`unreadable`) | `verify-response` stops with an error |
+| The list cannot be read or does not parse | `revocation` warns; a passing run is `inconclusive` | A passing run is `inconclusive` (`unreadable`) | `verify-response` stops with an error |
 
 All three commands take `--revocations <file|URL>` (repeatable) for
 lists you keep, and `--no-revocations` to skip the seller's list (the
-lists you pass are still read). `check-claim` and `verify-response`
+lists you pass are still read). In `check-claim` and `check-endpoint` a
+seller list that cannot be read makes a passing run inconclusive even
+when your lists were read, unless they revoke the claim; a list you pass
+that cannot be read is an error (exit 2) in all three. `check-claim` and `verify-response`
 fetch the seller's list next to a claim read from its well-known path;
 `check-endpoint` does the same, and otherwise fetches it from the
 endpoint it checks.
@@ -1246,8 +1254,10 @@ verdict `inconclusive`), `checkClaimWithCatalog(verifier, claim,
 options)` runs all of them, and `claimSigningMessage`,
 `revocationSigningMessage`, and `recoverWallet` give the raw pieces.
 `checkEndpoint` is the only function that touches the network, through
-the `fetch` you pass (or the global one). The package README has the
-details.
+the `fetch` you pass (or the global one). Like `check-claim`, it makes a
+passing verdict `inconclusive` when the seller's revocation list cannot
+be fetched or does not parse (`noRevocations: true` skips it). The
+package README has the details.
 
 Without the package (or on 0.3.0), here is a direct implementation of the format above with `node:crypto` (Node 18
 or newer, no dependencies). It verified the same responses as the CLI,
@@ -1893,7 +1903,7 @@ weights. That needs hardware attestation, which 0.3.0 does not have
 |---|---|---|---|
 | `verify-response` | valid | invalid or unsigned | error (for example the claim does not verify) |
 | `check-endpoint` | pass | fail | inconclusive, unsupported, or an error that prevents a verdict |
-| `check-claim` (0.3.1) | every check passed (warnings allowed) | any check failed | the claim or the catalog could not be read |
+| `check-claim` (0.3.1) | every check passed (warnings allowed) | any check failed | the claim, the catalog, or the seller's revocation list could not be read (`inconclusive`), or a `--revocations` list could not be read |
 | `calibrate-reference` (0.3.1) | calibrated copy written | error | |
 | `revoke-claim` (0.3.1) | revocation written (or message printed) | error | |
 

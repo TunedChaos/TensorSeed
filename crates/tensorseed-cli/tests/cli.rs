@@ -3122,6 +3122,86 @@ async fn check_claim_against_the_catalog() {
     assert_eq!(status(&v, "public_url"), "fail");
     assert_eq!(status(&v, "wallet_signature"), "pass");
 
+    // A seller revocation list that does not parse or cannot be fetched:
+    // the claim may be revoked, so the run is inconclusive (exit 2) with a
+    // revocation warning. --no-revocations accepts that; a --revocations
+    // list does not stand in for the seller's.
+    let revs = "/.well-known/tensorseed/revocations.json";
+    for (st, body) in [(200, &b"{not json"[..]), (503, &b"busy"[..])] {
+        public.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/tensorseed/served-weights.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(signed_raw.clone()))
+            .mount(&public)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(revs))
+            .respond_with(ResponseTemplate::new(st).set_body_bytes(body.to_vec()))
+            .mount(&public)
+            .await;
+        let o = check(public_url.clone(), &["--no-wait", "--json"]).await;
+        assert_eq!(code(&o), 2, "{st}: {}", stdout(&o));
+        let v = json(&o);
+        assert_eq!(v["verdict"], "inconclusive", "{v}");
+        assert_eq!(status(&v, "revocation"), "warn", "{v}");
+        assert_eq!(v["revoked"], false);
+        let o = check(public_url.clone(), &["--no-wait", "--no-revocations"]).await;
+        assert_eq!(code(&o), 0, "{}", stdout(&o));
+        assert!(stdout(&o).contains("verdict: pass"), "{}", stdout(&o));
+    }
+    let empty = tmp.path().join("empty-revocations.json");
+    std::fs::write(
+        &empty,
+        br#"{"schema":"ts.claim-revocations/1","revocations":[]}"#,
+    )
+    .unwrap();
+    let o = check(
+        public_url.clone(),
+        &[
+            "--no-wait",
+            "--json",
+            "--revocations",
+            empty.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 2, "{}", stdout(&o));
+    let v = json(&o);
+    assert_eq!(status(&v, "revocation"), "warn", "{v}");
+    let o = check(
+        public_url.clone(),
+        &[
+            "--no-wait",
+            "--json",
+            "--no-revocations",
+            "--revocations",
+            empty.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert_eq!(status(&json(&o), "revocation"), "pass");
+    // A --revocations list that cannot be read is an error, as in
+    // check-endpoint.
+    let o = check(
+        public_url.clone(),
+        &[
+            "--no-wait",
+            "--no-revocations",
+            "--revocations",
+            "/nonexistent/revocations.json",
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 2, "{}", stdout(&o));
+    assert!(!stdout(&o).contains("verdict"), "{}", stdout(&o));
+    public.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/tensorseed/served-weights.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(signed_raw.clone()))
+        .mount(&public)
+        .await;
+
     // Edited without resealing: the hash no longer matches.
     let mut t = signed.clone();
     t["served_model_id"] = serde_json::json!("bigger-model");

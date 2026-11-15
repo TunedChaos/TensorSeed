@@ -31,8 +31,12 @@ export interface ClaimCheckOptions {
   revocationsFrom?: string;
   /** The seller's list URL returned 404. */
   revocationsAbsent?: string;
-  /** The seller's list could not be read. */
+  /** The seller's list could not be read: a passing verdict becomes inconclusive. */
   revocationsError?: string;
+  /** The seller's list as fetched, merged with `revocations`; one that does not parse counts as `revocationsError`. */
+  sellerRevocations?: Json;
+  /** Where the seller's list came from, for the report. */
+  sellerRevocationsFrom?: string;
 }
 
 export type CheckStatus = "pass" | "fail" | "warn" | "skip";
@@ -122,7 +126,12 @@ export function checkClaimWithCatalog(
 ): ClaimCheckReport;
 export function checkEndpoint(
   baseUrl: string,
-  options?: ClaimCheckOptions & { fetch?: typeof fetch; catalog?: CatalogVerifier },
+  options?: ClaimCheckOptions & {
+    fetch?: typeof fetch;
+    catalog?: CatalogVerifier;
+    /** Skip the seller's revocation list (accept one that cannot be read). */
+    noRevocations?: boolean;
+  },
 ): Promise<ClaimCheckReport>;
 export function verifyResponse(input: VerifyResponseInput): VerifyResponseResult;
 

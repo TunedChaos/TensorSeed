@@ -508,18 +508,13 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
                 revocations_url_next_to(src)
                     .unwrap_or_else(|| well_known_revocations_for(&args.base_url))
             });
-            let (input, seller_err) = crate::claim_check::gather_revocations(
+            let input = crate::claim_check::gather_revocations(
                 seller.as_deref(),
                 &args.revocations,
                 "--no-revocations was given".into(),
             )
             .await?;
-            Some(assess_revocations(
-                c,
-                &input,
-                seller_err.as_deref(),
-                crate::signing::now_unix(),
-            ))
+            Some(assess_revocations(c, &input, crate::signing::now_unix()))
         }
         None => {
             if !args.revocations.is_empty() {

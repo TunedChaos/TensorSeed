@@ -107,20 +107,21 @@ async fn revocations(
             }
         }
     };
-    Ok(gather_revocations(seller.as_deref(), extra, why).await?.0)
+    gather_revocations(seller.as_deref(), extra, why).await
 }
 
 /// Read the seller's list at `seller` (404: none) and the `extra` lists
 /// (a read failure there is an error). A seller list that cannot be read,
 /// does not parse, or is too large is [`RevocationInput::Unavailable`]
-/// when no other list was read; the failure is also returned on its own,
-/// so a caller can tell that the merged list may be incomplete.
-/// `not_checked` is the reason given when no list was looked at.
+/// when no other list was read, and is recorded as `incomplete` in the
+/// merged [`RevocationInput::List`] otherwise. Either way a verdict that
+/// would pass becomes inconclusive. `not_checked` is the reason given when
+/// no list was looked at.
 pub(crate) async fn gather_revocations(
     seller: Option<&str>,
     extra: &[String],
     not_checked: String,
-) -> anyhow::Result<(RevocationInput, Option<String>)> {
+) -> anyhow::Result<RevocationInput> {
     let (mut list, mut from, mut absent) = crate::signing::read_revocation_lists(extra).await?;
     let mut seller_err = None;
     if let Some(u) = seller {
@@ -133,19 +134,19 @@ pub(crate) async fn gather_revocations(
             Err(e) => seller_err = Some(format!("{e:#}")),
         }
     }
-    let input = if let Some(e) = seller_err.clone().filter(|_| from.is_empty()) {
-        RevocationInput::Unavailable(e)
-    } else if !from.is_empty() {
+    Ok(if !from.is_empty() {
         RevocationInput::List {
             list,
             from: from.join(", "),
+            incomplete: seller_err,
         }
+    } else if let Some(e) = seller_err {
+        RevocationInput::Unavailable(e)
     } else if !absent.is_empty() {
         RevocationInput::Absent(absent.join(", "))
     } else {
         RevocationInput::NotChecked(not_checked)
-    };
-    Ok((input, seller_err))
+    })
 }
 
 /// `tensorseed check-claim`.

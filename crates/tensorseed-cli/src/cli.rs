@@ -265,10 +265,14 @@ pub enum Command {
     ///
     /// Also checks `expires_at` and revocations: the seller's list at
     /// `/.well-known/tensorseed/revocations.json` next to a claim fetched
-    /// from its well-known path, plus any `--revocations` you pass.
+    /// from its well-known path, plus any `--revocations` you pass. A
+    /// seller list that cannot be read or does not parse makes a passing
+    /// run inconclusive (the claim may be revoked); `--no-revocations`
+    /// skips it.
     ///
-    /// Exit status: 0 pass, 1 fail, 2 inconclusive (for example the claim
-    /// or catalog could not be read).
+    /// Exit status: 0 pass, 1 fail, 2 inconclusive (for example the claim,
+    /// the catalog, or the seller's revocation list could not be read) or
+    /// an error (a `--revocations` list could not be read).
     CheckClaim(CheckClaimArgs),
     /// Create or show the Ed25519 response signing key.
     ///
@@ -1220,7 +1224,8 @@ pub struct CheckClaimArgs {
     #[arg(long, value_name = "PATH|URL")]
     pub revocations: Vec<String>,
     /// Do not fetch the seller's revocation list (lists given with
-    /// `--revocations` are still read).
+    /// `--revocations` are still read). Use it to accept a seller list
+    /// that cannot be read, which otherwise makes the run inconclusive.
     #[arg(long)]
     pub no_revocations: bool,
     /// Print a `ts.claim-check/1` report.

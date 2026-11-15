@@ -62,6 +62,9 @@ function claimOptions(o = {}) {
   if (o.revocationsFrom !== undefined) out.revocations_from = o.revocationsFrom;
   if (o.revocationsAbsent !== undefined) out.revocations_absent = o.revocationsAbsent;
   if (o.revocationsError !== undefined) out.revocations_error = o.revocationsError;
+  const s = revocationsText(o.sellerRevocations);
+  if (s !== undefined) out.seller_revocations = s;
+  if (o.sellerRevocationsFrom !== undefined) out.seller_revocations_from = o.sellerRevocationsFrom;
   return JSON.stringify(out);
 }
 
@@ -163,6 +166,9 @@ export function makeApi(raw, isReady) {
   /**
    * Fetch an endpoint's claim and the seller's revocation list with fetch,
    * then check them (against `catalog`, a CatalogVerifier, when given).
+   * The seller's list is merged with `revocations`; one that cannot be
+   * fetched or does not parse makes a passing verdict inconclusive.
+   * `noRevocations: true` skips the seller's list.
    */
   async function checkEndpoint(baseUrl, options = {}) {
     ready();
@@ -176,15 +182,17 @@ export function makeApi(raw, isReady) {
     const o = { ...options, originUrl: finalUrl };
     delete o.fetch;
     delete o.catalog;
+    delete o.noRevocations;
     const revUrl = revocationsUrl(finalUrl);
-    if (o.revocations === undefined && revUrl) {
+    if (!options.noRevocations && revUrl) {
       try {
         const r = await f(revUrl, { redirect: "follow" });
         if (r.status === 404) o.revocationsAbsent = revUrl;
         else if (!r.ok) o.revocationsError = `${revUrl}: HTTP ${r.status}`;
         else {
-          o.revocations = await readCapped(r, revUrl);
-          o.revocationsFrom = revUrl;
+          // A list that does not parse makes the run inconclusive.
+          o.sellerRevocations = await readCapped(r, revUrl);
+          o.sellerRevocationsFrom = revUrl;
         }
       } catch (e) {
         o.revocationsError = `${revUrl}: ${e.message ?? e}`;

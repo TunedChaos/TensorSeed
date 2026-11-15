@@ -331,7 +331,8 @@ impl ClaimReport {
 
     /// Count the checks and set the verdict: any `fail` is `fail`;
     /// otherwise an `inconclusive` marker (a `catalog` check that could not
-    /// run) makes the run inconclusive; otherwise `pass`.
+    /// run, or a revocation list that could not be read) makes the run
+    /// inconclusive; otherwise `pass`.
     pub fn finish(&mut self, inconclusive: bool) {
         let mut n = Counts::default();
         for c in &self.checks {
@@ -946,18 +947,41 @@ pub enum RevocationInput {
         list: Revocations,
         /// URLs or paths, for the report.
         from: String,
+        /// Why another list (the seller's) could not be read, when it
+        /// could not: the merged list may be missing a revocation.
+        incomplete: Option<String>,
     },
-    /// A list could not be read; reported as a warning.
+    /// A list could not be read or did not parse. The check warns and the
+    /// verdict is inconclusive, unless another check fails.
     Unavailable(String),
+}
+
+/// True when the revocations could not be fully read and do not revoke the
+/// claim (`rev` is its [`check_revocation`] result): the claim may be
+/// revoked, so a report that would pass is inconclusive. Pass
+/// `--no-revocations` (or leave the seller's list out) to accept that.
+#[must_use]
+pub fn revocations_unreadable(r: &RevocationInput, rev: &Check) -> bool {
+    rev.status != Status::Fail
+        && matches!(
+            r,
+            RevocationInput::Unavailable(_)
+                | RevocationInput::List {
+                    incomplete: Some(_),
+                    ..
+                }
+        )
 }
 
 /// Check the claim against revocations. A verified revocation in effect
 /// fails the claim; one with reason `key_compromised` fails it whatever its
-/// time; one dated in the future is a warning.
+/// time; one dated in the future is a warning. A list that could not be
+/// read is a warning here; [`build_report`] also makes the verdict
+/// inconclusive (see [`revocations_unreadable`]).
 #[must_use]
 pub fn check_revocation(c: &ServedClaim, r: &RevocationInput, opts: &ClaimCheckOptions) -> Check {
     const N: &str = "revocation";
-    let (list, from) = match r {
+    let (list, from, incomplete) = match r {
         RevocationInput::NotChecked(why) => return check(N, Status::Skip, why.clone()),
         RevocationInput::Absent(url) => {
             return check(N, Status::Pass, format!("{url} publishes no revocations"));
@@ -965,7 +989,11 @@ pub fn check_revocation(c: &ServedClaim, r: &RevocationInput, opts: &ClaimCheckO
         RevocationInput::Unavailable(e) => {
             return check(N, Status::Warn, format!("could not read revocations: {e}"));
         }
-        RevocationInput::List { list, from } => (list, from),
+        RevocationInput::List {
+            list,
+            from,
+            incomplete,
+        } => (list, from, incomplete),
     };
     let f = list.find(c);
     let ignored = if f.ignored.is_empty() {
@@ -1000,14 +1028,8 @@ pub fn check_revocation(c: &ServedClaim, r: &RevocationInput, opts: &ClaimCheckO
                 )
             }
         }
-        None => check(
-            N,
-            if ignored.is_empty() {
-                Status::Pass
-            } else {
-                Status::Warn
-            },
-            format!(
+        None => {
+            let not = format!(
                 "not revoked in {from} ({} entr{}){ignored}",
                 list.revocations.len(),
                 if list.revocations.len() == 1 {
@@ -1015,8 +1037,24 @@ pub fn check_revocation(c: &ServedClaim, r: &RevocationInput, opts: &ClaimCheckO
                 } else {
                     "ies"
                 }
-            ),
-        ),
+            );
+            match incomplete {
+                Some(e) => check(
+                    N,
+                    Status::Warn,
+                    format!("could not read revocations: {e}; {not}"),
+                ),
+                None => check(
+                    N,
+                    if ignored.is_empty() {
+                        Status::Pass
+                    } else {
+                        Status::Warn
+                    },
+                    not,
+                ),
+            }
+        }
     }
 }
 
@@ -1060,8 +1098,8 @@ pub fn build_report(
         )
     };
     rep.revoked = rev.status == Status::Fail;
+    let mut inconclusive = hash_ok && revocations_unreadable(revocations, &rev);
     rep.extend([rev]);
-    let mut inconclusive = false;
     match catalog {
         CatalogResult::Matched(m) => {
             let (checks, mark) = check_catalog(c, m, opts);
@@ -1521,6 +1559,7 @@ mod tests {
                 ..Revocations::default()
             },
             from: "test".into(),
+            incomplete: None,
         };
         let st = |r: &RevocationInput| check_revocation(&c, r, &o).status;
         assert_eq!(st(&RevocationInput::NotChecked("x".into())), Status::Skip);
@@ -1546,7 +1585,7 @@ mod tests {
             &origin,
             &c,
             &CatalogResult::Unavailable("offline".into()),
-            &list(vec![past]),
+            &list(vec![past.clone()]),
             &o,
         );
         assert!(rep.revoked);
@@ -1561,6 +1600,50 @@ mod tests {
         );
         assert!(!rep.revoked);
         assert_eq!(rep.verdict, ClaimVerdict::Inconclusive);
+
+        // A list that cannot be read, or a seller list that failed while
+        // another list was read, leaves the claim possibly revoked: the
+        // verdict is inconclusive even when everything else passes. A
+        // revocation found in the lists that were read still fails.
+        let unread = RevocationInput::Unavailable("HTTP 503".into());
+        let rev = check_revocation(&c, &unread, &o);
+        assert_eq!(rev.status, Status::Warn);
+        assert!(revocations_unreadable(&unread, &rev));
+        let mut partial = list(vec![]);
+        if let RevocationInput::List { incomplete, .. } = &mut partial {
+            *incomplete = Some("malformed ts.claim-revocations/1".into());
+        }
+        let rev = check_revocation(&c, &partial, &o);
+        assert_eq!(rev.status, Status::Warn);
+        assert!(rev.detail.starts_with("could not read revocations"));
+        assert!(revocations_unreadable(&partial, &rev));
+        let mut partial_revoked = list(vec![past.clone()]);
+        if let RevocationInput::List { incomplete, .. } = &mut partial_revoked {
+            *incomplete = Some("HTTP 500".into());
+        }
+        let rev = check_revocation(&c, &partial_revoked, &o);
+        assert_eq!(rev.status, Status::Fail);
+        assert!(!revocations_unreadable(&partial_revoked, &rev));
+        for ok in [
+            RevocationInput::Absent("u".into()),
+            RevocationInput::NotChecked("--no-revocations was given".into()),
+            list(vec![]),
+        ] {
+            let rev = check_revocation(&c, &ok, &o);
+            assert!(!revocations_unreadable(&ok, &rev));
+        }
+        // In a report that fails anyway, it stays a fail.
+        let mut bad = c.clone();
+        bad.served_model_id = "org/changed".into();
+        let rep = build_report(
+            "s",
+            &origin,
+            &bad,
+            &CatalogResult::Unavailable("offline".into()),
+            &unread,
+            &o,
+        );
+        assert_eq!(rep.verdict, ClaimVerdict::Fail);
     }
 
     #[test]

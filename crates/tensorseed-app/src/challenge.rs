@@ -2005,9 +2005,9 @@ pub struct RevocationSummary {
 
 /// Assess the revocations of `claim` at `now_unix`, as `check-claim` does
 /// (the entries are verified by [`tensorseed_verify::revocation`]).
-/// `seller_error` is a failure to read the seller's list when other lists
-/// were read: without a verified revocation the result is then
-/// [`RevocationStatus::Unreadable`], because the missing list may hold one.
+/// A list that could not be read (`Unavailable`, or `incomplete` on a
+/// merged list) gives [`RevocationStatus::Unreadable`] unless a verified
+/// revocation was found, because the missing list may hold one.
 ///
 /// Returns the summary and the time from which responses under the claim
 /// no longer verify, for [`SigContext::claim_revoked_unix`].
@@ -2015,7 +2015,6 @@ pub struct RevocationSummary {
 pub fn assess_revocations(
     claim: &crate::signing::ServedClaim,
     input: &crate::claim_check::RevocationInput,
-    seller_error: Option<&str>,
     now_unix: i64,
 ) -> (RevocationSummary, Option<i64>) {
     use crate::claim_check::{ClaimCheckOptions, RevocationInput, check_revocation};
@@ -2039,7 +2038,11 @@ pub fn assess_revocations(
         RevocationInput::NotChecked(_) => {}
         RevocationInput::Absent(_) => out.status = RevocationStatus::NoList,
         RevocationInput::Unavailable(_) => out.status = RevocationStatus::Unreadable,
-        RevocationInput::List { list, from } => {
+        RevocationInput::List {
+            list,
+            from,
+            incomplete,
+        } => {
             out.lists = Some(from.clone());
             let f = list.find(claim);
             out.ignored = f.ignored.len();
@@ -2064,12 +2067,11 @@ pub fn assess_revocations(
                     );
                 }
                 None => {
-                    if let Some(e) = seller_error {
-                        out.status = RevocationStatus::Unreadable;
-                        out.detail = format!("could not read revocations: {e}; {}", out.detail);
+                    out.status = if incomplete.is_some() {
+                        RevocationStatus::Unreadable
                     } else {
-                        out.status = RevocationStatus::NotRevoked;
-                    }
+                        RevocationStatus::NotRevoked
+                    };
                 }
             }
         }
@@ -2897,6 +2899,7 @@ mod tests {
             RevocationInput::List {
                 list: l,
                 from: "test".into(),
+                incomplete: None,
             }
         };
         let pass = || {
@@ -2932,7 +2935,7 @@ mod tests {
         };
 
         // Revoked in the past: the run fails, and so does a fresh response.
-        let (r, from) = assess_revocations(&c, &list("superseded", now - 3600), None, now);
+        let (r, from) = assess_revocations(&c, &list("superseded", now - 3600), now);
         assert_eq!(r.status, RevocationStatus::Revoked);
         assert_eq!(r.reason.as_deref(), Some("superseded"));
         assert_eq!(r.revoked_by.as_deref(), Some("response_key"));
@@ -2948,7 +2951,7 @@ mod tests {
 
         // key_compromised voids every response, even one signed before it
         // and even when it is dated in the future.
-        let (r, from) = assess_revocations(&c, &list("key_compromised", now + 3600), None, now);
+        let (r, from) = assess_revocations(&c, &list("key_compromised", now + 3600), now);
         assert_eq!(r.status, RevocationStatus::Revoked);
         assert_eq!(from, Some(i64::MIN));
         assert_eq!(signed_at(now - 7200, from).status, SigStatus::Invalid);
@@ -2956,7 +2959,7 @@ mod tests {
         assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Fail);
 
         // Dated in the future: a warning; responses signed now verify.
-        let (r, from) = assess_revocations(&c, &list("superseded", now + 3600), None, now);
+        let (r, from) = assess_revocations(&c, &list("superseded", now + 3600), now);
         assert_eq!(r.status, RevocationStatus::Pending);
         assert!(r.detail.contains("takes effect in"), "{}", r.detail);
         assert_eq!(signed_at(now, from).status, SigStatus::Verified);
@@ -2968,7 +2971,6 @@ mod tests {
         let (r, from) = assess_revocations(
             &c,
             &RevocationInput::Absent("https://llm.example.com/x".into()),
-            None,
             now,
         );
         assert_eq!(r.status, RevocationStatus::NoList);
@@ -2981,7 +2983,6 @@ mod tests {
         let (r, _) = assess_revocations(
             &c,
             &RevocationInput::Unavailable("malformed ts.claim-revocations/1".into()),
-            None,
             now,
         );
         assert_eq!(r.status, RevocationStatus::Unreadable);
@@ -2996,12 +2997,17 @@ mod tests {
             &RevocationInput::List {
                 list: Revocations::default(),
                 from: "mine.json".into(),
+                incomplete: Some("HTTP 500".into()),
             },
-            Some("HTTP 500"),
             now,
         );
         assert_eq!(r.status, RevocationStatus::Unreadable);
-        let (r, _) = assess_revocations(&c, &list("stopped", now - 60), Some("HTTP 500"), now);
+        assert!(r.detail.starts_with("could not read revocations: HTTP 500"));
+        let mut partial = list("stopped", now - 60);
+        if let RevocationInput::List { incomplete, .. } = &mut partial {
+            *incomplete = Some("HTTP 500".into());
+        }
+        let (r, _) = assess_revocations(&c, &partial, now);
         assert_eq!(r.status, RevocationStatus::Revoked);
 
         // An entry for another claim is ignored; a forged one for this claim
@@ -3022,16 +3028,17 @@ mod tests {
         let input = RevocationInput::List {
             list: l,
             from: "test".into(),
+            incomplete: None,
         };
-        let (r, from) = assess_revocations(&c, &input, None, now);
+        let (r, from) = assess_revocations(&c, &input, now);
         assert_eq!(r.status, RevocationStatus::NotRevoked);
         assert_eq!(r.ignored, 1);
         assert_eq!(from, None);
         let (v, mut d) = pass();
         assert_eq!(apply_revocations(v, &mut d, &r), Verdict::Pass);
-        let (r, _) = assess_revocations(&c, &list("superseded", now - 60), None, now);
+        let (r, _) = assess_revocations(&c, &list("superseded", now - 60), now);
         assert_eq!(
-            assess_revocations(&other, &list("superseded", now - 60), None, now)
+            assess_revocations(&other, &list("superseded", now - 60), now)
                 .0
                 .status,
             RevocationStatus::NotRevoked,
@@ -3043,7 +3050,6 @@ mod tests {
         let (r, _) = assess_revocations(
             &c,
             &RevocationInput::NotChecked("--no-revocations was given".into()),
-            None,
             now,
         );
         assert_eq!(r.status, RevocationStatus::NotChecked);

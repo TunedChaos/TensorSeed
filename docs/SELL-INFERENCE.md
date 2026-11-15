@@ -635,7 +635,9 @@ Again: these notes are not legal advice.
   fail across many challenges, or a high median, usually means a
   different file or model is answering.
 - `check-endpoint` says `inconclusive` and the `revocation` status is
-  `unreadable`: `/.well-known/tensorseed/revocations.json` returned an
+  `unreadable`, or `check-claim` says `inconclusive` with a `revocation`
+  warning that it could not read revocations:
+  `/.well-known/tensorseed/revocations.json` returned an
   error or something that is not a revocation list. Forward the path to
   the signing proxy unchanged, or let it return 404 when you have
   revoked nothing.

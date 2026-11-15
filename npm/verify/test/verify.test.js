@@ -163,6 +163,24 @@ test("an unreachable revocation list is not a pass", () => {
     revocationsError: "HTTP 500",
   });
   assert.equal(check(r, "revocation").status, "warn");
+  // With everything else passing, the verdict is inconclusive, not a pass.
+  const opts = { originUrl: x.claim_url, now: NOW, requireWalletSig: true };
+  const unread = v.checkClaimWithCatalog(catalog(), x.claim, { ...opts, revocationsError: "HTTP 500" });
+  assert.equal(unread.verdict, "inconclusive", JSON.stringify(statuses(unread)));
+  assert.equal(unread.revoked, false);
+  // A seller list that does not parse counts the same; one that parses is merged.
+  const bad = v.checkClaimWithCatalog(catalog(), x.claim, { ...opts, sellerRevocations: "{not json" });
+  assert.equal(bad.verdict, "inconclusive");
+  assert.match(check(bad, "revocation").detail, /could not read revocations/);
+  const mine = { schema: "ts.claim-revocations/1", revocations: [] };
+  const partial = v.checkClaimWithCatalog(catalog(), x.claim, {
+    ...opts,
+    revocations: mine,
+    revocationsError: "HTTP 500",
+  });
+  assert.equal(partial.verdict, "inconclusive");
+  // A list you pass yourself that does not parse is an error.
+  assert.throws(() => v.checkClaim(x.claim, { ...opts, revocations: "{not json" }));
 });
 
 test("a signed response verifies", () => {
@@ -260,6 +278,23 @@ test("checkEndpoint fetches the claim and the revocation list", async () => {
     catalog: catalog(),
   });
   assert.equal(absent.verdict, "pass", JSON.stringify(statuses(absent)));
+
+  // A list that cannot be fetched or does not parse: inconclusive, unless
+  // noRevocations skips it.
+  for (const bad of [new Response("busy", { status: 503 }), new Response("{not json")]) {
+    const fetchBad = async (url) => (url === x.claim_url ? new Response(x.claim) : bad.clone());
+    const r = await v.checkEndpoint("https://llm.example.com/v1", { fetch: fetchBad, now: NOW, catalog: catalog() });
+    assert.equal(r.verdict, "inconclusive", JSON.stringify(statuses(r)));
+    assert.equal(check(r, "revocation").status, "warn");
+    const skipped = await v.checkEndpoint("https://llm.example.com/v1", {
+      fetch: fetchBad,
+      now: NOW,
+      catalog: catalog(),
+      noRevocations: true,
+    });
+    assert.equal(skipped.verdict, "pass", JSON.stringify(statuses(skipped)));
+    assert.equal(check(skipped, "revocation").status, "skip");
+  }
 });
 
 test("the browser entry works once initialized with the wasm bytes", async () => {

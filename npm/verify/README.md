@@ -69,7 +69,10 @@ best verdict is `inconclusive`. A claim past its `expires_at`, or revoked
 by an entry in a `ts.claim-revocations/1` list, fails. A response signed
 after the claim expired or was revoked fails with `claim_expired` or
 `claim_revoked`; a `key_compromised` revocation fails every response under
-that claim.
+that claim. `checkEndpoint` also fetches the seller's revocation list
+and merges it with any `revocations` you pass; when it cannot be fetched
+or does not parse, a verdict that would pass is `inconclusive`, since the
+claim may be revoked. `noRevocations: true` skips it.
 
 The report is the `ts.claim-check/1` JSON that `tensorseed check-claim
 --json` prints. See `docs/INTEGRATE-A-MARKETPLACE.md` in the repository for

@@ -41,8 +41,15 @@ pub(crate) struct CheckOptions {
     revocations_from: Option<String>,
     /// The URL the seller's list was looked for at, when it answered 404.
     revocations_absent: Option<String>,
-    /// A list could not be read; reported as a warning.
+    /// The seller's list could not be read. The revocation check warns and
+    /// a verdict that would pass is inconclusive.
     revocations_error: Option<String>,
+    /// The seller's list as fetched (object or JSON string), merged with
+    /// `revocations`. Unlike `revocations`, one that does not parse is not
+    /// an error: it counts as `revocations_error`.
+    seller_revocations: Option<serde_json::Value>,
+    /// Where the seller's list came from (for the report).
+    seller_revocations_from: Option<String>,
 }
 
 fn secs(v: f64) -> i64 {
@@ -57,11 +64,15 @@ pub(crate) fn parse_options(json: &str) -> Result<CheckOptions, JsError> {
 }
 
 fn revocations_value(v: &serde_json::Value) -> Result<Revocations, JsError> {
+    parse_revocations(v).map_err(js_err)
+}
+
+fn parse_revocations(v: &serde_json::Value) -> Result<Revocations, String> {
     let raw = match v {
         serde_json::Value::String(s) => s.as_bytes().to_vec(),
-        other => serde_json::to_vec(other).map_err(js_err)?,
+        other => serde_json::to_vec(other).map_err(|e| e.to_string())?,
     };
-    Revocations::parse(&raw).map_err(js_err)
+    Revocations::parse(&raw).map_err(|e| e.to_string())
 }
 
 impl CheckOptions {
@@ -92,18 +103,40 @@ impl CheckOptions {
     }
 
     pub(crate) fn revocation_input(&self) -> Result<RevocationInput, JsError> {
-        Ok(match &self.revocations {
-            Some(v) => RevocationInput::List {
-                list: revocations_value(v)?,
-                from: self
-                    .revocations_from
+        let mut list = None;
+        let mut from = Vec::new();
+        if let Some(v) = &self.revocations {
+            list = Some(revocations_value(v)?);
+            from.push(
+                self.revocations_from
                     .clone()
                     .unwrap_or_else(|| "the provided list".into()),
+            );
+        }
+        let mut error = self.revocations_error.clone();
+        if let Some(v) = &self.seller_revocations {
+            let label = self
+                .seller_revocations_from
+                .clone()
+                .unwrap_or_else(|| "the seller's list".into());
+            match parse_revocations(v) {
+                Ok(l) => {
+                    list.get_or_insert_with(Revocations::default).merge(l);
+                    from.push(label);
+                }
+                Err(e) => error = Some(format!("{label}: {e}")),
+            }
+        }
+        Ok(match (list, error) {
+            (Some(list), incomplete) => RevocationInput::List {
+                list,
+                from: from.join(", "),
+                incomplete,
             },
-            None => match (&self.revocations_error, &self.revocations_absent) {
-                (Some(e), _) => RevocationInput::Unavailable(e.clone()),
-                (None, Some(u)) => RevocationInput::Absent(u.clone()),
-                (None, None) => RevocationInput::NotChecked(
+            (None, Some(e)) => RevocationInput::Unavailable(e),
+            (None, None) => match &self.revocations_absent {
+                Some(u) => RevocationInput::Absent(u.clone()),
+                None => RevocationInput::NotChecked(
                     "no revocation list was provided; fetch the seller's list next to the claim"
                         .into(),
                 ),

@@ -321,10 +321,13 @@ request (404 when the seller has none, 503 when it does not parse).
 next to a claim read from a URL (`check-endpoint` otherwise fetches it
 from the endpoint it checks), take more lists with
 `--revocations <file|URL>`, and skip the seller's list with
-`--no-revocations`. In `check-endpoint` a revocation in effect fails the
-run, a future one is a warning, a 404 changes nothing, and a list that
-cannot be read or does not parse makes a passing run inconclusive; the
-`ts.check-endpoint/1` report gains an optional `revocation` object.
+`--no-revocations`. In `check-claim` and `check-endpoint` a revocation in
+effect fails the run, a future one is a warning, a 404 changes nothing,
+and a seller list that cannot be read or does not parse makes a passing
+run inconclusive (the claim may be revoked); a list passed with
+`--revocations` that cannot be read is an error. `verify-response` stops
+with an error on an unreadable list. The `ts.check-endpoint/1` report
+gains an optional `revocation` object.
 
 This is the off-chain counterpart of section 4.3, and needs no chain. A
 seller who also attested the claim should revoke both.
