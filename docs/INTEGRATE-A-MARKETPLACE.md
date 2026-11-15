@@ -10,7 +10,8 @@ claim to serve. It covers what ships in Tensorseed 0.3.0, plus the
 0.3.1 additions marked **0.3.1** (`check-claim`, the calibrated
 `check-endpoint` set decision, claim expiry and revocation, the
 verify-only `tensorseed-verify` crate, and the `@tensorseed/verify` npm
-package; not released yet, build from `main`).
+package). Install `@tensorseed/verify` from npm (see
+[5.6](#56-verify-in-javascript)).
 Every command, field, header, and path below was checked against the
 code, and the example outputs come from real runs against the official
 catalog and a llama.cpp seller behind `serve-inference --sign`. Formats
@@ -374,9 +375,16 @@ are specified in [SPEC.md](SPEC.md) section 6.8, key names in section
 ### 3.5 Check catalogs from JavaScript (`tensorseed-wasm`)
 
 `crates/tensorseed-wasm` wraps the same Rust verifier for JavaScript.
-0.3.0 is not published to npm; build it from a tagged checkout (in
-0.3.1, `npm/verify` packages the same build as `@tensorseed/verify`,
-with a typed wrapper; see [5.6](#56-verify-in-javascript)):
+For 0.3.1, install the typed wrapper
+[`@tensorseed/verify`](https://www.npmjs.com/package/@tensorseed/verify)
+from npm (see [5.6](#56-verify-in-javascript)):
+
+```sh
+pnpm add @tensorseed/verify
+# or: npm install @tensorseed/verify
+```
+
+To work with the raw WebAssembly bindings from a checkout:
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -1311,11 +1319,18 @@ themselves. The `tensorseed_app::signing` paths above still work in
 
 ### 5.6 Verify in JavaScript
 
-**0.3.1: `@tensorseed/verify`.** `npm/verify` packages the WebAssembly
-build of `tensorseed-verify` for Node and browsers (ES module, typed),
-so a JavaScript service runs the same code as the CLI. Build it from a
-checkout with `pnpm --dir npm/verify test` (it builds `pkg/` and runs the
-Node tests); the package name is reserved for a release.
+**0.3.1: [`@tensorseed/verify`](https://www.npmjs.com/package/@tensorseed/verify).**
+`npm/verify` packages the WebAssembly build of `tensorseed-verify` for
+Node and browsers (ES module, typed), so a JavaScript service runs the
+same code as the CLI. Install it from npm:
+
+```sh
+pnpm add @tensorseed/verify
+# or: npm install @tensorseed/verify
+```
+
+To build from a checkout, run `pnpm --dir npm/verify test` (it builds
+`pkg/` and runs the Node tests).
 
 ```js
 import { init, openCatalog, checkEndpoint, verifyResponse } from "@tensorseed/verify";
@@ -1346,7 +1361,9 @@ options)` runs all of them, and `claimSigningMessage`,
 the `fetch` you pass (or the global one). Like `check-claim`, it makes a
 passing verdict `inconclusive` when the seller's revocation list cannot
 be fetched or does not parse (`noRevocations: true` skips it). The
-package README has the details.
+package README and the
+[npm page](https://www.npmjs.com/package/@tensorseed/verify) have the
+details.
 
 Without the package (or on 0.3.0), here is a direct implementation of the format above with `node:crypto` (Node 18
 or newer, no dependencies). It verified the same responses as the CLI,

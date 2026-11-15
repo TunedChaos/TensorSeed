@@ -55,6 +55,31 @@ vllm = "~/vllm-env/bin/vllm"                      # "" = vllm on PATH`;
   </p>
 </section>
 
+<section class="mt-12 max-w-3xl" aria-labelledby="js">
+  <h2 id="js" class="text-2xl font-bold">Verify in JavaScript</h2>
+  <p class="mt-2">
+    The same claim and response checks run in Node or a browser through
+    <a class="link" href="https://www.npmjs.com/package/@tensorseed/verify">@tensorseed/verify</a>
+    on npm (AGPL-3.0-or-later). It is the WebAssembly build of the verifier crate, the same code the CLI uses:
+  </p>
+  <div class="mt-2"><Pre code={"pnpm add @tensorseed/verify\n# or: npm install @tensorseed/verify"} /></div>
+  <div class="mt-3">
+    <Pre
+      code={`import { init, openCatalog, checkEndpoint, verifyResponse } from "@tensorseed/verify";
+
+await init();
+const { verifier } = openCatalog({ name: "tensorseed", pubkey, snapshot, head });
+const report = await checkEndpoint("https://seller.example/v1", { catalog: verifier });
+if (report.verdict !== "pass") throw new Error("claim did not verify");`}
+    />
+  </div>
+  <p class="mt-3">
+    See the
+    <a class="link" href="/guides/integrate-a-marketplace#56-verify-in-javascript">integration guide</a>
+    for the full example, including signed responses.
+  </p>
+</section>
+
 <section class="mt-12 max-w-3xl" aria-labelledby="commands">
   <h2 id="commands" class="text-2xl font-bold">Commands</h2>
   <p class="mt-2">

@@ -103,6 +103,20 @@
   </p>
 </section>
 
+<section class="mt-12 max-w-3xl" aria-labelledby="verify-js">
+  <h2 id="verify-js" class="text-2xl font-bold">JavaScript package</h2>
+  <p class="mt-2">
+    Check served-weights claims and signed responses in Node or a browser with
+    <a class="link" href="https://www.npmjs.com/package/@tensorseed/verify">@tensorseed/verify</a>
+    on npm (AGPL-3.0-or-later):
+  </p>
+  <div class="mt-2"><Pre code={"pnpm add @tensorseed/verify\n# or: npm install @tensorseed/verify"} /></div>
+  <p class="mt-3">
+    Usage is in the
+    <a class="link" href="/guides/integrate-a-marketplace#56-verify-in-javascript">integration guide</a>.
+  </p>
+</section>
+
 <section class="mt-12" aria-labelledby="checksums">
   <h2 id="checksums" class="text-2xl font-bold">Checksums and signature</h2>
   <p class="mt-2 max-w-3xl">Also download these three files, then <a class="link" href="/verify#release">verify as described here</a>.</p>

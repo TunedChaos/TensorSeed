@@ -1,5 +1,7 @@
 # @tensorseed/verify
 
+[![npm](https://img.shields.io/npm/v/@tensorseed/verify.svg)](https://www.npmjs.com/package/@tensorseed/verify)
+
 Verify Tensorseed served-weights claims, claim revocations, signed
 inference responses, signed catalogs, and signed follow lists in a
 browser or Node. It is the
@@ -10,10 +12,13 @@ keys and makes no network requests except through `checkEndpoint` and
 
 License: AGPL-3.0-or-later. Copyright Tuned Chaos.
 
+Published on npm: <https://www.npmjs.com/package/@tensorseed/verify>.
+
 ## Install
 
 ```sh
 pnpm add @tensorseed/verify
+# or: npm install @tensorseed/verify
 ```
 
 To build from a checkout (needs Rust, the `wasm32-unknown-unknown` target,

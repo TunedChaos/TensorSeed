@@ -262,8 +262,25 @@ claim outside Tensorseed; Tensorseed holds no wallet keys.
 can carry an expiry (`--expires-in`), and `revoke-claim` publishes a
 signed revocation at `/.well-known/tensorseed/revocations.json`, which
 `check-claim` and `verify-response` honour. The same checks run in a
-browser or Node through the `@tensorseed/verify` package in
-[npm/verify](npm/verify/README.md). See the
+browser or Node through
+[`@tensorseed/verify`](https://www.npmjs.com/package/@tensorseed/verify)
+on npm (AGPL-3.0-or-later):
+
+```sh
+pnpm add @tensorseed/verify
+# or: npm install @tensorseed/verify
+```
+
+```js
+import { init, openCatalog, checkEndpoint, verifyResponse } from "@tensorseed/verify";
+
+await init();
+const { verifier } = openCatalog({ name: "tensorseed", pubkey, snapshot, head });
+const report = await checkEndpoint("https://seller.example/v1", { catalog: verifier });
+if (report.verdict !== "pass") throw new Error("claim did not verify");
+```
+
+See [npm/verify](npm/verify/README.md) for the full API, the
 guide and [docs/plans/verified-serving.md](docs/plans/verified-serving.md);
 the checking side is in
 [docs/INTEGRATE-A-MARKETPLACE.md](docs/INTEGRATE-A-MARKETPLACE.md).
@@ -365,7 +382,7 @@ tensorseed completions fish | source   # fish, until the package is installed
 | `crates/tensorseed-fetch` | Verified, resumable, parallel HTTP downloads with source fallback |
 | `crates/tensorseed-verify` | Verify-only crate (no network, no torrent, no serving): minisign, signed-file hash chain, chain proofs, manifests, served-weights claims, revocations, and signed responses |
 | `crates/tensorseed-catalog` | `CatalogBackend` trait, HTTPS and Chia I/O on top of `tensorseed-verify` |
-| `crates/tensorseed-wasm` | WebAssembly bindings for the explorer and the `@tensorseed/verify` npm package (`npm/verify`) |
+| `crates/tensorseed-wasm` | WebAssembly bindings for the explorer and the [`@tensorseed/verify`](https://www.npmjs.com/package/@tensorseed/verify) npm package (`npm/verify`) |
 | `crates/tensorseed-torrent` | BEP 52 v2 and hybrid torrent builder and parser (pure Rust), Merkle checks, librqbit seeding and swarm downloads |
 | `crates/tensorseed-serve` | Building blocks of `serve`: webseed HTTP server, health endpoint, NAT-PMP and UPnP port mapping, selection rules |
 | `crates/tensorseed-app` | Application library shared by the CLI and Desktop: config, catalog access, mirrors, torrent helpers (no argument parsing, no printing) |

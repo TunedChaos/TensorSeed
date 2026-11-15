@@ -596,6 +596,19 @@ fails the run, so check with your current claim. If the reverse proxy
 does not forward that path, a 404 is fine, but an error page makes the
 run inconclusive.
 
+Buyers and marketplaces can run the same claim and response checks from
+Node or a browser with
+[`@tensorseed/verify`](https://www.npmjs.com/package/@tensorseed/verify)
+on npm:
+
+```sh
+pnpm add @tensorseed/verify
+# or: npm install @tensorseed/verify
+```
+
+See [INTEGRATE-A-MARKETPLACE.md](INTEGRATE-A-MARKETPLACE.md#56-verify-in-javascript)
+for a usage example.
+
 ## 7. License duties when you sell access
 
 Serving a model commercially usually keeps obligations even when the mark
