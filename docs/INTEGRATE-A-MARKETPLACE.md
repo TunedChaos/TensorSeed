@@ -1007,7 +1007,7 @@ Verification, in the order Tensorseed does it (`verify_fields`):
    the model you requested.
 4. The request id equals the one you sent.
 5. The timestamp is within the skew window (300 s either way by
-   default).
+   default; see [Skew window](#skew-window)).
 6. The SHA-256 of the body bytes equals `X-Tensorseed-Body-SHA256`.
 7. The Ed25519 signature verifies.
 
@@ -1100,8 +1100,20 @@ Error labels: `absent`, `missing_header`, `malformed_header`,
 `claim_expired` and `claim_revoked`. Exit status is
 0 valid, 1 invalid or unsigned, and 2 for an error (for example a claim
 that does not verify). For a stream, pass the raw saved stream as
-`--body`. The skew check compares the signing time with the current
-time, so a stored response checked later needs a larger `--max-skew`.
+`--body`.
+
+#### Skew window
+
+The skew check compares the signing time with the checking time, by
+default now, and allows 300 s either way. Set your own default with
+`[verify] max_skew_secs` in the config (0.3.1) and override it for one
+run with `--max-skew`; both take 1 to 604800 seconds (7 days), and a
+value outside that range is an error (exit 2). The same window applies
+to `check-endpoint`. To check a response you stored, do not widen the
+window: pass the time you received it with `verify-response --at
+<RFC 3339>` (0.3.1), and the JSON gains `checked_at`. Expiry and
+revocation are judged by the signing time either way. In the
+JavaScript package, pass `now` and `maxSkewSecs` the same way.
 
 ### 5.5 In Rust
 
@@ -1718,7 +1730,7 @@ the seller without leaking the set.
 | `--sample` | 8 | Challenges per run (0 for all) |
 | `--concurrency` | 2 | Challenges in flight |
 | `--timeout` | 60 | Seconds per request |
-| `--max-skew` | 300 | Signature timestamp skew, seconds |
+| `--max-skew` | `[verify] max_skew_secs`, else 300 | Signature timestamp skew, seconds (1 to 604800) |
 
 Each reference token (the chosen one plus its top alternatives) is
 looked up in the endpoint's list. A listed token adds its absolute
@@ -1935,7 +1947,7 @@ weights. That needs hardware attestation, which 0.3.0 does not have
 | Claim fetch | 10 s timeout, at most 3 redirects, no credentials in the URL |
 | Request id | 1 to 128 of `A-Z a-z 0-9 . _ ~ : -` |
 | Served model id | 1 to 256 printable ASCII, no spaces |
-| Signature timestamp skew | 300 s by default (`--max-skew`) |
+| Signature timestamp skew | 300 s by default; 1 s to 7 days (`--max-skew`, `[verify] max_skew_secs`); stored responses: `verify-response --at` |
 | Signed body | 64 MiB |
 | Coin anchor grace | 192 blocks (`[chia] chain_grace_blocks`) |
 | Revocation list | 4 MiB when fetched, at most 10,000 entries (0.3.1) |

@@ -18,8 +18,28 @@ use tensorseed_core::hash::{is_lower_hex, sha256_bytes};
 
 /// First line of the response signing message.
 pub const RESPONSE_SIG_SCHEMA: &str = "ts.response-sig/1";
-/// Proposed default timestamp skew window (seconds).
+/// Default timestamp skew window (seconds): a response's signing time
+/// may differ from the checking time by this much either way.
 pub const DEFAULT_MAX_SKEW_SECS: u64 = 300;
+/// Largest skew window accepted (7 days). A wider window would make the
+/// freshness check meaningless; to check a stored response, check it as of
+/// the time it was received (`verify-response --at`, `now` in the
+/// JavaScript package) instead of widening the window.
+pub const MAX_SKEW_LIMIT_SECS: u64 = 7 * 24 * 3600;
+
+/// Validate a skew window: 1 second to [`MAX_SKEW_LIMIT_SECS`].
+///
+/// # Errors
+///
+/// [`crate::Error::Config`] outside that range, saying what to do instead.
+pub fn check_max_skew(secs: u64) -> crate::Result<u64> {
+    if secs == 0 || secs > MAX_SKEW_LIMIT_SECS {
+        return Err(crate::Error::Config(format!(
+            "the timestamp skew window must be 1 to {MAX_SKEW_LIMIT_SECS} seconds (7 days), not {secs}; to check a stored response, check it as of the time you received it instead of widening the window"
+        )));
+    }
+    Ok(secs)
+}
 
 /// Request and response header: request id.
 pub const H_REQUEST_ID: &str = "x-tensorseed-request-id";
@@ -437,6 +457,21 @@ pub fn extract_signed<'b>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn skew_windows_are_bounded() {
+        assert_eq!(super::check_max_skew(300).unwrap(), 300);
+        assert_eq!(super::check_max_skew(1).unwrap(), 1);
+        assert_eq!(
+            super::check_max_skew(super::MAX_SKEW_LIMIT_SECS).unwrap(),
+            super::MAX_SKEW_LIMIT_SECS
+        );
+        assert!(super::check_max_skew(0).is_err());
+        let e = super::check_max_skew(super::MAX_SKEW_LIMIT_SECS + 1)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("as of the time you received it"), "{e}");
+    }
+
     use super::*;
     use crate::claim::fixtures::{claim, response_key};
     use ed25519_dalek::Signer;

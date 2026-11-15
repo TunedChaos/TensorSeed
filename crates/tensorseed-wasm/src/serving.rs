@@ -11,7 +11,9 @@ use tensorseed_verify::claim::{ServedClaim, WalletStatus, claim_message, parse_c
 use tensorseed_verify::claim_check::{
     CatalogResult, ClaimCheckOptions, Origin, RevocationInput, build_report, unparsable_report,
 };
-use tensorseed_verify::response::{DEFAULT_MAX_SKEW_SECS, Expect, extract_signed, verify_fields};
+use tensorseed_verify::response::{
+    DEFAULT_MAX_SKEW_SECS, Expect, check_max_skew, extract_signed, verify_fields,
+};
 use tensorseed_verify::revocation::{Revocations, revocation_message};
 use wasm_bindgen::prelude::*;
 
@@ -244,7 +246,9 @@ fn headers_from(json: &str) -> Result<Vec<(String, String)>, JsError> {
 /// `timestamp_skew`, `claim_expired`, `claim_revoked`, and so on).
 ///
 /// `options_json` (every field optional): `request_id`, `requested_model`,
-/// `now_unix`, `max_skew_secs` (default 300), `revocations`.
+/// `now_unix`, `max_skew_secs` (default 300, 1 to 604800), `revocations`.
+/// For a stored response, pass the time it was received as `now_unix`
+/// rather than widening `max_skew_secs`.
 ///
 /// # Errors
 ///
@@ -261,6 +265,8 @@ pub fn verify_response(
     } else {
         serde_json::from_str(options_json).map_err(|e| js_err(format!("options: {e}")))?
     };
+    let max_skew_secs =
+        check_max_skew(o.max_skew_secs.unwrap_or(DEFAULT_MAX_SKEW_SECS)).map_err(js_err)?;
     let claim = parse_claim(claim_json.as_bytes()).map_err(js_err)?;
     let check = claim.verify().map_err(js_err)?;
     let pubkey = claim.response_pubkey().map_err(js_err)?;
@@ -277,7 +283,7 @@ pub fn verify_response(
             request_id: o.request_id.as_deref(),
             requested_model: o.requested_model.as_deref(),
             now_unix: secs(o.now_unix),
-            max_skew_secs: o.max_skew_secs.unwrap_or(DEFAULT_MAX_SKEW_SECS),
+            max_skew_secs,
             claim_expires_unix: claim.expires_unix().ok().flatten(),
             claim_revoked_unix: revoked,
         };

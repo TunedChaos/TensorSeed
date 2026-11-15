@@ -2497,6 +2497,84 @@ async fn signed_serving_key_claim_proxy_verify_and_check() {
     assert_eq!(code(&o), 1);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["error"], "body_hash_mismatch");
+    // The skew window: a response checked an hour after it was signed is
+    // stale, unless checked as of when it was received (--at) or with a
+    // wider window from the flag or [verify] in the config.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let later = tensorseed_core::time::rfc3339(now + 3600);
+    let received = tensorseed_core::time::rfc3339(now);
+    let o = verify(
+        proxy.clone(),
+        bp.clone(),
+        vec!["--json".into(), "--at".into(), later.clone()],
+    )
+    .await;
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["error"], "timestamp_skew");
+    assert_eq!(v["checked_at"], later.as_str());
+    let o = verify(
+        proxy.clone(),
+        bp.clone(),
+        vec!["--at".into(), received, "--max-skew".into(), "600".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    assert!(stderr(&o).contains("checked as of"), "{}", stderr(&o));
+    let o = verify(
+        proxy.clone(),
+        bp.clone(),
+        vec![
+            "--at".into(),
+            later.clone(),
+            "--max-skew".into(),
+            "7200".into(),
+        ],
+    )
+    .await;
+    assert_eq!(code(&o), 0, "{}", stdout(&o));
+    for bad in ["0", "604801"] {
+        let o = verify(
+            proxy.clone(),
+            bp.clone(),
+            vec!["--max-skew".into(), bad.into()],
+        )
+        .await;
+        assert_eq!(code(&o), 2, "{bad}");
+        assert!(stderr(&o).contains("1 to 604800"), "{}", stderr(&o));
+    }
+    let o = verify(
+        proxy.clone(),
+        bp.clone(),
+        vec!["--at".into(), "soon".into()],
+    )
+    .await;
+    assert_eq!(code(&o), 2);
+    let wide = tmp.path().join("wide.toml");
+    std::fs::write(
+        &wide,
+        format!(
+            "{}\n[verify]\nmax_skew_secs = 7200\n",
+            std::fs::read_to_string(&cfg).unwrap()
+        ),
+    )
+    .unwrap();
+    let a = [
+        "verify-response",
+        "--claim",
+        &proxy,
+        "--headers",
+        hp.to_str().unwrap(),
+        "--body",
+        bp.to_str().unwrap(),
+        "--at",
+        &later,
+    ];
+    assert_eq!(code(&run(&wide, &a, &[]).await), 0);
+    assert_eq!(code(&run(&cfg, &a, &[]).await), 1);
 
     // check-endpoint through the proxy finds the claim and verifies every
     // response; straight at the engine with the claim, it fails unsigned.

@@ -55,6 +55,8 @@ pub struct Config {
     pub serve: crate::serve_config::ServeConfig,
     /// Automatic harvest watchlist (`[harvest]`).
     pub harvest: Harvest,
+    /// Checking seller responses (`[verify]`).
+    pub verify: Verify,
     /// Extra catalogs to follow (`[[catalogs]]`). Empty keeps the top-level
     /// `[catalog]` / `[file]` / `[chia]` block as the sole subscription.
     pub catalogs: Vec<CatalogSub>,
@@ -1172,6 +1174,41 @@ pub struct Fetch {
     pub source_order: Vec<String>,
 }
 
+/// `[verify]`: defaults for checking signed seller responses
+/// (`verify-response`, `check-endpoint`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Verify {
+    /// How far a response's signing time may be from the checking time,
+    /// either way, in seconds (1 to 604800). Default 300. `--max-skew`
+    /// overrides it for one run.
+    pub max_skew_secs: u64,
+}
+
+impl Default for Verify {
+    fn default() -> Self {
+        Self {
+            max_skew_secs: tensorseed_verify::response::DEFAULT_MAX_SKEW_SECS,
+        }
+    }
+}
+
+impl Verify {
+    /// The skew window to use: `flag` when given, else `max_skew_secs`,
+    /// checked against the allowed range.
+    ///
+    /// # Errors
+    ///
+    /// The window is 0 or above 7 days.
+    pub fn max_skew(&self, flag: Option<u64>) -> anyhow::Result<u64> {
+        let (v, from) = match flag {
+            Some(v) => (v, "--max-skew"),
+            None => (self.max_skew_secs, "verify.max_skew_secs"),
+        };
+        tensorseed_verify::response::check_max_skew(v).map_err(|e| anyhow::anyhow!("{from}: {e}"))
+    }
+}
+
 impl Default for Fetch {
     fn default() -> Self {
         Self {
@@ -2128,6 +2165,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     cfg.storage.validate()?;
     cfg.torrent.validate()?;
     cfg.serve.validate()?;
+    cfg.verify.max_skew(None)?;
     if let Some(i) = &cfg.inference {
         i.validate()?;
     }
@@ -2202,6 +2240,30 @@ mod tests {
             ] {
                 jail.create_file("d.toml", bad)?;
                 assert!(load(Path::new("d.toml")).is_err(), "{bad}");
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn verify_skew_window_defaults_and_bounds() {
+        Jail::expect_with(|jail| {
+            jail.create_file("a.toml", "")?;
+            let cfg = load(Path::new("a.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.verify.max_skew_secs, 300);
+            assert_eq!(cfg.verify.max_skew(None).unwrap(), 300);
+            assert_eq!(cfg.verify.max_skew(Some(30)).unwrap(), 30);
+            assert!(cfg.verify.max_skew(Some(0)).is_err());
+            jail.create_file("b.toml", "[verify]\nmax_skew_secs = 3600\n")?;
+            let cfg = load(Path::new("b.toml")).map_err(|e| e.to_string())?;
+            assert_eq!(cfg.verify.max_skew(None).unwrap(), 3600);
+            for bad in [
+                "[verify]\nmax_skew_secs = 0\n",
+                "[verify]\nmax_skew_secs = 604801\n",
+            ] {
+                jail.create_file("c.toml", bad)?;
+                let e = load(Path::new("c.toml")).unwrap_err().to_string();
+                assert!(e.contains("verify.max_skew_secs"), "{e}");
             }
             Ok(())
         });

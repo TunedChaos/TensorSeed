@@ -580,7 +580,7 @@ TS_CHECK_KEY=... tensorseed check-endpoint https://llm.example.com/v1 \
 ```
 
 `verify-response` exits 0 when the signature, body hash, model, request
-id, claim hash, and timestamp (within `--max-skew`, 300 s) all check
+id, claim hash, and timestamp (within `--max-skew`, 300 s by default) all check
 out, 1 when anything fails, and 2 on an error. For a stream, save it with
 `curl -N` and pass the raw file as `--body`. `check-endpoint` finds the
 claim at the well-known path (or takes `--claim`), sends a fresh request

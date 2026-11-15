@@ -236,6 +236,10 @@ test("a stale response fails the clock check", () => {
   const r = v.verifyResponse(response({ now: NOW + 3600 }));
   assert.equal(r.valid, false);
   assert.equal(r.error, "timestamp_skew");
+  // A wider window accepts it; the window is 1 second to 7 days.
+  assert.equal(v.verifyResponse(response({ now: NOW + 3600, maxSkewSecs: 7200 })).valid, true);
+  assert.throws(() => v.verifyResponse(response({ maxSkewSecs: 0 })), /1 to 604800/);
+  assert.throws(() => v.verifyResponse(response({ maxSkewSecs: 604801 })), /1 to 604800/);
 });
 
 test("a response signed before a revocation still verifies", () => {

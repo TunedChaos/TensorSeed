@@ -70,7 +70,9 @@ export interface VerifyResponseInput {
   requestId?: string;
   /** The model you asked for. */
   requestedModel?: string;
+  /** The checking time (default now). For a stored response, pass the time you received it. */
   now?: When;
+  /** Allowed timestamp skew either way, 1 to 604800 seconds (default 300). */
   maxSkewSecs?: number;
   revocations?: Json;
 }

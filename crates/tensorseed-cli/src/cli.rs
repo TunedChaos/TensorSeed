@@ -1086,9 +1086,15 @@ pub struct VerifyResponseArgs {
     /// The model id you requested.
     #[arg(long, value_name = "ID")]
     pub model_id: Option<String>,
-    /// Allowed timestamp skew in seconds.
-    #[arg(long, default_value_t = 300)]
-    pub max_skew: u64,
+    /// Allowed timestamp skew in seconds, either way (1 to 604800).
+    /// Default: `verify.max_skew_secs` in the config, else 300.
+    #[arg(long, value_name = "SECS")]
+    pub max_skew: Option<u64>,
+    /// Check the timestamp as of this time (RFC 3339) instead of now, for
+    /// a response you stored: pass the time you received it. Expiry and
+    /// revocation are judged by the signing time either way.
+    #[arg(long, value_name = "TIME")]
+    pub at: Option<String>,
     /// Also check this revocation list (file or URL; repeatable). With a
     /// claim URL, the seller's own list next to it is checked too, unless
     /// `--no-revocations` is given.
@@ -1300,9 +1306,10 @@ pub struct CheckEndpointArgs {
     /// Fail when the endpoint serves no claim (no signed responses).
     #[arg(long)]
     pub require_signatures: bool,
-    /// Allowed signature timestamp skew in seconds.
-    #[arg(long, default_value_t = 300)]
-    pub max_skew: u64,
+    /// Allowed signature timestamp skew in seconds, either way (1 to
+    /// 604800). Default: `verify.max_skew_secs` in the config, else 300.
+    #[arg(long, value_name = "SECS")]
+    pub max_skew: Option<u64>,
     /// Also check this revocation list (file or URL; repeatable), for
     /// example one your marketplace keeps. With a claim, the seller's list
     /// at `/.well-known/tensorseed/revocations.json` is fetched too (next

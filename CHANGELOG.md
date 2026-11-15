@@ -31,6 +31,13 @@
   or `license.id`, and unknown fields inside `catalog`, `license`,
   `entrypoint`, or `files` (which 0.3.0 dropped without hashing) are now
   rejected with a message naming the field.
+- The response skew window is configurable and bounded: `[verify]
+  max_skew_secs` (default 300) sets it for `verify-response` and
+  `check-endpoint`, `--max-skew` overrides it, and both take 1 to 604800
+  seconds (7 days); anything else is an error (exit 2).
+  `verify-response --at <RFC 3339>` checks a stored response as of the
+  time it was received (JSON `checked_at`). The JavaScript package's
+  `maxSkewSecs` has the same bounds.
 
 ### Added
 
@@ -104,6 +111,9 @@
   package's Node tests.
 
 ### Compatibility
+
+- `--max-skew` above 604800 (7 days) or 0 is now refused. Use
+  `verify-response --at` for stored responses instead of a huge window.
 
 - No claim hash changes. Every claim Tensorseed has written already
   uses the one allowed form; a hand-written claim that used `null` for

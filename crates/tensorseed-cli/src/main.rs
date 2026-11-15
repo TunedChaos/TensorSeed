@@ -86,6 +86,24 @@ async fn async_main() -> ExitCode {
     }
 }
 
+/// The response skew window: `--max-skew` when given (the config is then
+/// not read), else `verify.max_skew_secs` from the config.
+fn max_skew(
+    flag: Option<u64>,
+    load: &dyn Fn() -> anyhow::Result<config::Config>,
+) -> anyhow::Result<u64> {
+    match flag {
+        Some(_) => config::Verify::default().max_skew(flag),
+        None => load()?.verify.max_skew(None),
+    }
+}
+
+/// Exit 2 with the error, for commands whose 1 means "checked and failed".
+fn usage_error(e: &anyhow::Error) -> ExitCode {
+    eprintln!("error: {e:#}");
+    ExitCode::from(2)
+}
+
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let path = cli
         .config
@@ -155,14 +173,20 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::ServeInference(args) => inference::run(&load()?, &path, args).await,
         Command::ReferenceLogprobs(args) => challenge::reference(&load()?, args).await,
-        Command::CheckEndpoint(args) => Ok(challenge::check(args).await),
+        Command::CheckEndpoint(args) => Ok(match max_skew(args.max_skew, &load) {
+            Ok(skew) => challenge::check(args, skew).await,
+            Err(e) => usage_error(&e),
+        }),
         Command::CalibrateReference(args) => challenge::calibrate(args).await,
         Command::CheckClaim(args) => Ok(claim_check::run(&load()?, args).await),
         Command::ResponseKey(cmd) => signing::key_cmd(&path, cmd),
         Command::ClaimServing(args) => signing::claim_serving(&load()?, &path, args).await,
         Command::RevokeClaim(args) => signing::revoke_claim(&path, args),
         Command::SignResponses(args) => signing::sign_responses(&path, args).await,
-        Command::VerifyResponse(args) => Ok(signing::verify_response(args).await),
+        Command::VerifyResponse(args) => Ok(match max_skew(args.max_skew, &load) {
+            Ok(skew) => signing::verify_response(args, skew).await,
+            Err(e) => usage_error(&e),
+        }),
         Command::Show {
             repo,
             repo_type,

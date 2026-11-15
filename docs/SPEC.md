@@ -843,6 +843,9 @@ download_limit_kbps = 0
 dead_mirror_cooldown_secs = 3600 # skip a dead HTTP origin this long; 0 disables persistence
 source_order = ["swarm", "hub", "mirrors"]  # no duplicates; --no-swarm / --swarm-only still apply
 
+[verify]                         # checking signed seller responses (0.3.1)
+max_skew_secs = 300              # timestamp window either way, 1 to 604800; --max-skew overrides
+
 [storage]
 local_dir = "~/.local/share/tensorseed/publish"   # always written; the seeder serves it
 local_public_base_url = ""       # set if a web server exposes local_dir (makes it a webseed)

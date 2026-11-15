@@ -158,6 +158,14 @@ dead_mirror_cooldown_secs = 3600 # 0 disables persistence; in-run marks still ap
 # Byte sources, in order: "swarm", "hub", "mirrors". No duplicates.
 source_order = ["swarm", "hub", "mirrors"]
 
+# Checking signed seller responses (verify-response, check-endpoint).
+[verify]
+# How far a response's signing time may be from the time you check it,
+# either way, in seconds (1 to 604800). --max-skew overrides it. To check
+# a stored response later, use verify-response --at <time received>
+# instead of widening the window.
+max_skew_secs = 300
+
 # Where published objects go: signed catalog files under "<catalog name>/" and,
 # for webseeds, model files under "t/". Default is local disk only: no account
 # anywhere, seeding works from local files, and the directory can optionally

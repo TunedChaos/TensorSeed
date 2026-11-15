@@ -552,8 +552,9 @@ pub fn parse_header_dump(text: &str) -> Vec<(String, String)> {
 }
 
 /// `tensorseed verify-response`. 0 valid, 1 invalid or unsigned, 2 error.
-pub async fn verify_response(args: &VerifyResponseArgs) -> ExitCode {
-    match verify_inner(args).await {
+/// `max_skew` is the resolved skew window (`--max-skew` or the config).
+pub async fn verify_response(args: &VerifyResponseArgs, max_skew: u64) -> ExitCode {
+    match verify_inner(args, max_skew).await {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),
         Err(e) => {
@@ -563,7 +564,14 @@ pub async fn verify_response(args: &VerifyResponseArgs) -> ExitCode {
     }
 }
 
-async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
+async fn verify_inner(args: &VerifyResponseArgs, max_skew: u64) -> anyhow::Result<bool> {
+    let at = args
+        .at
+        .as_deref()
+        .map(|t| {
+            parse_rfc3339(t).ok_or_else(|| anyhow::anyhow!("--at {t:?} is not an RFC 3339 time"))
+        })
+        .transpose()?;
     let (claim, check, source) = fetch_claim(&args.claim).await?;
     let pubkey = claim.response_pubkey()?;
     let headers_text = std::fs::read_to_string(&args.headers)
@@ -572,6 +580,7 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
     let body =
         std::fs::read(&args.body).with_context(|| format!("reading {}", args.body.display()))?;
     let now = now_unix();
+    let checked_at = at.unwrap_or(now);
     let mut sources = args.revocations.clone();
     if let Some(u) = revocations_url_next_to(&source).filter(|_| !args.no_revocations) {
         sources.insert(0, u);
@@ -586,8 +595,8 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
             served_model_id: &claim.served_model_id,
             request_id: args.request_id.as_deref(),
             requested_model: args.model_id.as_deref(),
-            now_unix: now,
-            max_skew_secs: args.max_skew,
+            now_unix: checked_at,
+            max_skew_secs: max_skew,
             claim_expires_unix,
             claim_revoked_unix,
         };
@@ -621,6 +630,10 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
                 "detail": e.to_string(),
             }),
         };
+        let mut v = v;
+        if let Some(t) = &args.at {
+            v["checked_at"] = serde_json::Value::String(t.clone());
+        }
         println!("{}", serde_json::to_string_pretty(&v)?);
     } else {
         match &result {
@@ -652,8 +665,11 @@ async fn verify_inner(args: &VerifyResponseArgs) -> anyhow::Result<bool> {
             eprintln!("warning: {w}");
         }
     }
-    if args.max_skew != DEFAULT_MAX_SKEW_SECS && result.is_ok() && !args.json {
-        eprintln!("note: checked with a skew window of {} s", args.max_skew);
+    if max_skew != DEFAULT_MAX_SKEW_SECS && result.is_ok() && !args.json {
+        eprintln!("note: checked with a skew window of {max_skew} s");
+    }
+    if let (Some(t), Ok(_), false) = (&args.at, &result, args.json) {
+        eprintln!("note: timestamp checked as of {t}, not now");
     }
     Ok(result.is_ok())
 }

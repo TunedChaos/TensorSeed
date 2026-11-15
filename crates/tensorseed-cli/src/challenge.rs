@@ -419,8 +419,9 @@ pub async fn reference(cfg: &Config, args: &ReferenceLogprobsArgs) -> anyhow::Re
 }
 
 /// `tensorseed check-endpoint`. Errors that prevent a verdict exit with 2.
-pub async fn check(args: &CheckEndpointArgs) -> ExitCode {
-    match check_inner(args).await {
+/// `max_skew` is the resolved skew window (`--max-skew` or the config).
+pub async fn check(args: &CheckEndpointArgs, max_skew: u64) -> ExitCode {
+    match check_inner(args, max_skew).await {
         Ok(v) => ExitCode::from(v.exit_code()),
         Err(e) => {
             eprintln!("error: {e:#}");
@@ -429,7 +430,7 @@ pub async fn check(args: &CheckEndpointArgs) -> ExitCode {
     }
 }
 
-async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
+async fn check_inner(args: &CheckEndpointArgs, max_skew: u64) -> anyhow::Result<Verdict> {
     if args.timeout == 0 {
         bail!("--timeout must be at least 1");
     }
@@ -545,7 +546,7 @@ async fn check_inner(args: &CheckEndpointArgs) -> anyhow::Result<Verdict> {
             pubkey: c.response_pubkey()?,
             claim_sha256: c.claim_sha256.clone(),
             served_model_id: c.served_model_id.clone(),
-            max_skew_secs: args.max_skew,
+            max_skew_secs: max_skew,
             claim_expires_unix: c.expires_unix()?,
             claim_revoked_unix: revocation.as_ref().and_then(|(_, t)| *t),
         });
