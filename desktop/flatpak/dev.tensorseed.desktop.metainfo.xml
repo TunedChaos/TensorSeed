@@ -54,6 +54,11 @@
   </supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.1" date="2026-11-14">
+      <description>
+        <p>Verified serving and catalog fixes in the shared library: signed follow lists, claim expiry and revocation, a more reliable endpoint check, and catalog export for added catalogs. Desktop itself is unchanged apart from the version.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-14">
       <description>
         <p>First Flatpak build of Tensorseed Desktop.</p>

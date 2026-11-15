@@ -6010,7 +6010,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -6035,6 +6035,7 @@ dependencies = [
  "tensorseed-hf",
  "tensorseed-serve",
  "tensorseed-torrent",
+ "tensorseed-verify",
  "tokio",
  "tokio-util",
  "toml 0.8.2",
@@ -6044,7 +6045,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-catalog"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -6068,7 +6069,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "hex",
  "serde",
@@ -6080,7 +6081,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-desktop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -6108,7 +6109,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-fetch"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "reqwest",
  "rusqlite",
@@ -6123,7 +6124,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-hf"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "reqwest",
  "serde",
@@ -6136,7 +6137,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-serve"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -6156,7 +6157,7 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-torrent"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "hex",
@@ -6171,20 +6172,24 @@ dependencies = [
 
 [[package]]
 name = "tensorseed-verify"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64 0.23.1",
  "blake2",
+ "chrono",
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hex",
+ "k256",
  "scrypt",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha3",
  "tensorseed-core",
  "thiserror 2.0.21",
  "toml 0.8.2",
+ "url",
 ]
 
 [[package]]

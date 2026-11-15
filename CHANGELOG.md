@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased (0.3.1)
+## 0.3.1 (2026-11-14)
+
+0.3.1 is a verified serving and catalog release. It adds signed follow
+lists, claim expiry and revocation, a `check-claim` command, a verify-only
+crate with a WebAssembly build and a JavaScript package, and an endpoint
+check that no longer fails honest sellers. Tensorseed Desktop is 0.3.1
+too; it gets the library changes and is the first version offered to
+0.3.0 installs through the in app updater. Formats and commands may still
+change before 1.0.
 
 ### Fixed
 
@@ -141,18 +149,15 @@
 - New config keys `[[follow_lists]]` and `follow_list` in `[[catalogs]]`.
   0.3.0 refuses a config that has them, so remove them before going
   back to 0.3.0.
-
 - `verify-response --claim <URL>` now fails with `url_mismatch` when the
   claim is not served at its own `public_base_url` (for example, a
   claim fetched from a local proxy). Pass the claim file instead.
 - `--max-skew` above 604800 (7 days) or 0 is now refused. Use
   `verify-response --at` for stored responses instead of a huge window.
-
 - No claim hash changes. Every claim Tensorseed has written already
   uses the one allowed form; a hand-written claim that used `null` for
   an optional field, left out `publisher_key_id` or `license.id`, or
   carried extra nested fields loaded in 0.3.0 and is rejected in 0.3.1.
-
 - 0.3.0 reference files, commitments, and reports load unchanged; new
   fields are optional. Reference files written with `--samples` above 1
   or calibrated are rejected by 0.3.0 binaries.

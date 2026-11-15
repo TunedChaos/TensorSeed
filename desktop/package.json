@@ -1,6 +1,6 @@
 {
   "name": "tensorseed-desktop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Tensorseed Desktop: browse, verify, pull, and seed Tensorseed catalogs (Tauri 2).",

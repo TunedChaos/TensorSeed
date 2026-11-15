@@ -6,7 +6,7 @@
 // adds, removes, or renames a file, edit the lists below to match its
 // SHA256SUMS.
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.1";
 
 export const REPO_URL = "https://github.com/TunedChaos/TensorSeed";
 export const TAG = `v${VERSION}`;
