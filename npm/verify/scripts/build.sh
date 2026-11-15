@@ -16,6 +16,20 @@ if ! command -v wasm-bindgen >/dev/null; then
   exit 1
 fi
 
+# Keep the builder's home paths out of panic messages in the wasm.
+CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"
+RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"
+_remap=""
+for _pair in \
+  "${CARGO_HOME}/registry/src=/cargo/registry" \
+  "${CARGO_HOME}/git=/cargo/git" \
+  "${RUSTUP_HOME}=/rustup" \
+  "${REPO}=/build"
+do
+  _remap="${_remap} --remap-path-prefix ${_pair}"
+done
+export RUSTFLAGS="${RUSTFLAGS:-}${_remap}"
+
 cargo build -p tensorseed-wasm --target wasm32-unknown-unknown --release --manifest-path "${REPO}/Cargo.toml"
 rm -rf "${OUT}"
 mkdir -p "${OUT}"
