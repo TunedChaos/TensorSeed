@@ -141,7 +141,9 @@ snapshot:  revision 1 (snapshots/0000000001.json)
 sources:   https://catalog.tensorseed.dev/, https://mirror.tensorseed.dev/
 chain:     Strict
 anchored:  revision 4 in Chia store 3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76 (coin current, checked 2026-11-14T21:46:53Z)
-published by: Tuned Chaos <>
+published by: Tuned Chaos
+contact:   none published (catalog.publisher_contact)
+policy:    none published (catalog.publisher_policy_url)
 
 $ tensorseed --config verifier.toml catalog chain-status
 mode:       Strict
@@ -156,7 +158,10 @@ checked by: https://api.coinset.org
 result:     OK, the file catalog matches the chain
 ```
 
-(Log lines on stderr are omitted.) The verified state is kept in
+(Log lines on stderr are omitted.) `contact` and `policy` are the
+publisher's takedown contact and policy URL from the signed
+`ts/v1/catalog` entry; "none published" means the publisher left them
+empty (0.3.1 names missing fields instead of printing a blank). The verified state is kept in
 `<file.state_dir>/<catalog>/state.json` and is re-verified on load. A
 client never accepts a head below the revision it already accepted, so
 run your verifier with a persistent state directory.

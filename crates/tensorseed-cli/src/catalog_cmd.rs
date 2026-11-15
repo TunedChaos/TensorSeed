@@ -220,6 +220,63 @@ fn catalog_info(cfg: &Config) -> CatalogInfo {
     }
 }
 
+/// How `catalog info` shows a catalog's publisher. Empty fields are named
+/// as missing instead of printed as blanks (an empty contact used to print
+/// as `<>`).
+fn publisher_lines(p: &Publisher) -> Vec<String> {
+    let or_none = |v: &str, what: &str| {
+        if v.trim().is_empty() {
+            format!("none published ({what})")
+        } else {
+            v.to_string()
+        }
+    };
+    vec![
+        format!(
+            "published by: {}",
+            or_none(&p.display_name, "catalog.publisher_name")
+        ),
+        format!(
+            "contact:   {}",
+            or_none(&p.contact, "catalog.publisher_contact")
+        ),
+        format!(
+            "policy:    {}",
+            or_none(&p.policy_url, "catalog.publisher_policy_url")
+        ),
+    ]
+}
+
+/// Warnings for publisher fields a catalog should not publish empty:
+/// SPEC section 11 needs a contact and a policy URL for takedown requests.
+fn publisher_warnings(p: &Publisher) -> Vec<String> {
+    let mut out = Vec::new();
+    for (v, key, why) in [
+        (
+            &p.display_name,
+            "publisher_name",
+            "who publishes the catalog",
+        ),
+        (
+            &p.contact,
+            "publisher_contact",
+            "where takedown requests go (SPEC section 11)",
+        ),
+        (
+            &p.policy_url,
+            "publisher_policy_url",
+            "your mirroring and takedown policy (SPEC section 11)",
+        ),
+    ] {
+        if v.trim().is_empty() {
+            out.push(format!(
+                "warning: catalog.{key} is empty; set it to say {why}, then run `tensorseed catalog update-info`"
+            ));
+        }
+    }
+    out
+}
+
 async fn create(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
     match cfg.catalog.backend.as_str() {
         "file" => {
@@ -232,7 +289,11 @@ async fn create(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
                 );
             }
             let id = CatalogId(cfg.catalog.name.clone());
-            let value = tensorseed_core::canonical::to_canonical_vec(&catalog_info(cfg))?;
+            let info = catalog_info(cfg);
+            for w in publisher_warnings(&info.publisher) {
+                eprintln!("{w}");
+            }
+            let value = tensorseed_core::canonical::to_canonical_vec(&info)?;
             cat.stage(
                 &id,
                 &[CatalogOp::Upsert {
@@ -299,6 +360,9 @@ async fn update_info(cfg: &Config, dry_run: bool) -> anyhow::Result<ExitCode> {
     let value = tensorseed_core::canonical::to_canonical_vec(&next)?;
     println!("current:  {}", String::from_utf8_lossy(&cur_bytes));
     println!("proposed: {}", String::from_utf8_lossy(&value));
+    for w in publisher_warnings(&next.publisher) {
+        eprintln!("{w}");
+    }
     if cur_bytes == value {
         println!("no change; nothing to publish");
         return Ok(ExitCode::SUCCESS);
@@ -497,11 +561,8 @@ async fn info_one(cfg: &Config, no_wait: bool) -> anyhow::Result<ExitCode> {
             .await?
     {
         let ci: CatalogInfo = serde_json::from_str(&e.value)?;
-        if !ci.publisher.display_name.is_empty() {
-            println!(
-                "published by: {} <{}>",
-                ci.publisher.display_name, ci.publisher.contact
-            );
+        for l in publisher_lines(&ci.publisher) {
+            println!("{l}");
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -771,6 +832,35 @@ fn unquote(v: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_publisher_fields_are_named_not_blank() {
+        use super::{Publisher, publisher_lines, publisher_warnings};
+        let empty = Publisher {
+            display_name: "Example Publisher".into(),
+            contact: String::new(),
+            policy_url: " ".into(),
+        };
+        let lines = publisher_lines(&empty);
+        assert_eq!(lines[0], "published by: Example Publisher");
+        assert_eq!(
+            lines[1],
+            "contact:   none published (catalog.publisher_contact)"
+        );
+        assert!(lines[2].contains("none published"));
+        assert!(lines.iter().all(|l| !l.contains("<>")));
+        let w = publisher_warnings(&empty);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("catalog.publisher_contact"));
+        assert!(w[1].contains("catalog.publisher_policy_url"));
+        let full = Publisher {
+            display_name: "Example Publisher".into(),
+            contact: "takedown@example.org".into(),
+            policy_url: "https://example.org/policy".into(),
+        };
+        assert!(publisher_warnings(&full).is_empty());
+        assert_eq!(publisher_lines(&full)[1], "contact:   takedown@example.org");
+    }
+
     use super::toml_string;
 
     #[test]

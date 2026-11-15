@@ -18,6 +18,11 @@
   RUN-A-MIRROR.md and PUBLISH-A-CATALOG.md), plus CHANGELOG.md,
   CONTRIBUTING.md, and SECURITY.md. `just dist` fails when a shipped
   guide links to a file that was left out.
+- `catalog info` no longer prints an empty publisher contact as
+  `<>`: it shows the publisher name, contact, and policy URL on their own
+  lines and says "none published" for an empty one. `catalog create` and
+  `catalog update-info` warn when `publisher_name`, `publisher_contact`,
+  or `publisher_policy_url` is empty.
 
 ### Added
 
