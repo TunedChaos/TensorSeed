@@ -80,3 +80,206 @@ jobs:
         run: pnpm --dir site install --frozen-lockfile && pnpm --dir site check && pnpm --dir site build
       - name: Check internal links and anchors
         run: pnpm --dir site test:links
+
+  # Native Windows ARM64 build and smoke for the CLI and Tensorseed Desktop.
+  # Installers are uploaded as workflow artifacts only. Signing them, attaching
+  # them to a GitHub Release, and adding windows-aarch64 entries to latest.json
+  # is a later step. This job is allowed to fail until it has been green on a
+  # few runs; do not add it to required checks yet.
+  #
+  # The runner is the standard GitHub-hosted `windows-11-arm` image (Windows 11
+  # ARM64). The CLI and Desktop are built for aarch64-pc-windows-msvc, which is
+  # not the same as the `just dist` Windows ARM64 CLI target
+  # (aarch64-pc-windows-gnullvm, cross compiled with Zig).
+  windows-arm64:
+    name: Windows ARM64 (CLI + Desktop)
+    runs-on: windows-11-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> desktop/src-tauri/target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # aws-lc-sys (pulled in by rustls) needs clang-cl on aarch64-pc-windows-msvc.
+      # The image has LLVM and the Visual Studio Clang toolset, but clang-cl is
+      # not always on PATH.
+      - name: Put clang-cl on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v clang-cl >/dev/null 2>&1; then
+            echo "clang-cl already on PATH: $(command -v clang-cl)"
+            clang-cl --version
+            echo "CC=clang-cl" >> "$GITHUB_ENV"
+            echo "CXX=clang-cl" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          found=""
+          vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          if [ -x "$vswhere" ]; then
+            found="$("$vswhere" -latest -products '*' -find '**/clang-cl.exe' | head -n1 | tr -d '\r')"
+          fi
+          if [ -z "$found" ]; then
+            for p in \
+              "/c/Program Files/LLVM/bin/clang-cl.exe" \
+              "/c/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/ARM64/bin/clang-cl.exe" \
+              "/c/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Tools/Llvm/ARM64/bin/clang-cl.exe"
+            do
+              if [ -f "$p" ]; then
+                found="$p"
+                break
+              fi
+            done
+          fi
+          if [ -z "$found" ]; then
+            echo "clang-cl not found. aws-lc-sys needs it to build on aarch64-pc-windows-msvc." >&2
+            exit 1
+          fi
+          if command -v cygpath >/dev/null 2>&1; then
+            found_unix="$(cygpath -u "$found")"
+            dir_win="$(cygpath -w "$(dirname "$found_unix")")"
+          else
+            dir_win="$(dirname "$found")"
+          fi
+          echo "Using clang-cl at $found"
+          echo "$dir_win" >> "$GITHUB_PATH"
+          echo "CC=clang-cl" >> "$GITHUB_ENV"
+          echo "CXX=clang-cl" >> "$GITHUB_ENV"
+      - name: Test workspace
+        # No tests are skipped for ARM64. Unix-only cases are already
+        # cfg-gated with #[cfg(unix)] or #[cfg(not(windows))]. None of the
+        # suite is known to be architecture specific.
+        run: cargo test --workspace --locked --target aarch64-pc-windows-msvc
+      - name: Build CLI (release)
+        run: cargo build --locked --release -p tensorseed-cli --target aarch64-pc-windows-msvc
+      - name: Smoke test CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          ts="target/aarch64-pc-windows-msvc/release/tensorseed.exe"
+          "$ts" --version
+          python - "$ts" <<'PY'
+          import hashlib, json, subprocess, sys, tempfile
+          from pathlib import Path
+
+          ts = sys.argv[1]
+          data = b"tensorseed windows arm64 smoke\n"
+          sha = hashlib.sha256(data).hexdigest()
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              (root / "hello.txt").write_bytes(data)
+              manifest = {
+                  "schema": "ts.manifest/1",
+                  "repo": {
+                      "type": "model",
+                      "id": "ci/smoke",
+                      "hf_url": "https://huggingface.co/ci/smoke",
+                  },
+                  "hf_commit": "a" * 40,
+                  "hf_last_modified": None,
+                  "license": {
+                      "spdx": "mit",
+                      "hf_tag": "mit",
+                      "class": "open",
+                      "license_files": [],
+                      "attribution": None,
+                      "gated_upstream": False,
+                  },
+                  "totals": {"files": 1, "bytes": len(data)},
+                  "files": [
+                      {
+                          "path": "hello.txt",
+                          "size": len(data),
+                          "sha256": sha,
+                          "hf_lfs_oid": None,
+                          "bt_v2_pieces_root": None,
+                          "format": None,
+                          "pickle_risk": False,
+                      }
+                  ],
+                  "file_pages": 0,
+                  "torrent": None,
+                  "webseeds": [],
+                  "backups": [],
+                  "published_at": "2026-11-15T00:00:00Z",
+                  "publisher_tool": "tensorseed ci-smoke",
+              }
+              mp = root / "manifest.json"
+              mp.write_text(json.dumps(manifest))
+              r = subprocess.run(
+                  [ts, "verify", str(root), "--manifest-file", str(mp)],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              sys.stdout.write(r.stdout)
+              sys.stderr.write(r.stderr)
+              if r.returncode != 0:
+                  raise SystemExit(f"verify failed with exit {r.returncode}")
+              if "hello.txt" not in r.stdout and "1 files checked" not in r.stdout and "passed" not in r.stdout:
+                  raise SystemExit("verify output did not look like a passing run")
+          PY
+      - name: Install Desktop JS dependencies
+        run: pnpm --dir desktop install --frozen-lockfile
+      - name: Test Desktop crate
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --target aarch64-pc-windows-msvc
+      - name: Build Desktop ARM64 installers (unsigned)
+        # build:unsigned omits updater signatures because CI has no updater
+        # key. --bundles overrides tauri.conf.json, which lists only deb and
+        # AppImage as default targets.
+        run: pnpm --dir desktop build:unsigned -- --bundles msi,nsis --target aarch64-pc-windows-msvc
+      - name: Smoke test Desktop start
+        # Best effort: the Windows runner has a desktop session and WebView2
+        # usually ships with Windows 11, but a headless or missing runtime
+        # failure should not fail the job. The installer build above is the
+        # required Desktop result.
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $exe = "desktop/src-tauri/target/aarch64-pc-windows-msvc/release/tensorseed-desktop.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "Desktop binary not found at $exe; skipping start smoke."
+            exit 0
+          }
+          $p = Start-Process -FilePath (Resolve-Path $exe) -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) {
+            Write-Host "Desktop exited after 20s with code $($p.ExitCode). Start smoke skipped (display or WebView2)."
+            exit 0
+          }
+          Write-Host "Desktop is running (pid $($p.Id))."
+          Stop-Process -Id $p.Id -Force
+          Write-Host "Desktop start smoke passed."
+      - name: Check installer outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="desktop/src-tauri/target/aarch64-pc-windows-msvc/release/bundle"
+          echo "Bundle tree:"
+          find "$base" -type f -print || true
+          mapfile -t msi < <(find "$base/msi" -type f -name '*.msi' 2>/dev/null || true)
+          mapfile -t nsis < <(find "$base/nsis" -type f -name '*.exe' 2>/dev/null || true)
+          if [ "${#msi[@]}" -eq 0 ] || [ "${#nsis[@]}" -eq 0 ]; then
+            echo "Expected both an MSI and an NSIS installer under $base." >&2
+            exit 1
+          fi
+          printf 'MSI: %s\n' "${msi[@]}"
+          printf 'NSIS: %s\n' "${nsis[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensorseed-desktop-windows-arm64
+          path: |
+            desktop/src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+            desktop/src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
