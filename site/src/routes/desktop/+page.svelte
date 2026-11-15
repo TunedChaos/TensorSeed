@@ -67,7 +67,7 @@
   </p>
   <div class="mt-6 flex flex-wrap gap-3">
     <a class="btn btn-primary" href="/download#desktop">Download Desktop {VERSION}</a>
-    <span class="text-base-content/70 self-center text-sm">AppImage, .deb, .rpm, Flatpak, and Windows .exe or .msi.</span>
+    <span class="text-base-content/70 self-center text-sm">AppImage, .deb, .rpm, Flatpak, and Windows .exe or .msi (x64 and ARM64).</span>
   </div>
 </header>
 

@@ -60,12 +60,20 @@
   <div class="mt-6 grid gap-6 lg:grid-cols-2">
     <div class="min-w-0">
       <h3 class="font-semibold" id="flatpak">Flatpak</h3>
-      <p class="mt-1">The bundle needs the GNOME 51 runtime from Flathub. Add the remote if you do not already have it, then install the bundle:</p>
+      <p class="mt-1">
+        The bundle needs the GNOME 51 runtime from Flathub. The app id is <code>dev.tensorseed.Tensorseed</code>. Add the
+        remote if you do not already have it, then install and run the bundle:
+      </p>
       <div class="mt-2">
         <Pre
-          code={`flatpak remote-add --if-not-exists --user flathub https://flathub.org/remote-repo.flatpakrepo\nflatpak install --user ./${FLATPAK_FILE}`}
+          code={`flatpak remote-add --if-not-exists --user flathub https://flathub.org/remote-repo.flatpakrepo\nflatpak install --user ./${FLATPAK_FILE}\nflatpak run dev.tensorseed.Tensorseed`}
         />
       </div>
+      <p class="mt-2">
+        If you already have the 0.3.0 or 0.3.1 Flatpak (<code>dev.tensorseed.desktop</code>), this release installs beside
+        it. Config, keys, catalogs, and pulled models are shared; Desktop preferences start fresh. Once the new one runs,
+        you can remove the old one with <code>flatpak uninstall dev.tensorseed.desktop</code>.
+      </p>
     </div>
     <div class="min-w-0">
       <h3 class="font-semibold" id="updates">Updates</h3>

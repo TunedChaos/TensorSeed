@@ -6,7 +6,7 @@
 // adds, removes, or renames a file, edit the lists below to match its
 // SHA256SUMS.
 
-export const VERSION = "0.3.1";
+export const VERSION = "0.3.2";
 
 export const REPO_URL = "https://github.com/TunedChaos/TensorSeed";
 export const TAG = `v${VERSION}`;
@@ -38,6 +38,8 @@ export const DESKTOP_ASSETS: Asset[] = [
   { label: "Flatpak bundle", file: `Tensorseed.Desktop_${v}_x86_64.flatpak`, os: "linux", note: "not on Flathub yet; does not update itself" },
   { label: "Windows installer .exe", file: `Tensorseed.Desktop_${v}_x64-setup.exe`, os: "windows", note: "installs for you, no administrator rights" },
   { label: "Windows .msi", file: `Tensorseed.Desktop_${v}_x64_en-US.msi`, os: "windows", note: "installs for all users" },
+  { label: "Windows ARM64 installer .exe", file: `Tensorseed.Desktop_${v}_arm64-setup.exe`, os: "windows", note: "installs for you, no administrator rights; install by hand, the in-app updater does not offer ARM64 updates yet" },
+  { label: "Windows ARM64 .msi", file: `Tensorseed.Desktop_${v}_arm64_en-US.msi`, os: "windows", note: "installs for all users; install by hand, the in-app updater does not offer ARM64 updates yet" },
 ];
 
 /** The Desktop download each OS is pointed at first. */
