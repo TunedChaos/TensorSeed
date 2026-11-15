@@ -35,7 +35,7 @@ export const DESKTOP_ASSETS: Asset[] = [
   { label: "Linux AppImage", file: `Tensorseed.Desktop_${v}_amd64.AppImage`, os: "linux", note: "updates itself" },
   { label: "Debian and Ubuntu .deb", file: `Tensorseed.Desktop_${v}_amd64.deb`, os: "linux", note: "updates through your package manager" },
   { label: "Fedora and openSUSE .rpm", file: `Tensorseed.Desktop-${v}-1.x86_64.rpm`, os: "linux", note: "updates through your package manager" },
-  { label: "Flatpak bundle", file: `Tensorseed.Desktop_${v}_x86_64.flatpak`, os: "linux", note: "not on Flathub yet; does not update itself" },
+  { label: "Flatpak bundle", file: `Tensorseed.Desktop_${v}_x86_64.flatpak`, os: "linux", note: "not published to Flathub; does not update itself" },
   { label: "Windows installer .exe", file: `Tensorseed.Desktop_${v}_x64-setup.exe`, os: "windows", note: "installs for you, no administrator rights" },
   { label: "Windows .msi", file: `Tensorseed.Desktop_${v}_x64_en-US.msi`, os: "windows", note: "installs for all users" },
   { label: "Windows ARM64 installer .exe", file: `Tensorseed.Desktop_${v}_arm64-setup.exe`, os: "windows", note: "installs for you, no administrator rights; install by hand, the in-app updater does not offer ARM64 updates yet" },

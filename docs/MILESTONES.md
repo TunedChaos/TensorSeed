@@ -88,10 +88,14 @@ These were completed in the testnet11 run listed under Done.
 - [ ] Catalog `.dat` torrent (Chia) and snapshot torrent seeding (file)
 
 ## M4: Catalog explorer
-- [ ] Static site at tensorseed.dev generated from the catalog
-- [ ] Lists repos, licenses, sizes, magnets, webseeds, attribution text
-- [ ] Catalog generation history
-- [ ] Hosted on any static host, with no privileged role
+
+The 0.2.0 explorer shipped at explore.tensorseed.dev: a static, read-only
+app that lists repos, licenses, sizes, magnets, and webseeds, with no
+privileged role. tensorseed.dev is the product site (downloads, guides,
+verification), not a catalog-generated listing.
+
+- [x] Read-only explorer at explore.tensorseed.dev (0.2.0; see SPEC 8.4)
+- [ ] Optional follow-ups: in-browser downloads (SPEC 8.4 phase 2)
 
 ## 0.2.0
 
@@ -142,17 +146,17 @@ explore.tensorseed.dev.
 ## 0.3.0: Tensorseed Desktop
 
 A separate product from the CLI (see [SPEC.md](SPEC.md) section 19).
-The CLI stays a static, GUI-free binary. Work starts after the 0.2.0
-explorer UI exists so Desktop can reuse it.
+The CLI stays a static, GUI-free binary. 0.3.0 shipped after the 0.2.0
+explorer UI existed so Desktop could reuse it.
 
-- [ ] Tauri desktop app with a system tray, reusing the explorer's
+- [x] Tauri desktop app with a system tray, reusing the explorer's
       Svelte 5 + TailwindCSS + DaisyUI UI and calling the Rust crates
       natively (seeding status, disk use, pause/resume, catalog views)
-- [ ] Desktop bundles or depends on the CLI, and shares config, data
+- [x] Desktop bundles the CLI, and shares config, data
       directories, and `serve` daemon state; no second layout for the GUI
-- [ ] `tensorseed gui` launcher in the CLI: opens Desktop if it is
+- [x] `tensorseed gui` launcher in the CLI: opens Desktop if it is
       installed, otherwise prints a download link (does not link a GUI)
-- [ ] Desktop packaging: Windows installer (MSI or NSIS); Linux .deb,
+- [x] Desktop packaging: Windows installer (MSI and NSIS); Linux .deb,
       .rpm, AppImage, and Flatpak. CLI packages remain GUI-free.
 - [x] Standard torrent options in `[torrent]` for `pull`, `seed`, and
       `serve`, in `tensorseed-app` so Desktop can reuse them: download
@@ -171,8 +175,29 @@ explorer UI exists so Desktop can reuse it.
 - [x] `serve-inference`: verify a local copy against the signed manifest,
       license gate (`--i-have-rights` for `forbidden`), start llama.cpp or
       vLLM from `[inference]` or PATH (or `--print-command`), wait for
-      `/v1/models`, write the unsigned `ts.served-weights/0` record; logic
-      in `tensorseed-app`; `doctor` checks `[inference]`; guide in
+      `/v1/models`, and write an unsigned `ts.served-weights/0` record or,
+      with `--sign`, a `ts.served-weights/1` claim; logic in
+      `tensorseed-app`; `doctor` checks `[inference]`; guide in
       [SELL-INFERENCE.md](SELL-INFERENCE.md)
-- [ ] Signed weights statement (replaces `ts.served-weights/0`), format
-      designed with a marketplace partner
+- [x] Signed weights claim (`ts.served-weights/1`) and signed responses
+      (`serve-inference --sign`, `claim-serving`, `sign-responses`)
+
+## 0.3.1
+
+- [x] Claim expiry and revocation, `check-claim`, and a calibrated
+      `check-endpoint` set decision
+- [x] Signed follow lists (`ts.follow-list/1`)
+- [x] Verify-only `tensorseed-verify` crate, WebAssembly build, and
+      `@tensorseed/verify` on npm
+- [x] Tensorseed Desktop 0.3.1, offered to 0.3.0 installs through the
+      in-app updater
+
+## 0.3.2
+
+- [x] A fresh install follows the official catalog with no config file
+- [x] Flatpak app id `dev.tensorseed.Tensorseed` (0.3.0 and 0.3.1 used
+      `dev.tensorseed.desktop`); uninstall the old id after upgrading
+- [x] Windows ARM64 Desktop installers (NSIS and MSI); the in-app updater
+      does not offer ARM64 updates yet
+- [x] CI builds every unsigned release asset on a `v*` tag, with SLSA
+      attestations; signing stays on your signing machine

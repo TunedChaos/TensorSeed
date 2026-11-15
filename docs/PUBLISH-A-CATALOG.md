@@ -33,7 +33,7 @@ commit (`hf_commit`) and the per-file sizes and SHA-256 hashes. Anyone
 can check those against the Hub while the repo is still up
 (`tensorseed verify --hf org/name`). When several independent catalogs
 list the same hashes for the same commit, that agreement is further
-evidence; clients will surface it in 0.2.0 (see SPEC section 6.15).
+evidence; clients surface that agreement (since 0.2.0; see SPEC section 6.15).
 
 Torrents are built the same way every time. Two publishers who mirror the
 same Hugging Face commit produce the same info hash and share one swarm,

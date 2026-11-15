@@ -1,11 +1,11 @@
 # Tensorseed Desktop
 
 A Tauri 2 app over the `tensorseed-app` library: browse and verify
-Tensorseed catalogs natively, and (in later 0.3.0 milestones) pull and seed
-with the same config, job state, and seeder as the `tensorseed` CLI. See
-`docs/plans/0.3.0-desktop.md`.
+Tensorseed catalogs natively, and pull and seed with the same config, job
+state, and seeder as the `tensorseed` CLI. See
+`docs/plans/0.3.0-desktop.md` for the original 0.3.0 plan.
 
-Status: M3.5. The window has six views: the followed catalogs and their
+The window has six views: the followed catalogs and their
 entries, an entry page, downloads, seeding, the library of local copies,
 and settings (Hugging Face login, updates, and the torrent options). A tray icon shows what is running. Pull, verify, and
 seed run in process. The AppImage, MSI, and NSIS
@@ -187,7 +187,8 @@ looked and exits 1.
   `status.rs` (what the tray and status bar show), `tray.rs`.
 - `src-tauri/src/platform.rs`: platform specific wiring behind
   `cfg(target_os = ...)` with portable defaults, so macOS can be added
-  later. 0.3.0 release targets are Linux and Windows only.
+  later. Release targets are Linux and Windows (x64 and ARM64). There is
+  no macOS build.
 
 Name "Tensorseed Desktop", identifier `dev.tensorseed.desktop`, and the
 `tensorseed://` deep link scheme. No telemetry: the only network requests
@@ -253,7 +254,7 @@ SmartScreen warns on first run.
 - **MSI** installs for the machine into `%ProgramFiles%\Tensorseed
   Desktop` and needs elevation. MSI versions must be numeric, so
   `bundle.windows.wix.version` in `tauri.conf.json` holds the numeric form
-  of the app version (`0.3.0.0` for `0.3.0`); keep it in step when the
+  of the app version (`0.3.2.0` for `0.3.2`); keep it in step when the
   version changes. The WiX upgrade code is pinned there too and must
   never change.
 - **Windows Firewall (opt in, off by default).** The NSIS welcome page
@@ -273,7 +274,7 @@ SmartScreen warns on first run.
   and then the key once it is empty, so an MSI installed afterwards uses
   its default folder and an installed MSI keeps its values. Updates and
   reinstalls keep the key. Installing one kind at a time still avoids
-  surprises; M3.6 picks which to ship.
+  surprises. Both the MSI and the NSIS installer ship in the release.
 - Config and data use the CLI's Windows paths: the config is
   `%APPDATA%\tensorseed\tensorseed.toml`, and state, the catalog cache,
   and job records are under `%LOCALAPPDATA%\tensorseed`. The WebView2
@@ -289,8 +290,8 @@ SmartScreen warns on first run.
 - The first time Desktop seeds, Windows asks whether to allow
   `tensorseed-desktop.exe` through the firewall, and blocks incoming
   connections until it is allowed, so Desktop only seeds to peers it
-  dials. An installer firewall rule is an
-  M3.6 decision.
+  dials. Both installers offer an optional firewall rule, off by
+  default.
 - Bind interface is not supported on Windows, and the settings view
   disables it.
 
@@ -321,8 +322,9 @@ seeder is stopped, and the update is installed:
   first install.
 - **.deb and .rpm:** no self update. Settings says to update through your
   package manager.
-- **Flatpak:** no self update. Settings says to update through Flatpak or
-  Flathub (`flatpak update`).
+- **Flatpak:** no self update. Settings says to install the next
+  release's bundle, or run `flatpak update` if you installed from a
+  remote.
 - **Development builds** (`tauri dev`, plain `cargo build`) never check.
 
 A failed signature check, a version mismatch, or a missing entry for this
@@ -541,19 +543,19 @@ folder Flatpak shares with the host, because the tray host reads the icon
 by path.
 
 The unsigned `.flatpak` bundle is built in the Release build workflow
-(about 25 minutes, including the runtime and SDK downloads). Nothing is
-published to Flathub yet.
+(about 25 minutes, including the runtime and SDK downloads). It is not
+published to Flathub. The GNOME 51 runtime the bundle needs is installed
+from Flathub when you install the local file.
 
-Flathub: the Flathub manifest lives in the Flathub repo for the app id,
-not here. It builds the same way from a `type: git` source pinned to a
-release tag and its commit, with these `cargo-sources.json` and
-`node-sources.json` copied next to it and `shared-modules` as a
-submodule there. The AppStream metadata, desktop file, and icons it
-installs come from this repo. The in app updater stays off in every
-Flatpak (it checks `FLATPAK_ID` and points to `flatpak update`), so
-the Flathub build needs no separate updater setting. Screenshots are
-served from `site/static/flathub/screenshots/<version>/` so their URLs
-stay stable.
+A Flathub listing, if one is submitted later, would use a manifest in
+the Flathub repo for the app id, not in this tree: a `type: git` source
+pinned to a release tag and its commit, with these `cargo-sources.json`
+and `node-sources.json` copied next to it and `shared-modules` as a
+submodule there. The AppStream metadata, desktop file, and icons would
+come from this repo. The in app updater stays off in every Flatpak (it
+checks `FLATPAK_ID` and tells you to install the next bundle).
+Screenshots for the metainfo are served from
+`site/static/flathub/screenshots/<version>/` so their URLs stay stable.
 
 ## Not done yet
 
@@ -561,14 +563,7 @@ stay stable.
 - Settings edits only `[torrent]`; the data folder, catalogs, chain check
   mode, and disk budget are still edited in the config file or with the
   CLI.
-- Packaging: the local `.deb` and AppImage `tauri build` makes by
-  default, the Windows MSI and NSIS installers, and the Flatpak (also
-  built unsigned in CI; not published to Flathub). Signing, the MSI build
-  method, and bundling the CLI in the other packages are M3.6 decisions.
-- Windows: the NSIS and MSI builds, deep links, single instance
-  forwarding, close to tray, the tray icon and its status, pull, verify,
-  seed, settings, `tensorseed gui`, and uninstalling have been run on
-  Windows 11. The tray menu itself has only been checked on Linux so
-  far. macOS is not built.
+- The Windows tray menu itself has only been checked on Linux so far.
+  macOS is not built.
 
 Copyright Tuned Chaos. AGPL-3.0-or-later.

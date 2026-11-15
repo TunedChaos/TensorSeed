@@ -1,6 +1,6 @@
 # Contributing to Tensorseed
 
-Thanks for your interest. Tensorseed is at 0.2.0, an early release, so the design in
+Thanks for your interest. Tensorseed is at 0.3.2, an early release, so the design in
 [docs/SPEC.md](docs/SPEC.md) can still change. Opening an issue to discuss a change
 before writing a large patch saves everyone time.
 
@@ -75,7 +75,7 @@ just build x86_64-pc-windows-gnu      # one target, into target/<triple>/dist/
 just dist                    # all targets, source archives, .deb/.rpm, and SHA256SUMS
 just dist-packages           # .deb and .rpm from the musl binaries (needs nfpm)
 just generate-docs           # shell completions and man pages into target/shell-docs
-just dist-src v0.1.0         # source only: dist/tensorseed-<version>-src.tar.gz and .zip from that ref
+just dist-src v0.3.2         # source only: dist/tensorseed-<version>-src.tar.gz and .zip from that ref
 just sign ~/.tensorseed-release/tensorseed-release.key   # release key only, see RELEASE-KEY.md
 just verify-dist             # uses keys/tensorseed-release.pub
 ```

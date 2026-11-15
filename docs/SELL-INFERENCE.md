@@ -209,25 +209,21 @@ Arguments after `--` go to the runtime:
 
 ### The served weights record
 
-`.tensorseed/served-weights.json` (schema `ts.served-weights/0`) records the
-catalog, the manifest key and the SHA-256 of the signed manifest value, the
-revision, the license and its mark, the runtime and the file it loads, the
-served model id, the local and public base URLs, and every verified file
-with its SHA-256.
+`.tensorseed/served-weights.json` records the catalog, the manifest key
+and the SHA-256 of the signed manifest value, the revision, the license
+and its mark, the runtime and the file it loads, the served model id,
+the local and public base URLs, and every verified file with its SHA-256.
 
-It is **unsigned and provisional**. It is a placeholder for a signed
-"weights statement" a seller can publish so buyers and marketplaces can see
-which catalog revision is behind a model id. That format is being designed
-with a marketplace partner and is not decided yet; the `/0` version and
-`"signed": false` mark this file as a draft. Even a signed statement would
-prove what the seller claims to serve, not what actually runs; nothing in
-this file is proof.
+Without `--sign`, that file is an unsigned `ts.served-weights/0` record
+for local bookkeeping. It is not evidence and should not be published as
+a claim.
 
-With `--sign` (see [Sign responses](#sign-responses)), the same path holds
-a `ts.served-weights/1` claim instead: the same facts plus the engine
-version, the response signing public key, an optional seller wallet, and
-`claim_sha256`, which your wallet can sign. It is a statement you make and
-can be held to, not proof of what runs.
+With `--sign` (see [Sign responses](#sign-responses)), or with
+`claim-serving`, the same path holds a `ts.served-weights/1` claim: the
+same facts plus the engine version, the response signing public key, an
+optional seller wallet, expiry (since 0.3.1), and `claim_sha256`, which
+your wallet can sign. The signed format shipped in 0.3.0. It is a
+statement you make and can be held to, not proof of what runs.
 
 ## 5. Expose it safely
 

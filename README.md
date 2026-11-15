@@ -15,19 +15,21 @@ its responses.
 Website: [tensorseed.dev](https://tensorseed.dev).
 Catalog explorer: [explore.tensorseed.dev](https://explore.tensorseed.dev).
 
-> **Status: 0.2.0, an early release.** Downloading and verifying works today
+: **Status: 0.3.2, an early release.** Downloading and verifying works today
 > (`pull`, `verify`), as do automatic mirroring from the Hub (`harvest`), the
 > signed-file catalog commands, and BitTorrent: harvested revisions get hybrid
 > v1+v2 torrents, `seed` serves them, `serve` keeps seeding what you already
 > pulled, and `pull` uses the BitTorrent swarm first, then Hugging Face, then
-> HTTP mirrors. `--seed-after` still seeds after a verified pull. One client
-> can follow several catalogs at once (`[[catalogs]]`), and the browser
+> HTTP mirrors. `--seed-after` still seeds after a verified pull. A fresh
+> install follows the official catalog (anchored on Chia mainnet, checked
+> strictly) with no config file; one client can also follow several catalogs
+> at once (`[[catalogs]]`). Tensorseed Desktop browses, pulls, and seeds
+> with the same config, including Windows ARM64 installers. The browser
 > explorer verifies the catalog and its Chia anchor without installing
-> anything. The
-> official catalog is anchored on Chia mainnet, and clients check the file
-> catalog against the Chia store by default (strict). `tensorseed doctor`
-> checks an install end to end; `takedown` still prints "not implemented
-> yet". Expect breaking changes.
+> anything. `@tensorseed/verify` is on npm. `serve-inference` can sign
+> `ts.served-weights/1` claims and responses. `tensorseed doctor` checks an
+> install end to end; `takedown` still prints "not implemented yet". Expect
+> breaking changes.
 
 **Want to help keep models available?** Run a mirror or seeder: see
 [docs/RUN-A-MIRROR.md](docs/RUN-A-MIRROR.md). **Want to publish your own
@@ -69,12 +71,15 @@ gateways that list and check sellers read
 
 ## Install
 
-Download a binary, `.deb`, or `.rpm` from the
+Download a CLI binary, `.deb`, or `.rpm`, or Tensorseed Desktop (Linux
+AppImage, `.deb`, `.rpm`, and Flatpak, and Windows x64 and ARM64
+installers), from the
 [latest GitHub release](https://github.com/TunedChaos/TensorSeed/releases/latest)
-(verify it as in [Release signatures](#release-signatures)), or build it
-with `cargo install --locked --git https://github.com/TunedChaos/TensorSeed`
-(see [Build](#build)). That is all you need to pull, verify, seed, and run
-a mirror.
+or [tensorseed.dev/download](https://tensorseed.dev/download)
+(verify it as in [Release signatures](#release-signatures)). Or build the
+CLI with `cargo install --locked --git https://github.com/TunedChaos/TensorSeed`
+(see [Build](#build)). The CLI is all you need to pull, verify, seed, and
+run a mirror.
 
 **Serving inference needs a separate engine.** `tensorseed serve-inference`,
 `reference-logprobs`, and the `sign-responses` signing proxy start or sit

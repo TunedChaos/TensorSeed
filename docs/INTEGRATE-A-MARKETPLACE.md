@@ -6,8 +6,8 @@
 This guide is for the other side of
 [SELL-INFERENCE.md](SELL-INFERENCE.md): an inference marketplace, a
 router, or an API gateway that lists sellers and wants to check what they
-claim to serve. It covers what ships in Tensorseed 0.3.0, plus the
-0.3.1 additions marked **0.3.1** (`check-claim`, the calibrated
+claim to serve. It covers what ships in Tensorseed 0.3.2. Features that
+landed in 0.3.1 are marked **0.3.1** (`check-claim`, the calibrated
 `check-endpoint` set decision, claim expiry and revocation, the
 verify-only `tensorseed-verify` crate, and the `@tensorseed/verify` npm
 package). Install `@tensorseed/verify` from npm (see
@@ -16,7 +16,7 @@ Every command, field, header, and path below was checked against the
 code, and the example outputs come from real runs against the official
 catalog and a llama.cpp seller behind `serve-inference --sign`. Formats
 are versioned `/1` and may still change before 1.0. Ideas that are not
-built yet are listed under [Planned](#13-planned-not-in-030).
+built yet are listed under [Planned](#13-planned-not-in-032).
 
 Tensorseed has no marketplace code, holds no wallet keys, and has no
 dependency on any payment rail. You keep listings, routing, billing,
@@ -40,18 +40,18 @@ Contents:
 10. [Security notes](#10-security-notes)
 11. [Integration checklist](#11-integration-checklist)
 12. [Reference: exit codes and limits](#12-reference-exit-codes-and-limits)
-13. [Planned (not in 0.3.0)](#13-planned-not-in-030)
+13. [Planned (not in 0.3.2)](#13-planned-not-in-032)
 
 ## 1. What you can verify, and what you cannot
 
-| Question | Can you check it in 0.3.0? | How |
+| Question | Can you check it in 0.3.2? | How |
 |---|---|---|
 | Is this catalog revision really from the publisher I pinned, and is it the latest one anchored on chain? | Yes | Minisign signatures, the file catalog hash chain, and the Chia anchor ([section 3](#3-trust-catalogs)) |
 | Does the model, revision, and file a seller names exist, with these exact hashes, in a catalog I trust? | Yes | Match the claim's `manifest_sha256` and `files` to the signed manifest ([4.5](#45-match-the-claim-to-a-catalog-you-trust)) |
 | Did the seller (and optionally the seller's wallet) put their name to that claim? | Yes | `claim_sha256` and an optional EIP-191 wallet signature ([4.3](#43-the-canonical-hash-claim_sha256), [4.4](#44-the-wallet-signature)) |
 | Did this specific answer come from the holder of the claim's response key, unmodified? | Yes | Ed25519 signed responses ([section 5](#5-verify-signed-responses)) |
 | Does the live endpoint behave like those weights? | Statistically, on rare challenges | Logprob spot challenges with tolerances ([section 6](#6-run-logprob-spot-challenges)) |
-| Is every request served by those weights, all the time? | No | Nothing short of hardware attestation can show that, and Tensorseed 0.3.0 has none |
+| Is every request served by those weights, all the time? | No | Nothing short of hardware attestation can show that, and Tensorseed 0.3.2 has none |
 | Is the publisher of a catalog honest? | No | A catalog proves what *that* publisher signed. Trust in the files comes from the recorded Hugging Face commit and hashes, which anyone can re-check against the Hub |
 | Is a license safe for your use? | No | The commercial serving mark is derived from the license id only and is **not legal advice** |
 
@@ -1191,7 +1191,7 @@ JavaScript package, pass `now` and `maxSkewSecs` the same way.
 ```toml
 [dependencies]
 anyhow = "1"
-tensorseed-app = { git = "https://github.com/TunedChaos/TensorSeed", tag = "v0.3.0" }
+tensorseed-app = { git = "https://github.com/TunedChaos/TensorSeed", tag = "v0.3.2" }
 ```
 
 ```rust
@@ -1259,7 +1259,7 @@ revocations:
 ```toml
 [dependencies]
 anyhow = "1"
-tensorseed-verify = { git = "https://github.com/TunedChaos/TensorSeed", tag = "v0.3.1" }
+tensorseed-verify = { git = "https://github.com/TunedChaos/TensorSeed", tag = "v0.3.2" }
 ```
 
 ```rust
@@ -1343,7 +1343,7 @@ const { verifier } = openCatalog({ name: "tensorseed", pubkey: PIN.pubkey, snaps
 const report = await checkEndpoint("https://llm.example.com/v1", {
   catalog: verifier,
   requireWalletSig: true,
-  requireExpiry: false, // true once your sellers run 0.3.1
+  requireExpiry: true, // sellers on 0.3.1 or later set expires_at
 });
 // report is ts.claim-check/1, exactly as `check-claim --json` prints it.
 if (report.verdict !== "pass") throw new Error(JSON.stringify(report.checks));
@@ -1910,8 +1910,8 @@ any label. Claims expire only when you stop accepting them, and a pass
 today says nothing about tomorrow, so downgrade on stale evidence.
 
 None of these tiers proves that every answer came from the claimed
-weights. That needs hardware attestation, which 0.3.0 does not have
-([section 13](#13-planned-not-in-030)).
+weights. That needs hardware attestation, which 0.3.2 does not have
+([section 13](#13-planned-not-in-032)).
 
 ## 8. Health checks, `/v1/models`, and upstream keys
 
@@ -2032,9 +2032,9 @@ weights. That needs hardware attestation, which 0.3.0 does not have
 | Claim lifetime (`--expires-in`) | 1 hour to 400 days (0.3.1) |
 | Follow list | 1 MiB, at most 1000 catalogs (0.3.1) |
 
-## 13. Planned (not in 0.3.0)
+## 13. Planned (not in 0.3.2)
 
-Not in 0.3.0. Design notes are in
+Not in 0.3.2. Design notes are in
 [verified-serving.md](plans/verified-serving.md); none of this has a
 release date.
 

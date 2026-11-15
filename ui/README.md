@@ -2,7 +2,7 @@
 
 Svelte 5 components, TypeScript types, formatting helpers, and the theme
 shared by the Tensorseed explorer (`explorer/`) and Tensorseed Desktop
-(`desktop/`). See `docs/plans/0.3.0-desktop.md`, milestone M3.1.
+(`desktop/`). See `docs/plans/0.3.0-desktop.md` for the Desktop plan that introduced this crate.
 
 It is not published. Each app links it with `"@tensorseed/ui": "link:../ui"`
 and compiles it as source, so there is no build step here. Svelte, Tailwind

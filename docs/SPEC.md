@@ -1,9 +1,11 @@
-# Tensorseed: Project Specification (Revision 15)
+# Tensorseed: Project Specification (Revision 16)
 
 > Name: **Tensorseed** (binary and crate prefix `tensorseed`).
 > Website: https://tensorseed.dev (primary). tensorseed.org and tensorseed.garden are reserved as redirects to tensorseed.dev.
 > Publisher: Tuned Chaos. License: AGPL-3.0-or-later.
-> Status: 0.2.0, an early release. Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and clients check it strictly by default.
+> Status: 0.3.2, an early release. Design approved in principle on 2026-11-12. Working today: `pull`, `verify`, `list`, `show`, `jobs`, `harvest`, `mirror`, and the `catalog` commands on the file backend; `seed`, `pull` (swarm first by default), and `--seed-after` over BitTorrent (hybrid v1+v2 torrents built in pure Rust, swarm through librqbit); Tensorseed Desktop (AppImage, .deb, .rpm, Flatpak, and Windows x64 and ARM64 installers); `serve-inference` with signed `ts.served-weights/1` claims; `@tensorseed/verify` on npm; the Chia backend has run end to end on testnet11 (section 6.13); the file catalog is checked against the Chia store, which is the source of truth (6.14); the official catalog is anchored on Chia mainnet (store `3dcd43dced47a32f8e38e8ec77f583d8d1bafe1ab24e381538e50a36034b7a76`) and is followed by default on a fresh install, with clients checking it strictly.
+
+Revision 16 changes: public status is 0.3.2 (an early release). 0.3.0 shipped Tensorseed Desktop (section 19), signed `ts.served-weights/1` claims, and signed responses. 0.3.1 added claim expiry and revocation, `check-claim`, signed follow lists (6.16), the verify-only `tensorseed-verify` crate, and `@tensorseed/verify` on npm. 0.3.2 follows the official catalog on a fresh install with no config file, renames the Flatpak app id to `dev.tensorseed.Tensorseed` (0.3.0 and 0.3.1 used `dev.tensorseed.desktop`), adds Windows ARM64 Desktop installers, and builds every unsigned release asset in CI with SLSA provenance; signing stays on your signing machine.
 
 Revision 15 changes: commercial serving marks (11.1): a client side value (`allowed`, `restricted`, `forbidden`, `unknown`) derived from the license id and class already in index entries and manifests; the signed catalog format does not change. `serve-inference` (19.1) serves a verified local copy through llama.cpp or vLLM, configured in `[inference]`, and writes the unsigned, provisional `ts.served-weights/0` record. `list --json` prints `ts.list/1`.
 
@@ -710,7 +712,7 @@ Crate split needed first. `tensorseed-core` is already almost portable (serde, s
 - Modes: `strict` (default), `warn`, and `off`, with exactly the CLI semantics. Strict refuses to show a head the chain does not anchor; warn shows it with a banner; off skips the coin lookup and says so. All endpoints that answer must agree; unreachable endpoints are skipped, and none answering is reported as "chain unreachable" (strict then shows the last verified state from local storage, clearly marked as such).
 - The highest accepted revision and root are kept in `localStorage` (or IndexedDB), so the browser refuses rollbacks across visits like the CLI does.
 
-**Pinned values.** The publisher key and store id are compiled into the page and shown on every view; a "use another catalog" form accepts a different key, store id, and base URL for third party catalogs. Shipping that form is part of 0.2.0, together with multi-catalog subscription in the client (6.15).
+**Pinned values.** The publisher key and store id are compiled into the page and shown on every view; a "use another catalog" form accepts a different key, store id, and base URL for third party catalogs. The form shipped in 0.2.0, together with multi-catalog subscription in the client (6.15).
 
 **Views.**
 
@@ -787,13 +789,13 @@ Single binary `tensorseed`.
 | `verify <dir\|repo_id[@commit]> [--repo] [--dir] [--hf] [--manifest-file] [--strict] [--threads N]` | Re-hash a local copy; exit 3 on mismatch. | done |
 | `list [--filter] [--commercial] [--commercial-serving MARK]... [--json] [--no-wait] [--catalog NAME]` | List catalog entries (from `index` keys) with their commercial serving mark (11.1). `--commercial` keeps `allowed` and `restricted`; `--json` prints `ts.list/1`. | done |
 | `show <repo_id>[@commit] [--revision]` | Print a manifest; the commercial serving mark goes to stderr. | done |
-| `serve-inference <dir\|repo_id[@commit]> [--dir] [--runtime auto\|llama-cpp\|vllm] [--file GGUF] [--model-id ID] [--host] [--port] [--public-url URL] [--i-have-rights] [--print-command] [--ready-timeout SECS] [-- ARGS]` | Verify a local copy against the signed manifest, gate on the license, start an OpenAI compatible runtime, wait for `/v1/models`, and write `ts.served-weights/0` (19.1). | done (unreleased 0.3.0) |
+| `serve-inference <dir\|repo_id[@commit]> [--dir] [--runtime auto\|llama-cpp\|vllm] [--file GGUF] [--model-id ID] [--host] [--port] [--public-url URL] [--i-have-rights] [--print-command] [--ready-timeout SECS] [-- ARGS]` | Verify a local copy against the signed manifest, gate on the license, start an OpenAI compatible runtime, wait for `/v1/models`, and write `ts.served-weights/0` or, with `--sign`, a `ts.served-weights/1` claim (19.1). | done (0.3.0) |
 | `jobs [--show ID] [--clear ID]` | Inspect resumable download jobs. | done |
 | `seed [--dir DIR]... [--for DURATION] [--serve-catalog]` | Seed published revisions or pulled directories in place; `--serve-catalog` also serves the local catalog files on `serve.http_listen` (8.3). | done |
 | `serve [--for DURATION] [--serve-catalog] [--http ADDR] [--health ADDR\|off] [--fetch\|--no-fetch] [--dir DIR]... [--sync-interval SECS]` | Long running seeder: catalog loop, selection rules, takedowns, budget, auto fetch, HTTP webseed, catalog mirror, health endpoint, port mapping (8.3). | done |
 | `takedown <repo_id> --reason ... [--revisions ...] [--delete-webseed]` | Write a tombstone, optionally delete webseed objects on every storage target. | stub |
-| `gui [TARGET] [--type model\|dataset] [--print-command]` | Open Tensorseed Desktop, optionally at an entry (`org/name`) or a `tensorseed://` link; exit 1 with where it looked and the download link if it is not installed (19). | done (unreleased 0.3.0) |
-| `hf login` / `hf logout` / `hf status` | Save, forget, or check a Hugging Face token without printing it. Also reuse a token already saved by `hf auth login`. | done (unreleased 0.2.0) |
+| `gui [TARGET] [--type model\|dataset] [--print-command]` | Open Tensorseed Desktop, optionally at an entry (`org/name`) or a `tensorseed://` link; exit 1 with where it looked and the download link if it is not installed (19). | done (0.3.0) |
+| `hf login` / `hf logout` / `hf status` | Save, forget, or check a Hugging Face token without printing it. Also reuse a token already saved by `hf auth login`. | done (0.2.0) |
 
 Exit codes: 0 success, 1 error, 2 not implemented yet, 3 verification or download failure.
 
@@ -1207,7 +1209,7 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 - `seed` with selection rules, disk budget, tombstone honoring, optional `--serve-catalog` and catalog torrent. (Seeding published trees and pulled directories in place, upload caps, and DHT, trackers, and LSD are done.)
 
 **M4: Catalog explorer**
-- Static site at tensorseed.dev (generated from the catalog) listing repos, licenses, sizes, magnets, webseeds, attribution text, and catalog generation history. Hosted on any static host; it has no privileged role.
+- Done in 0.2.0 at explore.tensorseed.dev: a static, read-only explorer listing repos, licenses, sizes, magnets, and webseeds, with no privileged role (8.4). tensorseed.dev is the product site, not a catalog-generated listing. Optional follow-up: in-browser downloads (8.4 phase 2).
 
 **0.2.0** (section 18)
 - Multi-catalog subscription (`[[catalogs]]`), independent verification, and cross-catalog hash agreement.
@@ -1226,6 +1228,13 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 - Desktop packaging: Windows installer (MSI or NSIS); Linux .deb, .rpm, AppImage, and Flatpak.
 
 ---
+
+**0.3.1**
+- Claim expiry and revocation, `check-claim`, signed follow lists (6.16), the `tensorseed-verify` crate, and `@tensorseed/verify` on npm.
+
+**0.3.2**
+- A fresh install follows the official catalog with no config file.
+- Flatpak app id `dev.tensorseed.Tensorseed`. Windows ARM64 Desktop installers. CI builds every unsigned release asset on a `v*` tag, with SLSA provenance; signing stays on your signing machine.
 
 ## 17. Open questions
 
@@ -1246,9 +1255,9 @@ What this project adds: a Chia-anchored, versioned, publicly mirrorable catalog 
 
 ## 18. 0.2.0 plan
 
-Implementation follows this section. 0.2.0 stays Hugging Face models and datasets only. The cost of entry stays low: a laptop and one repo the user cares about should still be enough to pull, verify, and seed, with no extra configuration. The planned default download order is torrent, then Hugging Face, then HTTP mirrors, overridable with `[fetch] source_order`. Chia DataLayer remains the source of truth for each catalog (6.14, 6.15).
+This section shipped in 0.2.0. 0.2.0 stays Hugging Face models and datasets only. The cost of entry stays low: a laptop and one repo the user cares about should still be enough to pull, verify, and seed, with no extra configuration. The default download order is torrent, then Hugging Face, then HTTP mirrors, overridable with `[fetch] source_order`. Chia DataLayer remains the source of truth for each catalog (6.14, 6.15).
 
-The official seeder and the first additional official entries are already live (18.5). The remaining product items, plus Linux packages and Hugging Face token login, are below. Suggested build order and risks are at the end.
+The official seeder and the first additional official entries are live (18.5). The product items, plus Linux packages and Hugging Face token login, are below.
 
 ### 18.1 Multi-catalog subscription
 
@@ -1405,7 +1414,7 @@ The desktop GUI is not part of 0.2.0. It is 0.3.0: a separate product, Tensorsee
 
 ## 19. 0.3.0 plan: Tensorseed Desktop
 
-Design only in this revision; 0.3.0 comes after 0.2.0. Hugging Face models and datasets only. The cost of entry stays low: the CLI remains enough on its own, including on a headless host.
+This section shipped in 0.3.0 (Desktop, signed claims, and signed responses), with 0.3.1 and 0.3.2 additions noted below. Hugging Face models and datasets only. The cost of entry stays low: the CLI remains enough on its own, including on a headless host.
 
 **Product.** Tensorseed Desktop is a separate product from the CLI, not a second mode of the same binary. It is a [Tauri](https://tauri.app) app with a system tray, using the same Svelte 5 + TailwindCSS + DaisyUI UI as the 0.2.0 explorer. In the desktop build that UI talks to the existing Rust crates natively (no WASM), for seeding status, disk use, pause and resume, and the catalog views already in the explorer. The official always-on seeder remains a systemd service, not a tray app.
 
@@ -1417,14 +1426,14 @@ Design only in this revision; 0.3.0 comes after 0.2.0. Hugging Face models and d
 
 **Packaging (Desktop, 0.3.0).**
 
-- Windows: both an MSI and an NSIS installer. 0.3.0 ships them without Authenticode signing, so SmartScreen warns on first run; integrity comes from the minisign signed `SHA256SUMS` as for every artifact.
-- Linux: .deb, .rpm, AppImage, and Flatpak. (These formats were deferred in 0.2.0 because they add little on top of the static CLI; they are the right fit once there is a GUI to bundle.)
+- Windows: both an MSI and an NSIS installer, for x64 (0.3.0) and ARM64 (0.3.2). They ship without Authenticode signing, so SmartScreen warns on first run; integrity comes from the minisign signed `SHA256SUMS` as for every artifact. The in-app updater does not yet have a Windows ARM64 channel; install those by hand.
+- Linux: .deb, .rpm, AppImage, and Flatpak. (These formats were deferred in 0.2.0 because they add little on top of the static CLI; they are the right fit once there is a GUI to bundle.) The Flatpak app id is `dev.tensorseed.Tensorseed` (0.3.2 and later; 0.3.0 and 0.3.1 used `dev.tensorseed.desktop`). The bundle is not published to Flathub.
 - The 0.2.0 CLI .deb and .rpm stay CLI-only: they must not start pulling in a webview or a tray. A Desktop package may depend on the CLI package, or bundle the CLI binary, but the CLI artifact itself stays GUI-free.
 - There is no macOS CLI build yet; a macOS Desktop build is not part of this plan until that changes.
-- The Desktop code stays portable (platform specifics behind `cfg` gates) so macOS can be added later, but macOS is not a 0.3.0 release target.
-- Updates: Desktop includes the Tauri in-app updater, verifying update signatures with a dedicated updater key (separate from the release key) against a static `latest.json` attached to the latest GitHub release. Only the AppImage, MSI, and NSIS builds self update; .deb, .rpm, and Flatpak installs update through their package manager or Flathub. The app sends no telemetry.
+- The Desktop code stays portable (platform specifics behind `cfg` gates) so macOS can be added later, but macOS is not a release target.
+- Updates: Desktop includes the Tauri in-app updater, verifying update signatures with a dedicated updater key (separate from the release key) against a static `latest.json` attached to the latest GitHub release. Only the AppImage, MSI, and NSIS x64 builds self update; .deb, .rpm, and Flatpak installs update through their package manager, or by installing the next Flatpak bundle. The app sends no telemetry.
 
-**Order.** 0.3.0 starts after the 0.2.0 explorer UI exists, so Desktop can reuse it. CLI packaging and the `gui` launcher stub can be designed earlier, but the app itself is a 0.3.0 milestone.
+**Order.** 0.3.0 started after the 0.2.0 explorer UI existed, so Desktop could reuse it.
 
 ### 19.1 Serving inference from a verified copy
 
@@ -1454,6 +1463,6 @@ Design only in this revision; 0.3.0 comes after 0.2.0. Hugging Face models and d
 }
 ```
 
-Version 0 is unsigned and provisional. A signed weights statement, designed with a marketplace partner, will replace it under a new schema; the format is not decided. Even signed, such a statement attests what the seller claims to serve, not what actually runs.
+Without `--sign`, `serve-inference` writes that unsigned `ts.served-weights/0` record for local bookkeeping. It is not evidence. With `--sign` or `claim-serving`, the same path holds a `ts.served-weights/1` claim: the same facts plus the engine version, the response signing public key, an optional seller wallet, expiry (0.3.1), and `claim_sha256`. The signed format shipped in 0.3.0. See [SELL-INFERENCE.md](SELL-INFERENCE.md) and [INTEGRATE-A-MARKETPLACE.md](INTEGRATE-A-MARKETPLACE.md). Even a signed claim attests what the seller claims to serve, not what actually runs.
 
 `doctor` adds `inference.llama_server`, `inference.vllm`, `port.inference`, and `inference.api_key` checks when `[inference]` is present (an explicitly configured binary that is missing fails; a missing key variable fails; a non loopback host without a key warns).

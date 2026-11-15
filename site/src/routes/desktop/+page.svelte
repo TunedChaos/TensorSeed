@@ -107,6 +107,6 @@
   <ul class="mt-3 list-disc space-y-2 pl-6">
     <li>Desktop does not serve inference yet; use the CLI. See <a class="link" href="/serve">Serve and verify</a>.</li>
     <li>The Windows installers are not code signed yet. See the <a class="link" href="/download#smartscreen">SmartScreen note</a>.</li>
-    <li>The Flatpak bundle is not on Flathub yet and does not update itself.</li>
+    <li>The Flatpak bundle is not published to Flathub and does not update itself.</li>
   </ul>
 </section>

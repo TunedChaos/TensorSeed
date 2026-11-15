@@ -64,8 +64,8 @@ Check both files before running anything:
 ```sh
 minisign -Vm SHA256SUMS -P RWSdRX3CxNPS9Vl1JNjDnZ04OmM/3xrfp9vqG5FO8TNpK8Sbg6ENAI4P
 sha256sum -c --ignore-missing SHA256SUMS
-tar xzf tensorseed-0.2.0-x86_64-unknown-linux-musl.tar.gz
-install -m 0755 tensorseed-0.2.0-x86_64-unknown-linux-musl/tensorseed ~/.local/bin/
+tar xzf tensorseed-0.3.2-x86_64-unknown-linux-musl.tar.gz
+install -m 0755 tensorseed-0.3.2-x86_64-unknown-linux-musl/tensorseed ~/.local/bin/
 tensorseed --version
 ```
 
@@ -82,10 +82,13 @@ cargo install --locked --path crates/tensorseed-cli
 
 ## 2. Configure the chain checked client
 
-Create `~/.config/tensorseed/tensorseed.toml` on Unix, or
+A fresh install already follows the official catalog with strict chain
+checking, so you do not need a config file just to `list`, `pull`, or
+`verify`. Create `~/.config/tensorseed/tensorseed.toml` on Unix, or
 `%APPDATA%\tensorseed\tensorseed.toml` on Windows (or
-`/etc/tensorseed/tensorseed.toml` for the systemd unit). This is the
-minimum to follow the official catalog with strict chain checking:
+`/etc/tensorseed/tensorseed.toml` for the systemd unit), when you want
+to seed, set torrent or serve options, or pin the official catalog
+explicitly. This is the official catalog with strict chain checking:
 
 ```toml
 [catalog]

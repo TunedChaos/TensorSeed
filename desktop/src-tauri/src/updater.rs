@@ -15,7 +15,7 @@
 //!
 //! - AppImage on Linux, and the MSI and NSIS installers on Windows.
 //! - Not the `.deb` or `.rpm` packages and not the Flatpak: the package
-//!   manager or Flathub owns those files, so Desktop only says where the
+//!   manager owns those files, so Desktop only says where the
 //!   update comes from.
 //! - Not development builds (`cargo run`, `tauri dev`), which have no
 //!   bundle type.
@@ -54,7 +54,7 @@ pub enum Channel {
     Deb,
     /// Fedora or RHEL package: the package manager updates it.
     Rpm,
-    /// Flatpak: Flatpak or Flathub updates it.
+    /// Flatpak: install the next bundle, or `flatpak update` from a remote.
     Flatpak,
     /// macOS app bundle: not built yet.
     MacApp,
@@ -104,7 +104,7 @@ impl Channel {
                 "This copy was installed from a system package. Update it through your package manager.",
             ),
             Self::Flatpak => Some(
-                "This copy is a Flatpak. Update it through Flatpak or Flathub (flatpak update).",
+                "This copy is a Flatpak. Install the next release's bundle, or run flatpak update if you installed from a remote.",
             ),
             Self::MacApp => Some("Updates for macOS are not available yet."),
             Self::Dev => Some(
@@ -415,7 +415,7 @@ mod tests {
             assert!(!c.self_updates());
             assert!(c.elsewhere().unwrap().contains("package manager"));
         }
-        assert!(Channel::Flatpak.elsewhere().unwrap().contains("Flathub"));
+        assert!(Channel::Flatpak.elsewhere().unwrap().contains("flatpak update"));
         assert!(!Channel::Dev.self_updates());
     }
 
