@@ -32,7 +32,7 @@ bin := "tensorseed"
 version := `sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1`
 dist_dir := "dist"
 # Guides and references shipped in docs/ of every release archive.
-dist_docs := "docs/RUN-A-MIRROR.md docs/PUBLISH-A-CATALOG.md docs/SELL-INFERENCE.md docs/INTEGRATE-A-MARKETPLACE.md docs/SPEC.md docs/CHIA-RUNBOOK.md docs/M0-TORRENT-SPIKE.md docs/MILESTONES.md"
+dist_docs := "docs/RUN-A-MIRROR.md docs/PUBLISH-A-CATALOG.md docs/SELL-INFERENCE.md docs/INTEGRATE-A-MARKETPLACE.md docs/SPEC.md docs/CHIA-RUNBOOK.md docs/M0-TORRENT-SPIKE.md docs/MILESTONES.md docs/RELEASING.md"
 
 # With Rust 1.100 and Zig as the linker, aarch64-pc-windows-gnullvm fails to
 # link crc-fast's dylib on missing _Unwind_* symbols. Zig ships libunwind for

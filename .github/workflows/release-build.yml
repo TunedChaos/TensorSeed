@@ -1,0 +1,434 @@
+# Builds every unsigned release asset on a version tag (or workflow_dispatch)
+# and uploads them as a workflow artifact, with SHA256SUMS and build
+# provenance attestations.
+#
+# This workflow does not create or edit a GitHub Release, and it does not
+# sign anything. Updater signatures (.sig) and latest.json are made on
+# your signing machine after you download and check the artifact. See
+# docs/RELEASING.md.
+#
+# Replaces the earlier .github/workflows/release.yml, which only ran
+# `just dist` for the CLI archives.
+name: Release build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: v
+        name: Read and check the version
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          desktop_pkg="$(python3 -c 'import json; print(json.load(open("desktop/package.json"))["version"])')"
+          desktop_crate="$(sed -n 's/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml | head -n1)"
+          if [ -z "$version" ] || [ "$version" != "$desktop_pkg" ] || [ "$version" != "$desktop_crate" ]; then
+            echo "version mismatch: Cargo.toml=$version desktop/package.json=$desktop_pkg desktop/src-tauri/Cargo.toml=$desktop_crate" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [ "$tag" != "v${version}" ]; then
+              echo "tag $tag does not match crate version v${version}" >&2
+              exit 1
+            fi
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Building unsigned Tensorseed ${version} assets"
+
+  cli:
+    name: CLI archives (just dist)
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install just, cargo-zigbuild and zig
+        run: |
+          cargo install --locked just cargo-zigbuild
+          pip install ziglang
+      - name: Install nfpm
+        env:
+          # Pinned to the v2.49.0 GitHub release. Digests are the SHA-256
+          # lines for nfpm_2.49.0_Linux_{x86_64,arm64}.tar.gz in that
+          # release's checksums.txt.
+          NFPM_VERSION: "2.49.0"
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)
+              asset="Linux_x86_64"
+              sha256="2afaa5ffb5e3493402e31e7c67a5a1fb42133e3f66fc315ca0051934125561c7"
+              ;;
+            aarch64)
+              asset="Linux_arm64"
+              sha256="d4eee71839e92c68cbd3b101640bad32d2856fc551acae0635be9118e48c9d9c"
+              ;;
+            *)
+              echo "unsupported architecture $(uname -m) for nfpm" >&2
+              exit 1
+              ;;
+          esac
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          archive="nfpm_${NFPM_VERSION}_${asset}.tar.gz"
+          url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${archive}"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/$archive" "$url"
+          echo "${sha256}  $tmp/$archive" | sha256sum -c
+          tar -xzf "$tmp/$archive" -C "$tmp" nfpm
+          sudo install -m 0755 "$tmp/nfpm" /usr/local/bin/nfpm
+          nfpm --version
+      - name: Targets
+        run: just targets
+      - name: Build archives
+        run: just dist
+      - name: Stage CLI assets
+        run: |
+          set -euo pipefail
+          mkdir -p staged
+          # Drop the CLI-only SHA256SUMS; the pack job writes the full one.
+          find dist -maxdepth 1 -type f ! -name SHA256SUMS -exec cp -v -t staged {} +
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-cli
+          path: staged/
+          if-no-files-found: error
+
+  desktop-linux:
+    name: Desktop Linux (AppImage, deb, rpm)
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> desktop/src-tauri/target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Desktop Linux build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev build-essential curl file \
+            libssl-dev libxdo-dev patchelf rpm
+      - name: Install Desktop JS dependencies
+        run: pnpm --dir desktop install --frozen-lockfile
+      - name: Build unsigned AppImage, deb, and rpm
+        run: pnpm --dir desktop build:unsigned -- --bundles appimage,deb,rpm
+      - name: Stage Linux Desktop assets
+        run: |
+          set -euo pipefail
+          mkdir -p staged
+          shopt -s nullglob
+          for f in desktop/src-tauri/target/release/bundle/{appimage,deb,rpm}/*.{AppImage,deb,rpm}; do
+            base="$(basename "$f")"
+            cp -v "$f" "staged/${base// /.}"
+          done
+          ls -l staged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-linux
+          path: staged/
+          if-no-files-found: error
+
+  desktop-flatpak:
+    name: Desktop Linux (Flatpak)
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-gnome-51-${{ runner.os }}
+      - name: Install flatpak-builder and runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder ostree elfutils
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y flathub \
+            org.gnome.Platform//51 org.gnome.Sdk//51 \
+            org.freedesktop.Sdk.Extension.rust-stable//26.08 \
+            org.freedesktop.Sdk.Extension.node24//26.08
+      - name: Build the Flatpak bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          flatpak-builder --user --install-deps-from=flathub --force-clean \
+            --repo=repo build-dir desktop/flatpak/dev.tensorseed.desktop.yml
+          mkdir -p staged
+          out="staged/Tensorseed.Desktop_${VERSION}_x86_64.flatpak"
+          flatpak build-bundle repo "$out" dev.tensorseed.desktop
+          ls -l "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-flatpak
+          path: staged/
+          if-no-files-found: error
+
+  desktop-windows-x64:
+    name: Desktop Windows x64 (NSIS, MSI)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> desktop/src-tauri/target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Desktop JS dependencies
+        run: pnpm --dir desktop install --frozen-lockfile
+      - name: Build unsigned NSIS and MSI
+        run: pnpm --dir desktop build:unsigned -- --bundles msi,nsis --target x86_64-pc-windows-msvc
+      - name: Stage Windows x64 Desktop assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staged
+          shopt -s nullglob
+          base="desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          for f in "$base"/msi/*.msi "$base"/nsis/*-setup.exe; do
+            name="$(basename "$f")"
+            cp -v "$f" "staged/${name// /.}"
+          done
+          ls -l staged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-windows-x64
+          path: staged/
+          if-no-files-found: error
+
+  desktop-windows-arm64:
+    name: Desktop Windows ARM64 (NSIS, MSI)
+    needs: version
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> desktop/src-tauri/target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # aws-lc-sys (pulled in by rustls) needs clang-cl on aarch64-pc-windows-msvc.
+      - name: Put clang-cl on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v clang-cl >/dev/null 2>&1; then
+            echo "clang-cl already on PATH: $(command -v clang-cl)"
+            clang-cl --version
+            echo "CC=clang-cl" >> "$GITHUB_ENV"
+            echo "CXX=clang-cl" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          found=""
+          vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          if [ -x "$vswhere" ]; then
+            found="$("$vswhere" -latest -products '*' -find '**/clang-cl.exe' | head -n1 | tr -d '\r')"
+          fi
+          if [ -z "$found" ]; then
+            for p in \
+              "/c/Program Files/LLVM/bin/clang-cl.exe" \
+              "/c/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/ARM64/bin/clang-cl.exe" \
+              "/c/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Tools/Llvm/ARM64/bin/clang-cl.exe"
+            do
+              if [ -f "$p" ]; then
+                found="$p"
+                break
+              fi
+            done
+          fi
+          if [ -z "$found" ]; then
+            echo "clang-cl not found. aws-lc-sys needs it to build on aarch64-pc-windows-msvc." >&2
+            exit 1
+          fi
+          if command -v cygpath >/dev/null 2>&1; then
+            found_unix="$(cygpath -u "$found")"
+            dir_win="$(cygpath -w "$(dirname "$found_unix")")"
+          else
+            dir_win="$(dirname "$found")"
+          fi
+          echo "Using clang-cl at $found"
+          echo "$dir_win" >> "$GITHUB_PATH"
+          echo "CC=clang-cl" >> "$GITHUB_ENV"
+          echo "CXX=clang-cl" >> "$GITHUB_ENV"
+      - name: Install Desktop JS dependencies
+        run: pnpm --dir desktop install --frozen-lockfile
+      - name: Build unsigned NSIS and MSI
+        run: pnpm --dir desktop build:unsigned -- --bundles msi,nsis --target aarch64-pc-windows-msvc
+      - name: Stage Windows ARM64 Desktop assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staged
+          shopt -s nullglob
+          base="desktop/src-tauri/target/aarch64-pc-windows-msvc/release/bundle"
+          for f in "$base"/msi/*.msi "$base"/nsis/*-setup.exe; do
+            name="$(basename "$f")"
+            cp -v "$f" "staged/${name// /.}"
+          done
+          ls -l staged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-windows-arm64
+          path: staged/
+          if-no-files-found: error
+
+  pack:
+    name: Checksums, attestations, and bundle
+    needs:
+      - version
+      - cli
+      - desktop-linux
+      - desktop-flatpak
+      - desktop-windows-x64
+      - desktop-windows-arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: incoming
+          merge-multiple: true
+      - name: Assemble unsigned assets and SHA256SUMS
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip
+          mkdir -p unsigned
+          # Spaces in Desktop filenames become dots, as on the GitHub release.
+          find incoming -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
+            while IFS= read -r -d '' f; do
+              name="$(basename "$f")"
+              cp -v "$f" "unsigned/${name// /.}"
+            done
+          cp -v keys/tensorseed-release.pub unsigned/tensorseed-release.pub
+          python3 - <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+
+          root = Path("unsigned")
+          skip = {"SHA256SUMS", "tensorseed-release.pub"}
+          files = []
+          for path in root.iterdir():
+              name = path.name
+              if not path.is_file() or name in skip or name.endswith("-unsigned-bundle.zip"):
+                  continue
+              files.append(name)
+
+          def key(name):
+              # CLI archives first (tensorseed- / tensorseed_), then Desktop.
+              return (0 if name.startswith("tensorseed") else 1, name)
+
+          files.sort(key=key)
+          if len(files) < 17:
+              sys.exit(f"SHA256SUMS would have only {len(files)} entries; expected at least the 0.3.1 set.")
+          lines = []
+          for name in files:
+              digest = subprocess.check_output(["sha256sum", name], cwd=root, text=True)
+              lines.append(digest)
+          (root / "SHA256SUMS").write_text("".join(lines))
+          print("SHA256SUMS:")
+          print("".join(lines), end="")
+          PY
+          bundle="tensorseed-${VERSION}-unsigned-bundle.zip"
+          # The bundle zip is a convenience for downloading the artifact. It
+          # is not a GitHub Release asset and is not listed in SHA256SUMS.
+          (
+            cd unsigned
+            mapfile -t contents < <(find . -maxdepth 1 -type f ! -name '*-unsigned-bundle.zip' -printf '%f\n' | LC_ALL=C sort)
+            zip -9 "../${bundle}" "${contents[@]}"
+          )
+          mv "${bundle}" "unsigned/${bundle}"
+          ls -l unsigned
+      - name: Attest release assets listed in SHA256SUMS
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-checksums: unsigned/SHA256SUMS
+      - name: Attest SHA256SUMS, the public key, and the bundle zip
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            unsigned/SHA256SUMS
+            unsigned/tensorseed-release.pub
+            unsigned/tensorseed-${{ needs.version.outputs.version }}-unsigned-bundle.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensorseed-release-unsigned
+          path: unsigned/
+          if-no-files-found: error

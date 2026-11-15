@@ -1,5 +1,8 @@
 # Tensorseed
 
+[![CI](https://github.com/TunedChaos/TensorSeed/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/TunedChaos/TensorSeed/actions/workflows/ci.yml?query=branch%3Amain)
+([`@tensorseed/verify`](https://www.npmjs.com/package/@tensorseed/verify) on npm)
+
 **Download, seed, and serve AI models you can verify.**
 
 Tensorseed distributes verified weights: chain anchored mirrors of open

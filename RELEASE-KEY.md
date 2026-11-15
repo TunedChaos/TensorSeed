@@ -126,14 +126,18 @@ update all four plus the website in one commit.
 
 ## Signing a release
 
+Unsigned archives are built in CI when you push a `v*` tag. Download
+them, check the attestations and `SHA256SUMS`, then sign on your
+signing machine. The full fish commands are in
+[docs/RELEASING.md](docs/RELEASING.md).
+
+`just sign` only passes the key path to minisign; nothing is stored. It
+expects `dist/SHA256SUMS` (copy the CI artifact into `dist/` first):
+
 ```sh
-just dist                                         # binaries, source archives, and SHA256SUMS in dist/
-just dist-src v0.1.0                              # source archives only, from that tag
 just sign ~/.tensorseed-release/tensorseed-release.key
 just verify-dist ~/.tensorseed-release/tensorseed-release.pub
 ```
-
-`just sign` only passes the key path to minisign; nothing is stored.
 
 ## Rotation and compromise
 

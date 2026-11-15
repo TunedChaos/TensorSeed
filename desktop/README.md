@@ -329,63 +329,49 @@ error.
 
 ## Releasing an update
 
-Updater signatures are made on the release machine, which holds the
-updater private key and its password. They are never made in CI, and
-the key never goes to a build host. CI and test builds use
-`build:unsigned` and need no key.
+The full release flow (tag, CI, attestations, checksums, signing, and
+`gh release create`) is in [docs/RELEASING.md](../docs/RELEASING.md).
+CI builds the unsigned AppImage, `.deb`, `.rpm`, Flatpak, and Windows
+installers. Updater signatures and `latest.json` are made on your
+signing machine, which holds the updater private key and its password.
+They are never made in CI, and the key never goes to a build host. CI
+and test builds use `build:unsigned` and need no key.
 
-1. **Build.** On Linux, on the release machine, with the key set, so
-   `tauri build` signs the AppImage as it builds it:
+Sign the exact files from the CI artifact; rebuilding them changes the
+bytes and breaks the signature. Spaces in those file names are already
+dots. After `SHA256SUMS` is signed (see docs/RELEASING.md):
 
-   ```fish
-   set -x TAURI_SIGNING_PRIVATE_KEY ~/.tauri/tensorseed-desktop-updater.key  # a path, or the key text itself
-   read -s -P 'updater key password: ' -x TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-   pnpm --dir desktop tauri build --bundles appimage,deb
-   set -e TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-   ```
+```fish
+set ver 0.3.2
+read -s -P 'updater key password: ' -x TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+for f in     Tensorseed.Desktop_{$ver}_amd64.AppImage     Tensorseed.Desktop_{$ver}_x64-setup.exe     Tensorseed.Desktop_{$ver}_x64_en-US.msi
+    pnpm --dir desktop tauri signer sign         -f ~/.tauri/tensorseed-desktop-updater.key --app-version $ver $f
+end
+set -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+```
 
-   This writes `Tensorseed Desktop_<version>_amd64.AppImage` and
-   `Tensorseed Desktop_<version>_amd64.AppImage.sig`.
+`scripts/make-latest-json` reads the `.sig` next to each installer,
+checks the signed version and file name, verifies each signature against
+the public key in `tauri.conf.json` with `minisign` (`--verify`), and
+writes the feed:
 
-   On Windows, build without the key (`build:unsigned --bundles
-   msi,nsis`), copy the `.msi` and `-setup.exe` to the release machine,
-   and sign them there, binding each signature to the version:
+```fish
+scripts/make-latest-json --version 0.3.2 --notes-file notes.md --verify     --appimage Tensorseed.Desktop_0.3.2_amd64.AppImage     --nsis Tensorseed.Desktop_0.3.2_x64-setup.exe     --msi Tensorseed.Desktop_0.3.2_x64_en-US.msi     --out latest.json
+```
 
-   ```fish
-   read -s -P 'updater key password: ' -x TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-   for f in 'Tensorseed Desktop_0.3.1_x64-setup.exe' 'Tensorseed Desktop_0.3.1_x64_en-US.msi'
-       pnpm --dir desktop tauri signer sign -f ~/.tauri/tensorseed-desktop-updater.key --app-version 0.3.1 $f
-   end
-   set -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-   ```
+Download URLs default to the `v<version>` release on GitHub, with
+spaces in file names turned into dots as GitHub does on upload
+(`--base-url` changes the prefix). The entries are
+`linux-x86_64-appimage`, `windows-x86_64-nsis`, and
+`windows-x86_64-msi`, so each install type gets its own installer.
+Windows ARM64 installers ship in the release and in `SHA256SUMS`, but
+this feed does not list them yet.
 
-   Sign the exact files you upload: rebuilding changes the bytes and
-   breaks the signature.
-
-2. **Write `latest.json`.** `scripts/make-latest-json` reads the `.sig`
-   next to each installer, checks the signed version and file name,
-   verifies each signature against the public key in `tauri.conf.json`
-   with `minisign` (`--verify`), and writes the feed:
-
-   ```fish
-   scripts/make-latest-json --version 0.3.1 --notes-file notes.md --verify \
-       --appimage 'Tensorseed Desktop_0.3.1_amd64.AppImage' \
-       --nsis 'Tensorseed Desktop_0.3.1_x64-setup.exe' \
-       --msi 'Tensorseed Desktop_0.3.1_x64_en-US.msi' \
-       --out latest.json
-   ```
-
-   Download URLs default to the `v<version>` release on GitHub, with
-   spaces in file names turned into dots as GitHub does on upload
-   (`--base-url` changes the prefix). The entries are
-   `linux-x86_64-appimage`, `windows-x86_64-nsis`, and
-   `windows-x86_64-msi`, so each install type gets its own installer.
-
-3. **Publish.** Upload the installers, their `.sig` files, and the usual
-   `SHA256SUMS` and `SHA256SUMS.minisig` first, then `latest.json` last.
-   Desktop follows `releases/latest`, which GitHub points at the newest
-   release that is not a draft or a pre-release, so a pre-release never
-   reaches installed copies.
+Publish as in [docs/RELEASING.md](../docs/RELEASING.md): upload the
+installers, their `.sig` files, and `SHA256SUMS` and `SHA256SUMS.minisig`
+first, then `latest.json` last. Desktop follows `releases/latest`, which
+GitHub points at the newest release that is not a draft or a pre-release,
+so a pre-release never reaches installed copies.
 
 Updater signatures only cover the in app update. The release key and
 `SHA256SUMS.minisig` still cover every download (see `RELEASE-KEY.md`).
@@ -533,9 +519,9 @@ Inside the sandbox the tray icon image is written to
 folder Flatpak shares with the host, because the tray host reads the icon
 by path.
 
-Not built in CI: a Flatpak build takes about 25 minutes and needs the
-runtime and SDK downloads, so it runs by hand for now. Nothing is
-published.
+The unsigned `.flatpak` bundle is built in the Release build workflow
+(about 25 minutes, including the runtime and SDK downloads). Nothing is
+published to Flathub yet.
 
 What a Flathub submission would still need (nothing has been submitted):
 
@@ -562,9 +548,9 @@ What a Flathub submission would still need (nothing has been submitted):
   mode, and disk budget are still edited in the config file or with the
   CLI.
 - Packaging: the local `.deb` and AppImage `tauri build` makes by
-  default, the Windows MSI and NSIS installers, and the Flatpak (built by
-  hand, not published). Signing, the MSI build method, and bundling the
-  CLI in the other packages are M3.6 decisions.
+  default, the Windows MSI and NSIS installers, and the Flatpak (also
+  built unsigned in CI; not published to Flathub). Signing, the MSI build
+  method, and bundling the CLI in the other packages are M3.6 decisions.
 - Windows: the NSIS and MSI builds, deep links, single instance
   forwarding, close to tray, the tray icon and its status, pull, verify,
   seed, settings, `tensorseed gui`, and uninstalling have been run on

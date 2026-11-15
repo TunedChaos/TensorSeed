@@ -49,7 +49,9 @@ examples that compile as doc tests (`no_run` for network or Chia code).
 
 ## Cross platform builds
 
-Release binaries are cross compiled from one host with
+Unsigned release archives are built in CI when you push a `v*` tag (see
+[docs/RELEASING.md](docs/RELEASING.md)). You can still cross compile them
+from one host with
 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), which uses
 Zig as the C compiler and linker, so no system cross toolchains are needed.
 Everything in the dependency tree is pure Rust or bundled C (rustls instead
