@@ -31,6 +31,32 @@ does on upload.
 CI does not produce `SHA256SUMS.minisig`, the Desktop `.sig` files, or
 `latest.json`.
 
+## Before you tag
+
+The release commit goes to main first. It bumps the version everywhere
+the workflow checks it, or the **Check version** job fails:
+
+- `Cargo.toml`: `[workspace.package] version` and the `tensorseed-*`
+  entries in `[workspace.dependencies]`
+- `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, and the WiX
+  `version` (`<version>.0`) in `desktop/src-tauri/tauri.conf.json`
+- `ui/package.json`
+- `Cargo.lock` and `desktop/src-tauri/Cargo.lock`
+  (`cargo update --workspace` in the repo root and in `desktop/src-tauri`)
+- a `<release>` entry in
+  `desktop/flatpak/dev.tensorseed.Tensorseed.metainfo.xml`, dated the
+  release day
+- the dated section in `CHANGELOG.md`
+
+Leave `site/src/lib/release.ts` on the current release until the new one
+is published, since every download link on tensorseed.dev comes from it.
+Then set `VERSION`, add or rename any assets in its lists, and deploy
+the site.
+
+The Flatpak in the artifact is built with the app id
+`dev.tensorseed.Tensorseed` (0.3.2 and later; 0.3.0 and 0.3.1 used
+`dev.tensorseed.desktop`).
+
 ## On your signing machine (fish)
 
 Use a checkout of the same tag, plus [GitHub CLI](https://cli.github.com/)
@@ -126,7 +152,11 @@ cd ~/releases/$ver
 # The convenience zip is only for the workflow artifact; keep it out of the release.
 mkdir -p ~/releases/$ver-ci
 mv tensorseed-$ver-unsigned-bundle.zip ~/releases/$ver-ci/
-gh release create $tag --repo $repo --title "Tensorseed $ver" --notes-file notes.md     SHA256SUMS SHA256SUMS.minisig tensorseed-release.pub     tensorseed-$ver-* tensorseed_$ver-*     Tensorseed.Desktop_*     *.sig
+gh release create $tag --repo $repo --title "Tensorseed $ver" --notes-file notes.md \
+    SHA256SUMS SHA256SUMS.minisig tensorseed-release.pub \
+    tensorseed-$ver-* tensorseed_$ver-* \
+    Tensorseed.Desktop_* \
+    *.sig
 gh release upload $tag --repo $repo latest.json
 ```
 

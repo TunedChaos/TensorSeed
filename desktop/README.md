@@ -346,8 +346,12 @@ dots. After `SHA256SUMS` is signed (see docs/RELEASING.md):
 ```fish
 set ver 0.3.2
 read -s -P 'updater key password: ' -x TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-for f in     Tensorseed.Desktop_{$ver}_amd64.AppImage     Tensorseed.Desktop_{$ver}_x64-setup.exe     Tensorseed.Desktop_{$ver}_x64_en-US.msi
-    pnpm --dir desktop tauri signer sign         -f ~/.tauri/tensorseed-desktop-updater.key --app-version $ver $f
+for f in \
+        Tensorseed.Desktop_{$ver}_amd64.AppImage \
+        Tensorseed.Desktop_{$ver}_x64-setup.exe \
+        Tensorseed.Desktop_{$ver}_x64_en-US.msi
+    pnpm --dir desktop tauri signer sign \
+        -f ~/.tauri/tensorseed-desktop-updater.key --app-version $ver $f
 end
 set -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 ```
@@ -358,7 +362,11 @@ the public key in `tauri.conf.json` with `minisign` (`--verify`), and
 writes the feed:
 
 ```fish
-scripts/make-latest-json --version 0.3.2 --notes-file notes.md --verify     --appimage Tensorseed.Desktop_0.3.2_amd64.AppImage     --nsis Tensorseed.Desktop_0.3.2_x64-setup.exe     --msi Tensorseed.Desktop_0.3.2_x64_en-US.msi     --out latest.json
+scripts/make-latest-json --version 0.3.2 --notes-file notes.md --verify \
+    --appimage Tensorseed.Desktop_0.3.2_amd64.AppImage \
+    --nsis Tensorseed.Desktop_0.3.2_x64-setup.exe \
+    --msi Tensorseed.Desktop_0.3.2_x64_en-US.msi \
+    --out latest.json
 ```
 
 Download URLs default to the `v<version>` release on GitHub, with
